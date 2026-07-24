@@ -1,5 +1,71 @@
 # Session log
 
+## 2026-07-24 — session rituals: wrap-up skill + daily project doc
+
+Ported the blogregator docs setup into dreamd: a `/wrap-up` skill, a
+`/update-project-doc` skill, the `engies/project.md` landing page, and a cloud
+routine that refreshes that page daily. All landed.
+
+### What happened
+
+1. **Surveyed the source pattern.** Read blogregator's `CLAUDE.md`,
+   `engies/project.md`, and `engies/ai-practices.md`, plus the existing wrap-up
+   skills in `tree/` and `spotify_interview/`. Found blogregator has no
+   `.claude/` of its own — the wrap-up ritual lives in those other repos, and
+   what blogregator contributes is the `engies/` convention plus the daily job.
+   Also found the blogregator routine creation had **failed** with a 403
+   ("You don't have access to a repository this routine uses") — the daily job
+   the user believed was running never existed.
+
+2. **`.claude/skills/wrap-up/SKILL.md`.** Review diff → gate (`cargo build`
+   only when `src-tauri/` is touched) → prepend a dated section to
+   `docs/session-log.md` → refresh `engies/project.md` if the project story
+   changed → one atomic commit **straight to main** + push → lean memory →
+   report. Log layout decision: keep dreamd's existing single running file and
+   prepend newest-first, rather than adopting the `session-logs/` directory the
+   other two repos use.
+
+3. **`.claude/skills/update-project-doc/SKILL.md`.** Regenerates
+   `engies/project.md` from `git log` + `docs/session-log.md` + `README.md` +
+   the source tree. Pins the section contract, the entry-level voice, and an
+   explicit *"if nothing meaningful changed, do not manufacture news — leave the
+   file untouched and make no commit"* rule, so a daily unattended job can't
+   invent progress. Commits only that one path.
+
+4. **`engies/project.md`.** The human landing page for dreamd: product loop,
+   module-by-module architecture, honest known limits, glossary, reverse-chron
+   "Recent updates".
+
+5. **`CLAUDE.md`.** Terse machine-facing tenets (read-only, nothing persists, no
+   shell interpolation of user content, escape-don't-execute, CSS-themeable) plus
+   the docs conventions. Human-facing guidance deliberately stays in `engies/`.
+
+6. **Cloud routine.** `trig_01GLUNmetTpUmT5ptfLzrMLM`, cron `3 7 * * *` UTC
+   (≈08:03 UK in BST), sonnet-5, tools limited to Bash/Read/Write/Edit/Glob/Grep.
+   Its prompt tells the agent to read `.claude/skills/update-project-doc/SKILL.md`
+   from the checkout and follow it — so editing the skill changes the job, no
+   routine edit needed.
+
+### Mistakes & deviations
+
+- **First routine creation 403'd**, same as blogregator's: claude.ai had no
+  GitHub access to `bongofongo/dreamd`. Saved the exact create body to the
+  scratchpad, reported the blocker with the fix (connect GitHub at
+  claude.ai/code). User updated the Claude GitHub app; the retry returned 200.
+- **Test run was inconclusive.** Fired the routine manually and polled
+  `git ls-remote origin main` for ~5 min — no new commit. That is the expected
+  no-op path (project.md was written the same day from the same git log), but
+  the cloud session's transcript isn't readable from the CLI, so *correct no-op*
+  and *failed run* look identical from here. Reported it as unproven rather than
+  claiming success. Real verification comes at the next scheduled run.
+
+### State
+
+Docs/skills only — no Rust touched, no build gate needed. Skills committed and
+pushed to main (`b78c9fb`). Routine created and enabled, next run
+2026-07-25 07:03 UTC. `engies/project.md` left as written earlier this session;
+its top "Recent updates" bullet already covers this work.
+
 ## 2026-07-24 — v1 build
 
 Went from an empty scaffold to a working v1 of dreamd in one session.
