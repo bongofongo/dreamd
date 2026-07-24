@@ -1,6 +1,6 @@
 ---
 name: perf-deep
-description: Runs the ~15min deep performance tier on the dreamd repo — everything in perf-pass but against a release build, plus Instruments traces, a samply flamegraph, cargo-bloat and release binary size — and is the only tier permitted to update perf/baseline.json. Invoke before committing a performance change, when investigating where time actually goes, when establishing a new reference point, or runs /perf-deep.
+description: Runs the ~20min deep performance tier on the dreamd repo — everything in perf-pass against both the debug and the release build, plus Instruments traces, a samply flamegraph, cargo-bloat and release binary size — and is the only tier permitted to update perf/baseline.json. Invoke before committing a performance change, when investigating where time actually goes, when establishing a new reference point, or runs /perf-deep.
 ---
 
 # Perf deep
@@ -10,8 +10,8 @@ The investigation tier for the `dreamd` repo (root = the directory containing th
 they are separate: producing profiles you can actually read, and setting the baseline
 every other tier compares against.
 
-This builds release **and** a `profiling` profile, launches the app, and drives
-Instruments. Budget fifteen minutes and tell the user before starting.
+This builds debug, release **and** a `profiling` profile, launches the app, and drives
+Instruments. Budget twenty minutes and tell the user before starting.
 
 ## 1. Check the tools
 
@@ -33,8 +33,14 @@ running a hollowed-out tier.
 ./perf/run.sh deep
 ```
 
-Release build, full criterion sweep, hyperfine at 20 runs, the save-loop with **100**
-seeded highlights, all Chromium scenarios, then `perf/scripts/profile.sh`.
+Full criterion sweep, all Chromium scenarios, then the real app **twice** — the debug
+workload the pass tier runs (hyperfine at 10 runs, save-loop with 10 highlights) and
+the release one (20 runs, **100** highlights) — then `perf/scripts/profile.sh`.
+
+The debug pass is not padding. Real-app metric paths carry the build profile, and only
+this tier writes the baseline, so measuring release alone would leave every pass-tier
+`real.*` number without a baseline forever — including `events_per_save` and
+`save_to_paint_ms`. Deep is a superset of pass, never a substitute for it.
 
 Note the profiling profile exists because `[profile.release]` sets `strip = true`,
 which leaves every trace showing raw addresses. The run reports

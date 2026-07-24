@@ -42,11 +42,16 @@ missing the single most product-relevant number, so say which parts were skipped
 Same table and same grouping as `perf-quick`, over far more metrics. Two things
 deserve specific attention every run:
 
-- `real.loop.events_per_save` — how many `file-changed` events one atomic save
+Real-app metrics are keyed by build profile and workload, so this tier's live under
+`real.loop.debug-h10.*` and `real.startup.debug.*`. Their baseline comes from the
+debug half of a deep run — `real.*.release*` entries showing as "not measured this
+run" here is correct, not a skipped step.
+
+- `real.loop.debug-h10.events_per_save` — how many `file-changed` events one atomic save
   produced. Anything above 1.0 means the document is being fully re-rendered more
   than once per `:w`. That is the missing watcher debounce, and it is the loop the
   whole product is built around.
-- `real.loop.save_to_paint_ms.p95` — the tail of that same loop. This is what the
+- `real.loop.debug-h10.save_to_paint_ms.p95` — the tail of that same loop. This is what the
   user actually feels when they save in Neovim.
 
 The `not measured this run` list at the bottom is not decoration. An entry there
@@ -61,7 +66,8 @@ noise. Still check it against what actually changed: attribute the move to a spe
 edit, or say plainly that you cannot.
 
 Do **not** update `perf/baseline.json` from this tier — the runner refuses anyway.
-Baselines come from `perf-deep` only, because the pass tier does not build release.
+Baselines come from `perf-deep` only — it runs this tier's debug workload as well as
+the release one, which is what gives these numbers something to compare against.
 
 ## 5. Report
 

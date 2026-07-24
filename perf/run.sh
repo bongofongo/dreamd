@@ -200,16 +200,26 @@ BENCHES="$(collect_criterion)"
 # ---- 3. real app ---------------------------------------------------------
 
 STARTUP='null'; LOOP='null'; PROFILE='null'
+STARTUP_DEBUG='null'; LOOP_DEBUG='null'
 case "$TIER" in
   quick)
     : # no app launch in the quick tier; it would blow the time budget
     ;;
   pass)
     say "real app"
-    STARTUP="$(perf/scripts/startup.sh --runs 10 2>/dev/null || echo 'null')"
-    LOOP="$(perf/scripts/loop.sh --highlights 10 --saves 8 2>/dev/null || echo 'null')"
+    STARTUP_DEBUG="$(perf/scripts/startup.sh --runs 10 2>/dev/null || echo 'null')"
+    LOOP_DEBUG="$(perf/scripts/loop.sh --highlights 10 --saves 8 2>/dev/null || echo 'null')"
     ;;
   deep)
+    # Deep runs BOTH profiles, and the debug pass is not optional padding.
+    # Metric paths carry the build profile, and only the deep tier may write the
+    # baseline — so if deep measured release alone, every `real.*` number the
+    # pass tier produces would be a debug-keyed path with no baseline to compare
+    # against, forever. Deep is a superset of pass: same workloads, plus the
+    # release ones on top.
+    say "real app (debug — the workload pass compares against)"
+    STARTUP_DEBUG="$(perf/scripts/startup.sh --runs 10 2>/dev/null || echo 'null')"
+    LOOP_DEBUG="$(perf/scripts/loop.sh --highlights 10 --saves 8 2>/dev/null || echo 'null')"
     say "real app (release)"
     STARTUP="$(perf/scripts/startup.sh --release --runs 20 2>/dev/null || echo 'null')"
     LOOP="$(perf/scripts/loop.sh --release --highlights 100 --saves 12 2>/dev/null || echo 'null')"
@@ -225,6 +235,7 @@ jq -n \
   --argjson load1 "${LOAD1:-0}" --argjson ncpu "$NCPU" \
   --argjson benches "$BENCHES" \
   --argjson startup "$STARTUP" --argjson loop "$LOOP" --argjson profile "$PROFILE" \
+  --argjson startup_debug "$STARTUP_DEBUG" --argjson loop_debug "$LOOP_DEBUG" \
   --argjson render "$CH_RENDER" --argjson scroll "$CH_SCROLL" \
   --argjson highlight "$CH_HIGHLIGHT" --argjson palette "$CH_PALETTE" \
   '
@@ -235,16 +246,23 @@ jq -n \
    # workload means non-matching runs land on different paths and show up as
    # "not measured this run" instead of as a fake 80% improvement.
    def keyed(r; k): if r == null or r.skipped then null else {(k): r} end;
+   # Deep produces two entries per real-app metric (debug + release); pass
+   # produces one. Merging keeps them side by side under distinct keys instead
+   # of one overwriting the other.
+   def both(a; b): ((a // {}) + (b // {})) | if . == {} then null else . end;
    {
      meta: { tier: $tier, sha: $sha, stamp: $stamp, load1: $load1, ncpu: $ncpu },
      bench: $benches,
      # Keyed by build profile as well as workload. `pass` measures the debug
-     # binary and `deep` measures release — the same code differs several-fold
-     # between them, so sharing a metric path reported the profile difference as
-     # a 250% regression. Debug and release numbers now simply never meet.
+     # binary and `deep` measures both — the same code differs several-fold
+     # between profiles, so sharing a metric path reported the profile difference
+     # as a 250% regression. Debug and release numbers now simply never meet;
+     # deep records both so each has a baseline of its own kind.
      real: {
-       startup: keyed($startup; $startup.profile // "unknown"),
-       loop:    keyed($loop;    "\($loop.profile // "unknown")-h\($loop.highlights // 0)")
+       startup: both(keyed($startup_debug; $startup_debug.profile // "unknown");
+                     keyed($startup;       $startup.profile       // "unknown")),
+       loop:    both(keyed($loop_debug; "\($loop_debug.profile // "unknown")-h\($loop_debug.highlights // 0)");
+                     keyed($loop;       "\($loop.profile       // "unknown")-h\($loop.highlights       // 0)"))
      },
      chromium: {
        render:    keyed($render;    "\($render.variant)-\($render.size)"),

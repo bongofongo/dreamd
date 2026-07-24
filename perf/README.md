@@ -6,7 +6,7 @@ hand and by Claude, on this machine, during a session.
 ```sh
 ./perf/run.sh quick     # ~60s    after an edit
 ./perf/run.sh pass      # ~5min   after a thread pass
-./perf/run.sh deep      # ~15min  before a commit, or when investigating
+./perf/run.sh deep      # ~20min  before a commit, or when investigating
 ```
 
 Results go to `perf/results/` (gitignored). Each run prints a diff against
@@ -147,11 +147,20 @@ A baseline that drifts on its own hides exactly the slow regression it exists to
 catch. Update it deliberately, in the same commit as the change that justified it,
 with the before/after in the commit message.
 
-**Known-stale:** the committed baseline's `real.*` entries were captured before
-real-app metrics were keyed by build profile, so they sit at the old paths and will
-show as `new` until the next `./perf/run.sh deep --update-baseline`. `bench.*` and
-`chromium.*` are current. The baseline was deliberately not hand-edited to patch
-this — a baseline you can edit by hand is not evidence of anything.
+**The deep tier runs the real app twice**, once debug and once release, and that is
+what makes the pass tier's `real.*` numbers checkable at all. Metric paths carry the
+build profile (`real.loop.debug-h10` vs `real.loop.release-h100`) so debug and release
+figures never meet, and only `deep` may write the baseline — so a deep tier that
+measured release alone would leave every pass-tier `real.*` metric permanently
+baseline-less, including `events_per_save` and `save_to_paint_ms`. Deep is a superset
+of pass: the same debug workload pass runs, plus the release one on top.
+
+**Known-stale:** the committed baseline's `real.*` entries predate profile keying and
+sit at the old paths, so every `real.*` metric shows as `new` and the old names show
+under "not measured this run". The next `./perf/run.sh deep --update-baseline`
+realigns them — for both profiles, now that deep measures both. `bench.*` and
+`chromium.*` are current. The baseline is deliberately not hand-edited to patch this:
+a baseline you can edit by hand is not evidence of anything.
 
 ## Gotchas worth knowing
 

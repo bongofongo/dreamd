@@ -87,7 +87,7 @@ highlights from a corpus fixture.
 - Repeatable flows become skills in `.claude/skills/`.
 - Performance is measured, not guessed. `/perf-quick` (~60s) after an edit,
   `/perf-pass` (~5min) before a commit touching `src-tauri/` or `ui/`, `/perf-deep`
-  (~15min) to profile or move the baseline. `perf/baseline.json` changes only via
+  (~20min) to profile or move the baseline. `perf/baseline.json` changes only via
   `perf-deep`, in the same commit as the change that justified it.
 - Numbers from `perf/harness/` are Chromium, **not** WKWebView — relative regression
   signal only. Say so whenever quoting one.
