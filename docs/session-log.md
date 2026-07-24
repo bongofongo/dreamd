@@ -1,5 +1,119 @@
 # Session log
 
+## 2026-07-25 — the first optimization pass, measured end to end
+
+The measurement framework built last session finally got used for what it was for.
+Worked the ranked fix list plus a fresh audit of the hot paths; landed six changes
+across Rust and the frontend. Final `perf/run.sh pass`: **0 regressed, 53 improved**.
+
+### What happened
+
+1. **`reanchor` no longer rebuilds its index per highlight.** `markdown::locate`'s
+   third tier built a whitespace-stripped copy of the entire source plus an offset
+   table, and threw it away again — *once per highlight*, against documents that can
+   be megabytes. New `markdown::SourceIndex` builds it once per `reanchor_file` call
+   and lends it to every highlight in the file. Two further scans went with it: line
+   numbers now come from a prefix-summed line table (`partition_point`) instead of
+   counting newlines from byte 0 twice per highlight, and the stripped index is keyed
+   by *byte* rather than char index, which removed a `chars().count()` over the whole
+   document per lookup. `reanchor_today/100` 702.7ms → 107.8ms; `locate_single/today`
+   improved too (8.08 → 6.85ms), so nothing was traded away to get it.
+
+2. **Fenced code blocks are highlighted in parallel.** Syntect is essentially all of
+   render cost — `render/code/2m` was 3033ms against `render/prose/2m` at 4ms — and
+   the blocks are independent of each other. They're now collected during the parse
+   pass, highlighted across the cores with `std::thread::scope` and an atomic index
+   (work-stealing, because block sizes vary hugely), then spliced back into their
+   event slots. No new dependency. `render/code/512k` 779.6 → 176.3ms,
+   `render/mixed/512k` 130.0 → 33.8ms. Output verified **byte-identical** on all four
+   corpus variants before the benches were believed.
+
+3. **The watcher debounces and coalesces (fix B2).** 60ms window, per path. The
+   subtlety: kinds are *accumulated*, not overwritten, and resolved against the
+   filesystem at flush — an editor that saves by writing a temp file and renaming it
+   over the original emits a remove *and* a create for a file that still exists, so
+   collapsing to "removed" would have blanked the open document. `events_per_save`
+   1.583 → **1.00**.
+
+4. **The startup double walk is gone (fix B4).** `main` builds the tree from the
+   paths it already walked for the search index and caches it in `AppState`;
+   `list_markdown_files` returns the cache, and `rebuild_index` returns the fresh
+   tree so the frontend stops asking for a second walk on every add/remove. Also
+   dropped a `stat` per repo entry: the walker filtered on `into_path().is_file()`,
+   which discarded the `DirEntry`'s already-cached `file_type()` and issued a fresh
+   syscall for every entry — directories included — *before* the cheap extension test
+   could reject it. `walk_startup_pair/5000` 118.7 → 57.4ms.
+
+5. **`applyHighlights` stopped re-walking the document per highlight.** It built a
+   fresh `TreeWalker` from the top of a 105k-node document for each one. Now one pass
+   flattens the document to a string plus an offset table, quotes are found with a
+   native string search, and the wraps are applied back-to-front so splitting a text
+   node can't invalidate an offset computed after it. Kept a walk-and-stop path below
+   five highlights — flattening costs ~4ms whether there is one quote or five hundred,
+   and the measured crossover is around five. Chromium apply at 500: 284.9 → 23.9ms.
+   Applied-counts match the baseline exactly, so behaviour is unchanged.
+
+6. **Frontend odds and ends.** The active tree item is tracked by reference instead of
+   toggling a class on all 5000 file nodes per file open; palette arrow keys move a
+   class instead of rebuilding 200 rows (2.10 → 0.60ms); `runPalette` got a monotonic
+   sequence guard so a slow query can't paint over a newer one; `escapeHtml` does one
+   regex pass instead of four; the capture-phase scroll listener is passive and
+   returns immediately when no tooltip is showing.
+
+### Mistakes & deviations
+
+- **Two ideas were measured and rejected, not shipped.** The parallel repo walker
+  (`build_parallel`) is ~45% faster on 5000 files but pays ~1.2ms of thread spawn that
+  a small repo eats in full — 3.5x slower on `walk/markdown_paths/10`, which is exactly
+  what a cold start on a single file hits. Kept the sequential walker with only the
+  `stat` fix, which is a strict win at every size. `content-visibility: auto` cuts
+  forced layout after a render by 97% but raises scroll main-thread time by 81%;
+  scoping it to `> pre` was worse on both axes, and an A/B with the rule removed
+  confirmed the cost was entirely its own. Scrolling is the dominant interaction in a
+  reader, so it was left out — deliberately, with the numbers recorded in a comment in
+  `index.html` so nobody re-litigates it blind. Worth re-testing under WKWebView.
+- **A first cut of the stripped index used two offset tables and a binary search.** It
+  made batch re-anchoring fast but left single `locate` calls ~14% *slower* than
+  before. Rewriting it as one byte-keyed table made the lookup O(1) and turned that
+  regression into an improvement. Caught because the single-call bench was read
+  alongside the batch one, not instead of it.
+- **Three rows were flagged as regressions and turned out to be noise.**
+  `render/table/8k` (+54%), `render/table/512k`, and `locate_single/with_context`
+  (+16%) all moved on a loaded machine, had no plausible mechanism in the diff — the
+  table variant contains no code blocks at all — and came back flat or improved on a
+  quiet re-run. The repo's own rule held: a flagged row needs a mechanism or an A/B
+  before it gets called a regression.
+- **Started this thread on the assumption the tree was dirty and non-building** (a
+  rustc diagnostic reported `copy_clipboard` as private). It was stale; a parallel
+  thread had already committed that work. Confirmed against `git log` before doing
+  anything, rather than "fixing" a file that was already correct.
+
+### State
+
+`cargo build` passes. `perf/run.sh pass` on the shipped tree: 195 metrics compared,
+**0 regressed, 1 slower, 53 improved** — the one slower row is Chromium `composite_ms`
+moving 3.3 → 3.7ms across 30 wheel ticks, well inside the harness's own threshold and
+relative-only anyway. Rendered HTML byte-identical on four corpus variants; highlight
+applied-counts identical to baseline.
+
+`perf/baseline.json` is **not** updated — that needs a deliberate `perf-deep
+--update-baseline` run on a quiet machine, in its own commit. Until then every `real.*`
+row will keep reporting as new.
+
+**A pre-existing correctness bug was found and deliberately left alone.** Verifying
+`locate` against all 611 corpus highlight fixtures showed **40 cases where a rendered
+quote anchors to the wrong lines** — one resolved to lines 108–113 instead of 362–368.
+Confirmed identical before and after this session's changes, so it is not a regression.
+Root cause lead: `ui/app.js:419` sends `prefix: ""` and `suffix: ""`, so tier 1 of
+`locate` can never fire and both remaining tiers take the *first* match in the
+document. A handoff prompt for the fix was written this session. Note that populating
+prefix/suffix was previously rejected as a *performance* fix — that finding stands and
+does not argue against it here, since disambiguation is exactly what it is for.
+
+Left on the table, ranked: a render cache keyed on (path, mtime, hash) to kill
+re-renders of unchanged content; not holding the store mutex across `reanchor`;
+raw-bytes IPC instead of a JSON-escaped 4MB string.
+
 ## 2026-07-25 — dreamd gets a public face at fongo.uk/dreamd
 
 Built and shipped the project's first website: a single dark, picture-free landing

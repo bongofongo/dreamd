@@ -1,16 +1,17 @@
 //! Repo traversal.
 //!
-//! This matters twice over. It runs synchronously in `main()` before the window
-//! exists, and it runs *again* via `list_markdown_files` as the frontend boots —
-//! so a cold start pays for it twice. Worse, every `file-added`/`file-removed`
-//! watcher event triggers `rebuild_index` **and** `loadTree`, which is another
-//! two full walks per event, undebounced.
+//! This runs synchronously in `main()` before the window exists, and again on
+//! every `file-added`/`file-removed` watcher event via `rebuild_index`.
 //!
 //! `markdown_paths` and `scan` are benched separately so the tree-building cost
-//! is visible on its own — `scan` is now `build_tree(markdown_paths(..))`, so
-//! the difference between the two groups *is* `build_tree`. Fix B4 is still
-//! open: it's about the **startup pair** below, where `main()` and
-//! `list_markdown_files` each walk the repo, not about the two functions.
+//! is visible on its own — `scan` is `build_tree(markdown_paths(..))`, so the
+//! difference between the two groups *is* `build_tree`.
+//!
+//! The cold start used to walk the repo **twice**: once in `main()` for the
+//! search index, then again via `list_markdown_files` when the frontend booted.
+//! `main` now builds the tree from the paths it already has and caches it in
+//! `AppState`, so `startup_pair` below is one walk plus one `build_tree`. The
+//! group keeps its name so the number stays comparable across that change.
 
 mod common;
 
@@ -48,8 +49,8 @@ fn bench_scan(c: &mut Criterion) {
     g.finish();
 }
 
-/// What a cold start actually does today: walk for the index, then walk again
-/// for the tree. Kept as its own number so fix B4 has a single figure to move.
+/// What a cold start actually does: one walk, feeding both the search index and
+/// the cached tree.
 fn bench_startup_walks(c: &mut Criterion) {
     let mut g = c.benchmark_group("walk/startup_pair");
     // Fast operations, but many of them; the default 100 samples adds
@@ -59,8 +60,8 @@ fn bench_startup_walks(c: &mut Criterion) {
         let root = common::repo(*n);
         g.bench_with_input(BenchmarkId::from_parameter(n), &root, |b, root| {
             b.iter(|| {
-                black_box(fs_walk::markdown_paths(black_box(root), &[]));
-                black_box(fs_walk::scan(black_box(root), &[]));
+                let paths = black_box(fs_walk::markdown_paths(black_box(root), &[]));
+                black_box(fs_walk::build_tree(black_box(root), &paths));
             })
         });
     }

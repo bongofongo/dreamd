@@ -7,6 +7,7 @@ use serde::Serialize;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+
 #[derive(Debug, Clone, Serialize)]
 pub struct FileNode {
     /// File or directory name (leaf component).
@@ -63,8 +64,10 @@ fn to_node(name: &str, dir: &Dir, repo_root: &Path, abs: &Path) -> FileNode {
     }
 }
 
-/// Assemble a nested tree from a flat list of file paths.
-fn build_tree(repo_root: &Path, files: &[PathBuf]) -> FileNode {
+/// Assemble a nested tree from a flat list of file paths. Public so a caller
+/// that already has the paths — `main`, which walks once at startup for the
+/// search index — can build the tree without walking the repo a second time.
+pub fn build_tree(repo_root: &Path, files: &[PathBuf]) -> FileNode {
     let mut root = Dir::default();
     for f in files {
         let comps: Vec<String> = f
@@ -105,11 +108,19 @@ pub fn markdown_paths(repo_root: &Path, extra_ignores: &[String]) -> Vec<PathBuf
             builder.overrides(ov);
         }
     }
+    // Sequential on purpose. `build_parallel()` is ~45% faster on a 5000-file
+    // repo but costs ~1.2ms of thread spawn that a small repo pays in full —
+    // measured at 3.5x slower on `walk/markdown_paths/10`, which is the case a
+    // cold start on a single file hits.
     let mut files: Vec<PathBuf> = builder
         .build()
         .flatten()
+        // `file_type` comes from the directory read that already happened.
+        // `into_path().is_file()` issued a fresh `stat` for every entry in the
+        // repo, directories included, *before* the cheap extension test got a
+        // chance to reject it.
+        .filter(|e| e.file_type().is_some_and(|t| t.is_file()) && is_markdown(e.path()))
         .map(|e| e.into_path())
-        .filter(|p| p.is_file() && is_markdown(p))
         .collect();
     files.sort();
     files

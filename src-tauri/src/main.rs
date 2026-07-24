@@ -25,6 +25,10 @@ struct AppState {
     config: Config,
     store: Mutex<Store>,
     index: Mutex<SearchIndex>,
+    /// The file tree, kept alongside the index because both come from the same
+    /// walk. Caching it is what stops a cold start walking the repo twice —
+    /// once here for the index, once for the frontend's first `loadTree`.
+    tree: Mutex<FileNode>,
 }
 
 #[derive(clap::Parser)]
@@ -46,7 +50,7 @@ struct Cli {
 
 #[tauri::command]
 fn list_markdown_files(state: State<AppState>) -> FileNode {
-    fs_walk::scan(&state.repo_root, &state.config.extra_ignores)
+    state.tree.lock().unwrap().clone()
 }
 
 #[tauri::command]
@@ -74,10 +78,16 @@ fn fuzzy_search(state: State<AppState>, query: String) -> Vec<FileNode> {
     state.index.lock().unwrap().query(&query)
 }
 
+/// Re-walk the repo after a file appears or disappears, and hand the fresh tree
+/// straight back. The frontend used to follow this with `list_markdown_files`,
+/// which walked the whole repo a second time for the same answer.
 #[tauri::command]
-fn rebuild_index(state: State<AppState>) {
+fn rebuild_index(state: State<AppState>) -> FileNode {
     let paths = fs_walk::markdown_paths(&state.repo_root, &state.config.extra_ignores);
+    let tree = fs_walk::build_tree(&state.repo_root, &paths);
     *state.index.lock().unwrap() = SearchIndex::build(&state.repo_root, &paths);
+    *state.tree.lock().unwrap() = tree.clone();
+    tree
 }
 
 #[tauri::command]
@@ -283,6 +293,9 @@ fn main() {
     let index = SearchIndex::build(&repo_root, &paths);
     perf::mark("index_built");
 
+    let tree = fs_walk::build_tree(&repo_root, &paths);
+    perf::mark("tree_built");
+
     if cli.bench_startup {
         perf::mark("bench_startup_exit");
         return;
@@ -302,6 +315,7 @@ fn main() {
         config: cfg,
         store: Mutex::new(store),
         index: Mutex::new(index),
+        tree: Mutex::new(tree),
     };
 
     tauri::Builder::default()

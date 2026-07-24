@@ -135,25 +135,41 @@ never presented as the app's true timings. Second, the tests run against a gener
 set of documents — from small notes up to 2MB — that is identical every time, since
 a measurement is only comparable if what it measured is.
 
-The first run already explained both symptoms that prompted this work.
+The first run explained both symptoms that prompted the work, and the next session
+fixed them.
 
-Saving a file re-checks every highlight in it, and each check rebuilds a full index
-of the document from scratch — about 7 milliseconds per highlight on a 2MB file.
-Worse, a single save is being noticed **more than once** (about 1.6 times), so the
-document is redrawn repeatedly and the work piles up: with a hundred highlights,
-saving takes over five seconds before the reading view catches up.
+Saving a file re-checks every highlight in it, and each check used to rebuild a full
+index of the document from scratch — about 7 milliseconds per highlight on a 2MB
+file. Worse, a single save was being noticed **more than once** (about 1.6 times), so
+the document was redrawn repeatedly and the work piled up: with a hundred highlights,
+saving took over five seconds. The index is now built once per save instead of once
+per highlight, and repeated notifications for the same save are folded into one. That
+particular check is roughly **six times faster**, and a save is now noticed exactly
+once.
 
-Opening a large document takes about 1.4 seconds. Measuring it corrected an
-assumption we had: the app does scan the folder twice before drawing, but that only
-accounts for about 60 milliseconds. Almost all of the wait is converting the
-markdown into HTML and drawing it — a 512KB document becomes over a megabyte of
-HTML, because the syntax colouring writes styling into every single word of every
-code block.
+Opening a large document took about 1.4 seconds. Measuring it corrected an assumption
+we had: the app did scan the folder twice before drawing, but that only accounted for
+about 60 milliseconds. Almost all of the wait was converting the markdown into HTML —
+specifically the syntax colouring of code blocks, which turned out to be nearly the
+whole cost. Since each code block can be coloured independently, they are now done
+across all the machine's cores at once, which cut that work by about **three
+quarters**. The double folder scan is gone as well.
 
-The measurements also turned up a bug nobody had reported: if you highlight text
+Two ideas were measured and then deliberately *not* adopted. Scanning the folder
+across several cores is much faster on a large project but noticeably slower on a
+small one, because starting the extra workers costs more than it saves there. And a
+browser feature that skips drawing off-screen parts of a document made the first draw
+dramatically cheaper but made scrolling more expensive — and scrolling is what
+reading actually is. Both decisions are recorded with their numbers so they can be
+revisited rather than rediscovered.
+
+The measurements also turned up two bugs nobody had reported. If you highlight text
 that crosses a formatting boundary — part bold, part link, part code — the highlight
-usually fails to reattach and gets quietly marked stale, even though the selection
-was perfectly valid. That happens most of the time for such selections.
+usually fails to reattach and gets quietly marked stale, even though the selection was
+perfectly valid. And separately, about one highlight in fifteen reattaches to the
+*wrong* place: if the same wording appears more than once in a document, the app
+currently picks the first copy rather than the one you actually selected. Both are
+still open.
 
 None of this was known before it was measured, and two of our guesses about the
 causes were wrong.
@@ -184,6 +200,21 @@ causes were wrong.
 - **Regression** — something that used to be fast and now isn't.
 
 ## Recent updates
+
+- **2026-07-25** — The first round of speed work, using the measuring setup built the
+  day before. Six changes: saving a file now checks all its highlights against one
+  shared index instead of rebuilding that index for every single highlight; code
+  blocks are syntax-coloured across all the machine's cores at once instead of one
+  after another; repeated notifications for a single save are folded into one; the
+  folder is scanned once at startup rather than twice; and the two slowest pieces of
+  the reading view — reattaching highlights and moving through the file finder — were
+  rewritten to stop re-reading the whole document each time. Measured end to end
+  afterwards: **53 numbers improved and none got worse**. The largest single change
+  made re-checking a hundred highlights about six times faster; colouring a large
+  code-heavy document is about four times faster. Two further ideas were tested and
+  rejected on the numbers rather than adopted on instinct. Also found, and left for a
+  focused fix, a real bug: about one highlight in fifteen reattaches to the wrong copy
+  of repeated wording.
 
 - **2026-07-25** — dreamd has a public page for the first time, at
   **fongo.uk/dreamd**. One dark page, no screenshots: it opens on a starfield with

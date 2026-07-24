@@ -102,11 +102,18 @@ async function loadTheme() {
 
 // ---- file tree -----------------------------------------------------------
 async function loadTree() {
-  const root = await invoke("list_markdown_files");
+  paintTree(await invoke("list_markdown_files"));
+}
+
+// Split out so callers that already hold a fresh tree — `rebuild_index`
+// returns one — don't have to ask Rust to walk the repo again for it.
+function paintTree(root) {
   const tree = $("tree");
   tree.innerHTML = "";
   // Render the root's children directly (skip the root dir node itself).
   for (const child of root.children) tree.appendChild(renderNode(child));
+  activeTreeItem = null;
+  markActiveInTree(currentFile);
 }
 
 function renderNode(node) {
@@ -146,10 +153,21 @@ function renderNode(node) {
   return item;
 }
 
+// The active file is tracked by reference rather than found by querying every
+// file node: on a 5000-file repo the query-and-toggle form did 5000 class
+// writes — 5000 style invalidations — on every single file open.
+let activeTreeItem = null;
+
 function markActiveInTree(path) {
-  document.querySelectorAll(".tree-item.file").forEach((el) => {
-    el.classList.toggle("active", el.dataset.path === path);
-  });
+  if (activeTreeItem) activeTreeItem.classList.remove("active");
+  activeTreeItem = path
+    ? $("tree").querySelector(`.tree-item.file[data-path="${cssEscape(path)}"]`)
+    : null;
+  if (activeTreeItem) activeTreeItem.classList.add("active");
+}
+
+function cssEscape(s) {
+  return window.CSS && CSS.escape ? CSS.escape(s) : s.replace(/["\\]/g, "\\$&");
 }
 
 // ---- open / render -------------------------------------------------------
@@ -242,13 +260,106 @@ function normalizePath(p) {
 }
 
 // ---- highlights ----------------------------------------------------------
+// Above this many placeable highlights, flattening the document once beats
+// walking it per highlight. Below it, a walk that stops at the first match wins
+// — flattening a 2MB document costs ~4ms whether there is one quote or five
+// hundred. Measured crossover in the Chromium harness is around 5.
+const SCAN_THRESHOLD = 4;
+
 function applyHighlights(list) {
   staleRail.innerHTML = "";
+  if (!list.length) return;
+
+  const active = list.reduce((n, h) => n + (h.state === "stale" ? 0 : 1), 0);
+  // Building a fresh TreeWalker per highlight and re-walking from the top of a
+  // 105k-node document is where `apply_highlights` spent its ~350ms at 100
+  // highlights.
+  const doc = active > SCAN_THRESHOLD ? scanTextNodes(contentEl) : null;
+  const placements = [];
+
   for (const h of list) {
     if (h.state === "stale") { addStaleChip(h); continue; }
-    const ok = wrapByText(contentEl, h.quote, h.id, false);
-    if (!ok) addStaleChip(h); // active but unlocatable in the DOM
+    const quote = h.quote.trim();
+    if (!doc) {
+      // Few enough to place as we go; wrapping can only disturb text nodes we
+      // have already passed.
+      if (!wrapByWalk(contentEl, quote, h.id)) addStaleChip(h);
+      continue;
+    }
+    const p = locateInNodes(doc, quote);
+    if (p) placements.push({ ...p, id: h.id });
+    else addStaleChip(h); // active but unlocatable in the DOM
   }
+
+  // Wrapping splits a text node, which invalidates every offset computed after
+  // it — so apply back to front and nothing needs recomputing.
+  placements.sort((a, b) => b.at - a.at);
+  for (const p of placements) {
+    const range = document.createRange();
+    range.setStart(p.node, p.offset);
+    range.setEnd(p.node, p.offset + p.length);
+    wrapRange(range, p.id, false);
+  }
+}
+
+// Wrap the first occurrence of `quote` that lies within a single text node,
+// stopping the walk as soon as it is found. Returns true if it was placed.
+function wrapByWalk(container, quote, id) {
+  if (!quote) return false;
+  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+  for (let node; (node = walker.nextNode()); ) {
+    const idx = node.nodeValue.indexOf(quote);
+    if (idx < 0) continue;
+    const range = document.createRange();
+    range.setStart(node, idx);
+    range.setEnd(node, idx + quote.length);
+    wrapRange(range, id, false);
+    return true;
+  }
+  return false;
+}
+
+// Flatten the rendered document into one string plus the text nodes behind it,
+// so quotes can be found with a native string search instead of a DOM walk.
+function scanTextNodes(container) {
+  const nodes = [];
+  const starts = [];
+  const parts = [];
+  let total = 0;
+  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+  for (let n; (n = walker.nextNode()); ) {
+    nodes.push(n);
+    starts.push(total);
+    parts.push(n.nodeValue);
+    total += n.nodeValue.length;
+  }
+  return { nodes, starts, text: parts.join("") };
+}
+
+// First occurrence of `needle` that lies wholly within a single text node,
+// found without re-walking the DOM. Occurrences straddling a node boundary are
+// skipped, not failed — matching the previous per-node search exactly.
+function locateInNodes(doc, needle) {
+  if (!needle) return null;
+  for (let at = doc.text.indexOf(needle); at >= 0; at = doc.text.indexOf(needle, at + 1)) {
+    const i = nodeIndexAt(doc.starts, at);
+    const node = doc.nodes[i];
+    if (at + needle.length <= doc.starts[i] + node.nodeValue.length) {
+      return { node, offset: at - doc.starts[i], length: needle.length, at };
+    }
+  }
+  return null;
+}
+
+// Index of the last entry in the sorted `starts` that is <= `at`.
+function nodeIndexAt(starts, at) {
+  let lo = 0, hi = starts.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (starts[mid] <= at) lo = mid;
+    else hi = mid - 1;
+  }
+  return lo;
 }
 
 function addStaleChip(h) {
@@ -267,26 +378,6 @@ function addStaleChip(h) {
   row.appendChild(keep); row.appendChild(drop);
   chip.appendChild(row);
   staleRail.appendChild(chip);
-}
-
-// Wrap the first exact occurrence of `quote` (within a single text node) in a
-// <mark>. Returns true if it was placed.
-function wrapByText(container, quote, id, stale) {
-  const needle = quote.trim();
-  if (!needle) return false;
-  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
-  let node;
-  while ((node = walker.nextNode())) {
-    const idx = node.nodeValue.indexOf(needle);
-    if (idx >= 0) {
-      const range = document.createRange();
-      range.setStart(node, idx);
-      range.setEnd(node, idx + needle.length);
-      wrapRange(range, id, stale);
-      return true;
-    }
-  }
-  return false;
 }
 
 function wrapRange(range, id, stale) {
@@ -451,11 +542,16 @@ function openPalette() {
 }
 function closePalette() { $("palette-overlay").classList.remove("open"); }
 
+// Monotonic id so a slow query that resolves after a faster later one can't
+// paint stale results over them.
+let paletteSeq = 0;
+
 async function runPalette(q) {
-  // Wired straight to `oninput` with no debounce, so this whole span runs once
-  // per keystroke on the main thread (fix B10).
   const t0 = perf.now();
-  paletteResults = await invoke("fuzzy_search", { query: q });
+  const seq = ++paletteSeq;
+  const results = await invoke("fuzzy_search", { query: q });
+  if (seq !== paletteSeq) return; // superseded by a later keystroke
+  paletteResults = results;
   perf.span("ipc_fuzzy_search", t0);
   paletteSel = 0;
   const t = perf.now();
@@ -463,23 +559,33 @@ async function runPalette(q) {
   perf.span("palette_render", t);
   perf.span("palette_keystroke", t0);
 }
+
+// The rendered rows, kept so moving the selection doesn't rebuild all 200.
+let paletteRows = [];
+
 function renderPalette() {
   const box = $("palette-results");
   box.innerHTML = "";
-  paletteResults.forEach((n, i) => {
+  paletteRows = paletteResults.map((n, i) => {
     const el = document.createElement("div");
     el.className = "pr" + (i === paletteSel ? " sel" : "");
     el.innerHTML = `<div>${escapeHtml(n.name)}</div><div class="rel">${escapeHtml(n.rel)}</div>`;
     el.onclick = () => { closePalette(); openFile(n.path); };
     box.appendChild(el);
+    return el;
   });
 }
 function movePalette(d) {
   if (!paletteResults.length) return;
+  // Two class writes instead of rebuilding every row: the arrow key used to
+  // cost 5x a character keystroke for a change to one element's class.
+  paletteRows[paletteSel]?.classList.remove("sel");
   paletteSel = (paletteSel + d + paletteResults.length) % paletteResults.length;
-  renderPalette();
-  const sel = document.querySelector(".pr.sel");
-  if (sel) sel.scrollIntoView({ block: "nearest" });
+  const sel = paletteRows[paletteSel];
+  if (sel) {
+    sel.classList.add("sel");
+    sel.scrollIntoView({ block: "nearest" });
+  }
 }
 
 // ---- file options menu + delete ------------------------------------------
@@ -545,15 +651,15 @@ function wireEvents() {
   listen("file-added", async () => {
     perf.at("watcher_event");
     const t0 = perf.now();
-    await invoke("rebuild_index");
-    await loadTree();
+    // `rebuild_index` hands back the tree from the walk it just did; asking for
+    // it separately walked the whole repo a second time.
+    paintTree(await invoke("rebuild_index"));
     perf.span("tree_rebuild", t0);
   });
   listen("file-removed", async (e) => {
     perf.at("watcher_event");
     const t0 = perf.now();
-    await invoke("rebuild_index");
-    await loadTree();
+    paintTree(await invoke("rebuild_index"));
     perf.span("tree_rebuild", t0);
     if (e.payload && e.payload.path === currentFile) {
       currentFile = null;
@@ -692,7 +798,14 @@ function wireTooltips() {
   document.addEventListener("focusout", hideTip);
   // A click means the user knows what the button does; get out of the way.
   document.addEventListener("mousedown", hideTip, true);
-  window.addEventListener("scroll", hideTip, true);
+  // Capture-phase, so this fires for every scroll of the reading pane. Guarded
+  // and passive so scrolling a document with no tooltip showing does no work
+  // and never blocks the compositor.
+  window.addEventListener(
+    "scroll",
+    () => { if (tipTarget) hideTip(); },
+    { capture: true, passive: true }
+  );
 }
 
 function scheduleTip(el) {
@@ -750,12 +863,11 @@ function matchCombo(e, combo) {
 }
 
 // ---- utils ---------------------------------------------------------------
+const ESCAPES = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" };
+
+// One pass, not four: this runs twice per palette row, 200 rows per keystroke.
 function escapeHtml(s) {
-  return String(s)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+  return String(s).replace(/[&<>"]/g, (c) => ESCAPES[c]);
 }
 
 let toastTimer = null;

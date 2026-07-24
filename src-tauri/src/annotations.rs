@@ -137,12 +137,15 @@ impl Store {
     /// resolves are re-anchored (and stay Active even if lines shifted);
     /// those whose quote no longer resolves become Stale.
     pub fn reanchor_file(&mut self, file_path: &str, source: &str) -> Vec<Highlight> {
+        // One index for the whole file, not one per highlight — see
+        // [`markdown::SourceIndex`].
+        let mut index = markdown::SourceIndex::new(source);
         for h in self
             .highlights
             .iter_mut()
             .filter(|h| h.file_path == file_path)
         {
-            match markdown::locate(source, &h.prefix, &h.quote, &h.suffix) {
+            match index.locate(&h.prefix, &h.quote, &h.suffix) {
                 Some(loc) => {
                     h.line_start = loc.line_start;
                     h.line_end = loc.line_end;
