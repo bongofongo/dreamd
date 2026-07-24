@@ -1,5 +1,122 @@
 # Session log
 
+## 2026-07-24 — Rust debloat pass
+
+A pure simplification sweep over `src-tauri/`: no behavior changes, no new
+features, just deleting duplication. Net −32 lines across `src/`, and one of the
+deletions turned out to be worth 16–22% on the whole search path.
+
+### What happened
+
+1. **`fs_walk::scan` and `markdown_paths` were two copies of the same walker.**
+   Each built its own `ignore::WalkBuilder`, applied the same `extra_ignores`
+   overrides, filtered to markdown and sorted. `scan` is now
+   `build_tree(root, &markdown_paths(root, ignores))`. The explicit
+   `.git_global(true).git_ignore(true).git_exclude(true)` on the old `scan` were
+   deleted because they are `WalkBuilder`'s defaults — they read as meaningful
+   configuration and were not. `build_tree`'s nested `Dir`/`to_node` helpers were
+   lifted to module level, `rel_of` extracted (it was inlined twice), and the
+   manual `comps[..len-1]` + `.last().unwrap()` replaced with `split_last`.
+   58 lines gone from that file alone.
+
+2. **`SearchIndex` lost its `by_rel: HashMap<String, usize>`.** `Pattern::match_list`
+   is generic over `T: AsRef<str>`, so `impl AsRef<str> for Entry` makes nucleo
+   hand back the entry itself instead of a `&str` we then looked up again — the map
+   existed only to undo that. This also fixed a latent bug: two files with the same
+   `rel` collided in the map and one was silently unreachable. `node()` became
+   `impl From<&Entry> for FileNode`. **This is the one change with a measured
+   payoff** — see State.
+
+3. **`is_markdown` existed three times**, verbatim, in `lib.rs`, `fs_walk.rs` and
+   `watcher.rs`. One copy now, in `lib.rs`.
+
+4. **`Store::stack_pairs` was a character-for-character copy of `selected_pairs`.**
+   It's now `self.selected_pairs(&self.stack)`. Added a private `Store::find` for
+   the id lookup repeated in `get` and `selected_pairs`.
+
+5. **`markdown::locate` tiers 1 and 2 built the same `Location` twice** with
+   slightly different arithmetic; extracted `span(source, start, len)`. Both
+   `.unwrap()`s in `render`'s code-block buffer are gone — the guard-then-unwrap
+   pattern (`Event::Text(t) if code_buf.is_some() => code_buf.as_mut().unwrap()`)
+   became a match on `&mut code_buf` / `code_buf.take()`, which is the same
+   semantics with the impossible case expressed as a branch instead of a panic.
+
+6. **`send.rs`**: four `push_str(&format!(...))` calls became `write!` (no
+   throwaway `String` per line); two identical tmux exit-status checks became
+   `tmux_run(args, what)`; `detect_claude_pane`'s manual `splitn(3)` plus three
+   `unwrap_or("")` plus a `format!` became one `split_once` inside a `find_map`.
+   `copy_clipboard` was made `pub` because `main.rs` carried a second copy of it.
+
+7. Smaller: `resolve_repo_root`'s hand-rolled parent loop → `ancestors()`;
+   `map_or`, `is_ok_and`, nested or-patterns (`Some("md" | "markdown" | ...)`), and
+   a dead `cfg.clone()` in `main`.
+
+8. **Ran `cargo fmt` on the repo.** It was already failing `--check` on `main`
+   before this session — four bench files and several `src/` files — which is why
+   `benches/` appears in the diff of a session that changed no bench logic.
+
+### Mistakes & deviations
+
+The refactor itself ran clean, but the *verification* did not, twice:
+
+- **`perf-quick` reported `reanchor_today/1` and `/10` up 6–9%, reproducibly**,
+  across two runs. Reproducible is supposed to mean real. It wasn't: a direct
+  criterion A/B of the stashed old code against the new gave −3.3%/−4.2%/+1.8%,
+  all `p > 0.05`. The tell was mechanism — `reanchor_file` is untouched, and
+  `locate_single/today` hadn't moved — plus `meta.load1` of 4.6 on 8 cores.
+- **`perf-pass` then reported `render/code/512k` +14.7%, `render/code/128k` +13.1%,
+  `render/table/512k` +15.2%, `walk_scan/500` +7.6%** — past the 15% regression
+  line in one case. Same story: re-running the *identical new code* on a quieter
+  machine gave 764ms against a 779ms baseline, i.e. −2%, and an old-vs-new A/B put
+  every render and walk figure inside ±3%. Machine load, not the edit.
+
+The rule this reinforces: on a loaded machine the tier diff is a screening test,
+not a verdict. A flagged row needs either a plausible mechanism in the diff or a
+back-to-back A/B against the stashed old code before it gets called a regression.
+
+Because there are no unit tests, correctness was established by differential
+testing rather than by the build: a throwaway `examples/_abcheck.rs` dumped
+`render` over six real documents, `scan` (with and without `extra_ignores`),
+`markdown_paths`, seven `query` cases and seven `locate` cases covering all three
+tiers, and `assemble_query` over stale / multi-line / out-of-root / unannotated
+highlights. Every byte identical between stashed-old and new. The harness was
+deleted afterwards rather than committed — it asserts nothing, it only diffs.
+
+Also corrected a comment my own change had made stale: `benches/walk.rs` said
+`markdown_paths` and `scan` "are the two duplicated halves" and that fix B4 is
+about merging them. B4 is actually about the *startup pair* — `main()` and
+`list_markdown_files` each walking the repo — which this session did not touch.
+
+### State
+
+`cargo build` clean with and without `--features perf`;
+`cargo clippy --all-targets --all-features -- -D warnings` clean; `cargo fmt
+--check` clean (for the first time). `cargo test` runs **0 tests** — there are
+still no `#[cfg(test)]` blocks, so it proves compilation and nothing else.
+
+`perf-pass` measured, results in `perf/results/pass-cdf24d2-20260724-233207.json`:
+
+- **Improved, real, consistent across every size**: `index_build` −18%/−20%/−18%
+  (10/500/5000 files), `query/500` −17%, `keystrokes/10` −22%, `keystrokes/500`
+  −16%. All of it the `by_rel` HashMap removal.
+- **Nothing regressed.** Every slower row was disproven by A/B (above).
+- The four `XX` rows were all `chromium.highlight.*.apply_ms`, which is
+  `ui/app.js` — zero JS changed this session, the Chromium noise floor is 27%, and
+  one of them was a 190% "move" on a single-highlight sample. Chromium-relative
+  numbers, not WKWebView.
+
+Open, and **not** caused by this session: the `pass` tier's entire `real.*` group
+now has nothing to compare against. Commit `cdf24d2` renamed those metric keys
+(`real.loop.h10` → `real.loop.debug-h10`, `real.startup.*` →
+`real.startup.debug.*`) so the pass tier emits `debug`-prefixed paths while
+`baseline.json` still holds the release-tier names — so they print as `*` (no
+baseline) and their old names print under `not measured this run`. That includes
+`events_per_save` and `save_to_paint_ms`, which `perf-pass` itself calls the most
+product-relevant numbers it has. Needs a `perf-deep --update-baseline`, or keys
+that don't encode the profile, before those rows mean anything again.
+
+`perf/baseline.json` untouched, as required.
+
 ## 2026-07-24 — performance measurement framework
 
 Built the three-tier performance harness (`perf/`) and captured a first baseline.

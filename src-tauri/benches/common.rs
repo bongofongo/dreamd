@@ -27,7 +27,9 @@ fn missing(what: &str) -> ! {
 
 /// One document from the corpus, e.g. `doc("mixed", "2m")`.
 pub fn doc(variant: &str, size: &str) -> String {
-    let p = corpus_dir().join("docs").join(format!("{variant}-{size}.md"));
+    let p = corpus_dir()
+        .join("docs")
+        .join(format!("{variant}-{size}.md"));
     std::fs::read_to_string(&p).unwrap_or_else(|_| missing(&p.display().to_string()))
 }
 

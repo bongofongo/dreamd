@@ -24,7 +24,7 @@ pub const DEFAULT_THEME: &str = include_str!("../../ui/theme.css");
 pub fn is_markdown(path: &Path) -> bool {
     matches!(
         path.extension().and_then(|e| e.to_str()),
-        Some("md") | Some("markdown") | Some("mdown") | Some("mkd")
+        Some("md" | "markdown" | "mdown" | "mkd")
     )
 }
 
@@ -34,14 +34,9 @@ pub fn resolve_repo_root(arg: Option<PathBuf>) -> PathBuf {
     let start =
         arg.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
     let start = start.canonicalize().unwrap_or(start);
-    let mut cur = start.as_path();
-    loop {
-        if cur.join(".git").exists() {
-            return cur.to_path_buf();
-        }
-        match cur.parent() {
-            Some(p) => cur = p,
-            None => break,
+    for dir in start.ancestors() {
+        if dir.join(".git").exists() {
+            return dir.to_path_buf();
         }
     }
     start

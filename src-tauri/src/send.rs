@@ -8,9 +8,10 @@
 //!   2. otherwise -> copy the query to the clipboard (+ keep the temp file) so
 //!      the user can paste it into Claude.ai / the desktop app / any agent.
 
-use crate::annotations::Pair;
+use crate::annotations::{HighlightState, Pair};
 use crate::config::Config;
 use serde::Serialize;
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -30,34 +31,39 @@ pub struct SendResult {
 /// Build the query markdown from the selected pairs.
 pub fn assemble_query(repo_root: &Path, pairs: &[Pair]) -> String {
     let mut out = String::new();
-    out.push_str("# dreamd query\n\n");
-    out.push_str(&format!("Repo root: `{}`\n\n", repo_root.display()));
+    let _ = write!(
+        out,
+        "# dreamd query\n\nRepo root: `{}`\n\n",
+        repo_root.display()
+    );
     out.push_str(
         "The following are highlighted passages (evidence) from markdown in this \
          repo, each paired with a question/comment. Answer each, grounding \
          against the project you already have context on.\n\n",
     );
     for (i, p) in pairs.iter().enumerate() {
-        let rel = Path::new(&p.highlight.file_path)
+        let h = &p.highlight;
+        let rel = Path::new(&h.file_path)
             .strip_prefix(repo_root)
             .map(|r| r.to_string_lossy().into_owned())
-            .unwrap_or_else(|_| p.highlight.file_path.clone());
-        let loc = if p.highlight.line_start == p.highlight.line_end {
-            format!("{}:{}", rel, p.highlight.line_start)
-        } else {
-            format!("{}:{}-{}", rel, p.highlight.line_start, p.highlight.line_end)
-        };
-        out.push_str(&format!("## {}. {}\n\n", i + 1, loc));
-        if matches!(p.highlight.state, crate::annotations::HighlightState::Stale) {
-            out.push_str("> _(note: this highlight is stale — the source text may have changed)_\n\n");
+            .unwrap_or_else(|_| h.file_path.clone());
+        let _ = write!(out, "## {}. {rel}:{}", i + 1, h.line_start);
+        if h.line_end != h.line_start {
+            let _ = write!(out, "-{}", h.line_end);
+        }
+        out.push_str("\n\n");
+        if h.state == HighlightState::Stale {
+            out.push_str(
+                "> _(note: this highlight is stale — the source text may have changed)_\n\n",
+            );
         }
         out.push_str("**Evidence:**\n\n");
-        for line in p.highlight.quote.lines() {
+        for line in h.quote.lines() {
             out.push_str("> ");
             out.push_str(line);
             out.push('\n');
         }
-        out.push_str(&format!("\n**Question:** {}\n\n", p.annotation));
+        let _ = write!(out, "\n**Question:** {}\n\n", p.annotation);
     }
     out
 }
@@ -72,34 +78,40 @@ fn write_temp(content: &str) -> std::io::Result<PathBuf> {
 
 fn tmux_available() -> bool {
     Command::new("tmux")
-        .arg("list-panes")
-        .arg("-a")
+        .args(["list-panes", "-a"])
         .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+        .is_ok_and(|o| o.status.success())
 }
 
 /// Find a tmux pane whose running command or title mentions `claude`.
 fn detect_claude_pane() -> Option<String> {
     let out = Command::new("tmux")
-        .args(["list-panes", "-a", "-F", "#{pane_id}\t#{pane_current_command}\t#{pane_title}"])
+        .args([
+            "list-panes",
+            "-a",
+            "-F",
+            "#{pane_id}\t#{pane_current_command}\t#{pane_title}",
+        ])
         .output()
         .ok()?;
     if !out.status.success() {
         return None;
     }
     let text = String::from_utf8_lossy(&out.stdout);
-    for line in text.lines() {
-        let mut parts = line.splitn(3, '\t');
-        let id = parts.next().unwrap_or("");
-        let cmd = parts.next().unwrap_or("");
-        let title = parts.next().unwrap_or("");
-        let hay = format!("{cmd} {title}").to_lowercase();
-        if hay.contains("claude") && !id.is_empty() {
-            return Some(id.to_string());
-        }
+    text.lines().find_map(|line| {
+        // "<pane_id>\t<current_command>\t<title>"
+        let (id, rest) = line.split_once('\t')?;
+        let matches = !id.is_empty() && rest.to_lowercase().contains("claude");
+        matches.then(|| id.to_string())
+    })
+}
+
+fn tmux_run(args: &[&str], what: &str) -> std::io::Result<()> {
+    if Command::new("tmux").args(args).status()?.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other(format!("tmux {what} failed")))
     }
-    None
 }
 
 fn tmux_send(pane: &str, temp_path: &Path) -> std::io::Result<()> {
@@ -109,24 +121,17 @@ fn tmux_send(pane: &str, temp_path: &Path) -> std::io::Result<()> {
         "Please read @{} and respond to each question, grounding against this repo.",
         temp_path.display()
     );
-    let status = Command::new("tmux")
-        .args(["send-keys", "-t", pane, "-l", &prompt])
-        .status()?;
-    if !status.success() {
-        return Err(std::io::Error::other("tmux send-keys (text) failed"));
-    }
-    let status = Command::new("tmux")
-        .args(["send-keys", "-t", pane, "Enter"])
-        .status()?;
-    if !status.success() {
-        return Err(std::io::Error::other("tmux send-keys (Enter) failed"));
-    }
-    Ok(())
+    tmux_run(
+        &["send-keys", "-t", pane, "-l", &prompt],
+        "send-keys (text)",
+    )?;
+    tmux_run(&["send-keys", "-t", pane, "Enter"], "send-keys (Enter)")
 }
 
-fn copy_clipboard(content: &str) -> Result<(), String> {
+/// Copy `content` to the system clipboard. Also the fallback delivery path.
+pub fn copy_clipboard(content: &str) -> Result<(), String> {
     let mut cb = arboard::Clipboard::new().map_err(|e| e.to_string())?;
-    cb.set_text(content.to_string()).map_err(|e| e.to_string())
+    cb.set_text(content).map_err(|e| e.to_string())
 }
 
 /// One-button send. Resolves delivery automatically.

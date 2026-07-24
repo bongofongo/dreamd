@@ -2,21 +2,15 @@
 //! open preview stay live while the user edits in Neovim in another pane. Also
 //! watches the active theme CSS for hot-reload.
 
+use crate::is_markdown;
 use notify::{EventKind, RecursiveMode, Watcher};
 use serde::Serialize;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use tauri::{AppHandle, Emitter};
 
 #[derive(Clone, Serialize)]
 struct PathPayload {
     path: String,
-}
-
-fn is_markdown(path: &Path) -> bool {
-    matches!(
-        path.extension().and_then(|e| e.to_str()),
-        Some("md") | Some("markdown") | Some("mdown") | Some("mkd")
-    )
 }
 
 /// Start watching in a background thread that owns the watcher for its lifetime.
@@ -40,11 +34,7 @@ pub fn spawn(app: AppHandle, repo_root: PathBuf, theme_path: Option<PathBuf>) {
             let _ = watcher.watch(tp, RecursiveMode::NonRecursive);
         }
 
-        for res in rx {
-            let event = match res {
-                Ok(ev) => ev,
-                Err(_) => continue,
-            };
+        for event in rx.into_iter().flatten() {
             for path in &event.paths {
                 // Theme hot-reload.
                 if theme_path.as_deref() == Some(path.as_path()) {

@@ -8,45 +8,25 @@
 use crate::fs_walk::FileNode;
 use nucleo::pattern::{CaseMatching, Normalization, Pattern};
 use nucleo::{Config, Matcher};
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+/// One indexed file. Matching is against `rel`, hence the `AsRef<str>` impl:
+/// it lets `match_list` hand back the entry itself rather than a path string
+/// we would then have to look up again.
 struct Entry {
     name: String,
     path: String,
     rel: String,
 }
 
-pub struct SearchIndex {
-    entries: Vec<Entry>,
-    by_rel: HashMap<String, usize>,
+impl AsRef<str> for Entry {
+    fn as_ref(&self) -> &str {
+        &self.rel
+    }
 }
 
-impl SearchIndex {
-    pub fn build(repo_root: &Path, paths: &[PathBuf]) -> Self {
-        let mut entries = Vec::with_capacity(paths.len());
-        let mut by_rel = HashMap::new();
-        for p in paths {
-            let rel = p
-                .strip_prefix(repo_root)
-                .unwrap_or(p)
-                .to_string_lossy()
-                .into_owned();
-            let name = p
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            by_rel.insert(rel.clone(), entries.len());
-            entries.push(Entry {
-                name,
-                path: p.to_string_lossy().into_owned(),
-                rel,
-            });
-        }
-        Self { entries, by_rel }
-    }
-
-    fn node(&self, e: &Entry) -> FileNode {
+impl From<&Entry> for FileNode {
+    fn from(e: &Entry) -> Self {
         FileNode {
             name: e.name.clone(),
             path: e.path.clone(),
@@ -55,21 +35,50 @@ impl SearchIndex {
             children: Vec::new(),
         }
     }
+}
+
+pub struct SearchIndex {
+    entries: Vec<Entry>,
+}
+
+impl SearchIndex {
+    pub fn build(repo_root: &Path, paths: &[PathBuf]) -> Self {
+        let entries = paths
+            .iter()
+            .map(|p| Entry {
+                name: p
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+                path: p.to_string_lossy().into_owned(),
+                rel: p
+                    .strip_prefix(repo_root)
+                    .unwrap_or(p)
+                    .to_string_lossy()
+                    .into_owned(),
+            })
+            .collect();
+        Self { entries }
+    }
 
     /// Ranked fuzzy matches. Empty query returns the first slice of the index.
     pub fn query(&self, q: &str) -> Vec<FileNode> {
         const LIMIT: usize = 200;
         if q.trim().is_empty() {
-            return self.entries.iter().take(LIMIT).map(|e| self.node(e)).collect();
+            return self
+                .entries
+                .iter()
+                .take(LIMIT)
+                .map(FileNode::from)
+                .collect();
         }
         let mut matcher = Matcher::new(Config::DEFAULT);
         let pattern = Pattern::parse(q, CaseMatching::Smart, Normalization::Smart);
-        let items = self.entries.iter().map(|e| e.rel.as_str());
-        let matches = pattern.match_list(items, &mut matcher);
-        matches
+        pattern
+            .match_list(&self.entries, &mut matcher)
             .into_iter()
             .take(LIMIT)
-            .filter_map(|(rel, _score)| self.by_rel.get(rel).map(|&i| self.node(&self.entries[i])))
+            .map(|(e, _score)| FileNode::from(e))
             .collect()
     }
 }

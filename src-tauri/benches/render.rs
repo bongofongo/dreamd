@@ -41,11 +41,9 @@ fn bench_render(c: &mut Criterion) {
                 _ => 100,
             });
             g.throughput(Throughput::Bytes(src.len() as u64));
-            g.bench_with_input(
-                BenchmarkId::new(*variant, *size),
-                &src,
-                |b, src| b.iter(|| black_box(markdown::render(black_box(src)))),
-            );
+            g.bench_with_input(BenchmarkId::new(*variant, *size), &src, |b, src| {
+                b.iter(|| black_box(markdown::render(black_box(src))))
+            });
         }
     }
     g.finish();

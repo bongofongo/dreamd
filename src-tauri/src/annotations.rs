@@ -96,8 +96,12 @@ impl Store {
         self.stack.retain(|x| *x != id);
     }
 
+    fn find(&self, id: u64) -> Option<&Highlight> {
+        self.highlights.iter().find(|h| h.id == id)
+    }
+
     pub fn get(&self, id: u64) -> Option<Highlight> {
-        self.highlights.iter().find(|h| h.id == id).cloned()
+        self.find(id).cloned()
     }
 
     /// All highlights for a given file (for rendering the overlay).
@@ -111,22 +115,14 @@ impl Store {
 
     /// The current send stack as (highlight, annotation) pairs, in order.
     pub fn stack_pairs(&self) -> Vec<Pair> {
-        self.stack
-            .iter()
-            .filter_map(|id| self.highlights.iter().find(|h| h.id == *id))
-            .filter_map(|h| {
-                h.annotation.clone().map(|a| Pair {
-                    highlight: h.clone(),
-                    annotation: a,
-                })
-            })
-            .collect()
+        self.selected_pairs(&self.stack)
     }
 
-    /// Pairs for an explicit id selection (used when the user cherry-picks).
+    /// Pairs for an explicit id selection, in the order given. Ids with no
+    /// highlight, or a highlight with no annotation, are skipped.
     pub fn selected_pairs(&self, ids: &[u64]) -> Vec<Pair> {
         ids.iter()
-            .filter_map(|id| self.highlights.iter().find(|h| h.id == *id))
+            .filter_map(|id| self.find(*id))
             .filter_map(|h| {
                 h.annotation.clone().map(|a| Pair {
                     highlight: h.clone(),
@@ -141,7 +137,11 @@ impl Store {
     /// resolves are re-anchored (and stay Active even if lines shifted);
     /// those whose quote no longer resolves become Stale.
     pub fn reanchor_file(&mut self, file_path: &str, source: &str) -> Vec<Highlight> {
-        for h in self.highlights.iter_mut().filter(|h| h.file_path == file_path) {
+        for h in self
+            .highlights
+            .iter_mut()
+            .filter(|h| h.file_path == file_path)
+        {
             match markdown::locate(source, &h.prefix, &h.quote, &h.suffix) {
                 Some(loc) => {
                     h.line_start = loc.line_start;

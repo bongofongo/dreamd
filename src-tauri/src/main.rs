@@ -89,16 +89,13 @@ fn add_highlight(
     suffix: String,
 ) -> Result<u64, String> {
     let source = read_source(&file_path)?;
-    let (line_start, line_end) = match markdown::locate(&source, &prefix, &quote, &suffix) {
-        Some(loc) => (loc.line_start, loc.line_end),
-        None => (0, 0),
-    };
-    let id = state
+    let (line_start, line_end) = markdown::locate(&source, &prefix, &quote, &suffix)
+        .map_or((0, 0), |loc| (loc.line_start, loc.line_end));
+    Ok(state
         .store
         .lock()
         .unwrap()
-        .add_highlight(file_path, line_start, line_end, quote, prefix, suffix);
-    Ok(id)
+        .add_highlight(file_path, line_start, line_end, quote, prefix, suffix))
 }
 
 #[tauri::command]
@@ -167,18 +164,17 @@ fn stack_query_text(state: State<AppState>) -> String {
 
 #[tauri::command]
 fn get_theme_css(state: State<AppState>) -> String {
-    if let Some(p) = &state.config.theme_css {
-        if let Ok(css) = std::fs::read_to_string(p) {
-            return css;
-        }
-    }
-    DEFAULT_THEME.to_string()
+    state
+        .config
+        .theme_css
+        .as_ref()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .unwrap_or_else(|| DEFAULT_THEME.to_string())
 }
 
 #[tauri::command]
 fn copy_to_clipboard(text: String) -> Result<(), String> {
-    let mut cb = arboard::Clipboard::new().map_err(|e| e.to_string())?;
-    cb.set_text(text).map_err(|e| e.to_string())
+    send::copy_clipboard(&text)
 }
 
 /// Move a file to the OS trash. The path must resolve to inside the repo root.
@@ -204,7 +200,7 @@ fn open_external(url: String) -> Result<(), String> {
     // schemes to the OS opener.
     let scheme = url.split_once(':').map(|(s, _)| s.to_ascii_lowercase());
     match scheme.as_deref() {
-        Some("http") | Some("https") | Some("mailto") => open::that(&url).map_err(|e| e.to_string()),
+        Some("http" | "https" | "mailto") => open::that(&url).map_err(|e| e.to_string()),
         Some(other) => Err(format!("refusing to open scheme: {other}")),
         None => Err("refusing to open URL without a scheme".into()),
     }
@@ -248,19 +244,26 @@ fn seed_highlights(store: &mut Store, file: &Option<String>) {
         eprintln!("perf: seed fixture {path} is not a JSON array");
         return;
     };
-    let n = fixtures.len();
-    for f in fixtures {
+    let mut seeded = 0;
+    for f in &fixtures {
         let quote = f
             .get("rendered")
             .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .to_string();
+            .unwrap_or_default();
         if quote.is_empty() {
             continue;
         }
-        store.add_highlight(target.clone(), 0, 0, quote, String::new(), String::new());
+        store.add_highlight(
+            target.clone(),
+            0,
+            0,
+            quote.to_string(),
+            String::new(),
+            String::new(),
+        );
+        seeded += 1;
     }
-    eprintln!("perf: seeded {n} highlights against {target}");
+    eprintln!("perf: seeded {seeded} highlights against {target}");
 }
 
 fn main() {
@@ -296,7 +299,7 @@ fn main() {
     let state = AppState {
         repo_root: repo_root.clone(),
         initial_file: initial,
-        config: cfg.clone(),
+        config: cfg,
         store: Mutex::new(store),
         index: Mutex::new(index),
     };

@@ -50,7 +50,10 @@ fn highlight_code(lang: &str, code: &str) -> String {
 }
 
 fn fallback_code(code: &str) -> String {
-    format!("<pre class=\"code\"><code>{}</code></pre>", escape_html(code))
+    format!(
+        "<pre class=\"code\"><code>{}</code></pre>",
+        escape_html(code)
+    )
 }
 
 fn escape_html(s: &str) -> String {
@@ -75,16 +78,18 @@ pub fn render(source: &str) -> String {
                 };
                 code_buf = Some((lang, String::new()));
             }
-            Event::Text(t) if code_buf.is_some() => {
-                code_buf.as_mut().unwrap().1.push_str(&t);
-            }
-            Event::End(TagEnd::CodeBlock) if code_buf.is_some() => {
-                let (lang, text) = code_buf.take().unwrap();
-                events.push(Event::Html(highlight_code(&lang, &text).into()));
-            }
+            // Inside a fence, text accumulates into the buffer instead of
+            // being emitted; the whole block is replaced by syntect's HTML.
+            Event::Text(t) => match &mut code_buf {
+                Some((_, buf)) => buf.push_str(&t),
+                None => events.push(Event::Text(t)),
+            },
+            Event::End(TagEnd::CodeBlock) => match code_buf.take() {
+                Some((lang, text)) => events.push(Event::Html(highlight_code(&lang, &text).into())),
+                None => events.push(Event::End(TagEnd::CodeBlock)),
+            },
             // Untrusted raw HTML from the source -> render as escaped text.
-            Event::Html(h) => events.push(Event::Text(h)),
-            Event::InlineHtml(h) => events.push(Event::Text(h)),
+            Event::Html(h) | Event::InlineHtml(h) => events.push(Event::Text(h)),
             other => events.push(other),
         }
     }
@@ -110,6 +115,14 @@ fn line_at(source: &str, byte_idx: usize) -> usize {
         + 1
 }
 
+/// The line span of the byte range `[start, start + len)`.
+fn span(source: &str, start: usize, len: usize) -> Location {
+    Location {
+        line_start: line_at(source, start),
+        line_end: line_at(source, (start + len).saturating_sub(1)),
+    }
+}
+
 /// Locate a highlighted quote within the current source, using surrounding
 /// context (`prefix`/`suffix`) to disambiguate. Returns `None` when the quoted
 /// text can no longer be found — i.e. the highlighted text itself was edited,
@@ -122,21 +135,12 @@ pub fn locate(source: &str, prefix: &str, quote: &str, suffix: &str) -> Option<L
     // 1) Exact match with context.
     let needle = format!("{prefix}{quote}{suffix}");
     if let Some(pos) = source.find(&needle) {
-        let qs = pos + prefix.len();
-        let qe = qs + quote.len();
-        return Some(Location {
-            line_start: line_at(source, qs),
-            line_end: line_at(source, qe.saturating_sub(1)),
-        });
+        return Some(span(source, pos + prefix.len(), quote.len()));
     }
 
     // 2) Exact match of the quote alone.
     if let Some(pos) = source.find(quote) {
-        let qe = pos + quote.len();
-        return Some(Location {
-            line_start: line_at(source, pos),
-            line_end: line_at(source, qe.saturating_sub(1)),
-        });
+        return Some(span(source, pos, quote.len()));
     }
 
     // 3) Whitespace-normalized match (rendered selections collapse whitespace).
@@ -151,11 +155,10 @@ fn locate_normalized(source: &str, quote: &str) -> Option<Location> {
     }
     let byte_off = src_ns.find(&quote_ns)?;
     let start_char = src_ns[..byte_off].chars().count();
-    let len_chars = quote_ns.chars().count();
-    let end_char = (start_char + len_chars).saturating_sub(1);
+    let end_char = (start_char + quote_ns.chars().count()).saturating_sub(1);
 
     let start_byte = *map.get(start_char)?;
-    let end_byte = *map.get(end_char).unwrap_or(&start_byte);
+    let end_byte = map.get(end_char).copied().unwrap_or(start_byte);
     Some(Location {
         line_start: line_at(source, start_byte),
         line_end: line_at(source, end_byte),

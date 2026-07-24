@@ -6,8 +6,11 @@
 //! watcher event triggers `rebuild_index` **and** `loadTree`, which is another
 //! two full walks per event, undebounced.
 //!
-//! `markdown_paths` and `scan` are benched separately because they are the two
-//! duplicated halves: fix B4 is about making one walk feed both.
+//! `markdown_paths` and `scan` are benched separately so the tree-building cost
+//! is visible on its own — `scan` is now `build_tree(markdown_paths(..))`, so
+//! the difference between the two groups *is* `build_tree`. Fix B4 is still
+//! open: it's about the **startup pair** below, where `main()` and
+//! `list_markdown_files` each walk the repo, not about the two functions.
 
 mod common;
 
@@ -64,5 +67,10 @@ fn bench_startup_walks(c: &mut Criterion) {
     g.finish();
 }
 
-criterion_group!(benches, bench_markdown_paths, bench_scan, bench_startup_walks);
+criterion_group!(
+    benches,
+    bench_markdown_paths,
+    bench_scan,
+    bench_startup_walks
+);
 criterion_main!(benches);

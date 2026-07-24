@@ -185,6 +185,16 @@ causes were wrong.
 
 ## Recent updates
 
+- **2026-07-24** — A cleanup pass over the Rust code: about thirty lines removed by
+  deleting things that had been written twice (two copies of the folder scanner,
+  three copies of the "is this a markdown file?" check, two copies of the
+  stack-assembly code). Nothing about the app behaves differently — this was
+  checked by rendering real documents through both the old and new code and
+  confirming the output matched byte for byte. Two side effects worth knowing: the
+  file palette got roughly 20% faster, and a lurking bug was removed where two
+  files with the same path relative to the repo root could make one of them
+  unreachable from search.
+
 - **2026-07-24** — Built a performance measurement setup with three depths (about
   one minute, five minutes, fifteen minutes) so speed can be checked at a cost that
   matches the size of the change. It explained both slowdowns we'd been feeling —

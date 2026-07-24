@@ -62,11 +62,7 @@ fn store_with(n: usize, mode: Mode) -> Store {
         let (quote, prefix, suffix) = match mode {
             Mode::Today => (h.rendered.clone(), String::new(), String::new()),
             Mode::ExactSource => (h.quote.clone(), String::new(), String::new()),
-            Mode::WithContext => (
-                h.rendered.clone(),
-                collapse(&h.prefix),
-                collapse(&h.suffix),
-            ),
+            Mode::WithContext => (h.rendered.clone(), collapse(&h.prefix), collapse(&h.suffix)),
         };
         store.add_highlight(FILE.to_string(), 0, 0, quote, prefix, suffix);
     }
