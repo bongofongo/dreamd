@@ -1,5 +1,131 @@
 # Session log
 
+## 2026-07-25 — dreamd gets a public face at fongo.uk/dreamd
+
+Built and shipped the project's first website: a single dark, picture-free landing
+page live at `https://fongo.uk/dreamd`, in a new `website/` directory that is its own
+Astro project and its own deploy. Nothing in `src-tauri/` or `ui/` was touched. Also
+fixed a canonical-URL defect that turned out to affect autorota too, and wrote
+`website/CLAUDE.md` as the source of truth for the directory.
+
+### What happened
+
+1. **Copied autorota's hosting pattern, and corrected the premise while doing it.**
+   `website/` deploys as an assets-only Cloudflare Worker (`dreamd-web`) on the zone
+   route `fongo.uk/dreamd*`, which intercepts that one path. The rest of fongo.uk is
+   **paper_web on Vercel** — autorota's `wrangler.jsonc` claims Cloudflare Pages and
+   is stale. There is no build-time wiring between the repos at all: no submodule, no
+   symlink, no sync script, just the zone route plus a hardcoded `link` string in
+   paper_web's `project_list.json`. The load-bearing trick is `base: "/dreamd"` with
+   `outDir: "./dist/dreamd"` while wrangler's `assets.directory` is `./dist` — Astro's
+   `base` only prefixes URLs, not output paths, so this is what lines the Worker's 1:1
+   path→asset mapping up with the route prefix.
+
+2. **Design decisions, all deliberate and recorded in `website/CLAUDE.md`:** dark only
+   (no toggle, no `data-theme` — a divergence from paper_web and autorota, which are
+   both dual-theme); tokens lifted verbatim from `ui/theme.css` so the site is the
+   app's own colours, pushed toward near-black; Spectral **500 only** for display with
+   the app's system-sans stack for prose; no images; and the app's highlight yellow as
+   the page's only visual device, used three times total. Copy says "Source on GitHub"
+   and never "open source" — the repo has no `LICENSE` and no `license` field in either
+   `Cargo.toml`, so it is legally all-rights-reserved.
+
+3. **The landing went through three shapes.** First a hero-scoped drifting gradient;
+   then, on a brief for a Sandman-like dream aesthetic, a darker page-level field
+   (starfield, indigo and violet veils on unrelated clocks, a breathing teal aurora,
+   sand grains in the highlight yellow); finally scoped back to a **sticky one-screen
+   landing** that the opaque `.page` scrolls up over like a curtain, so the site reads
+   as two pages joined by a scroll. Star density was cut ~73% on request. All animation
+   is transform/opacity only, and everything freezes under `prefers-reduced-motion`.
+
+4. **The name became the title.** `dreamd` set large in Spectral italic, the former
+   headline demoted to subhead. The corner wordmark is hidden on the landing — the name
+   is already the headline there — and arrives past 70% of a viewport as the way home.
+
+5. **`website/CLAUDE.md`** documents the wiring, the invariants, the zero-JS-bundle
+   contract, the verification checklist, and every trap below. A pointer line was added
+   to the root `CLAUDE.md` under Docs so the directory is discoverable from the root.
+
+6. **Canonical URLs, in both repos.** `/dreamd` 307'd to `/dreamd/` while the page's own
+   `<link rel="canonical">` was the slashless form — the canonical pointed at a
+   redirect. The obvious one-word fix (`html_handling: "drop-trailing-slash"`) would
+   have fixed dreamd's index and **broken autorota's subpages**, because Astro reports
+   `/autorota` for the index but `/autorota/support/` for a nested route, so the
+   canonicals already disagreed with each other. The real fix is three settings in
+   agreement: `drop-trailing-slash` in `wrangler.jsonc`, `trailingSlash: "never"` in
+   `astro.config.mjs`, and a canonical normalisation in `SiteLayout.astro`. Applied to
+   both sites and both deployed; autorota's stale Pages comment corrected in passing.
+
+### Mistakes & deviations
+
+- **`overflow-x: hidden` on `body` silently killed the landing's `position: sticky`.**
+  It makes `body` a scroll container, so the landing scrolled away instead of pinning
+  and the curtain never happened. Caught by asserting
+  `.landing.getBoundingClientRect().top === 0` at several scroll offsets rather than by
+  looking at a screenshot. `html` does the horizontal clamp now; `body` is left alone.
+- **`fullPage` screenshots flatten sticky and fixed layers**, rendering them once at the
+  top. This made the whole lower page look flat and dead when it was fine, and I nearly
+  "fixed" a non-problem. Switched to viewport-sized shots at explicit `scrollTo`
+  offsets, which is the only way to judge these states.
+- **The curtain sliced the subhead mid-glyph** — it read as a clipping bug, not a
+  reveal. Added a `--wake` variable, written by the existing scroll handler, that fades
+  and lifts the landing text to completion by 40% of a viewport, so the rising edge
+  arrives at empty sky.
+- **Shipped Spectral 400 and then cut it.** Headings are 500 and body prose is system
+  sans, so 400 was two woff2 files of dead weight; noticed on the first build's preload
+  list and removed, halving the font payload.
+- **Trimmed a sentence of hero copy during the restructure without flagging it**, and
+  the user wanted it back. Restored minus its leading "dreamd" (the title now says the
+  name directly above it), and widened the measure 30em → 34em because at 30em the line
+  broke with "action." orphaned and `text-wrap: pretty` did not rescue it.
+- **My `cd` in tool calls left the user's shell in `perf/harness`,** so their
+  `npm run deploy` failed twice with a confusing "Missing script" error. The shell's cwd
+  is shared with the Bash tool.
+- **The root `.gitignore` ignores `*.svg` wholesale**, which would have silently dropped
+  `public/favicon.svg` and left a fresh clone unable to rebuild the site. Caught while
+  staging, because the file count was one short; re-included with a negation in
+  `website/.gitignore`.
+- **A redirect loop that wasn't.** Immediately after the `html_handling` deploy,
+  `/dreamd` and `/dreamd/` both 307'd at each other. It was Cloudflare still serving the
+  old cached redirect — a cache-buster query returned 200 straight away.
+
+### State
+
+No Rust and no `ui/` changes this session, so **no `cargo build` gate and no perf tier
+were run** — the binary is untouched and measuring it would have proved nothing.
+`perf/baseline.json` not touched.
+
+Site verified in Chromium via the existing `perf/harness` Playwright install (a plain
+static page, so unlike the app's perf numbers these results are the real thing, not a
+proxy): sticky pinned at `top = 0` across offsets; wordmark opacity 0 → 1 past 70% of a
+viewport and clicking it returns `scrollY` to 0; landing text fits inside one screen at
+1440×900, 1280×700, 375×812 and 375×667 with no clipping; no horizontal overflow at 375
+or 1440; under `reducedMotion: "reduce"` zero animations running; no console errors. On
+the built output: no `.js` emitted, Spectral `@font-face` and preloads present. HTML
+4.47 KB gzip, CSS 1.86 KB, **0 bytes of JS bundle** (one inline scroll listener), fonts
+2 woff2 / 32 KB — all well inside paper_web's budgets, which this directory follows as
+design rules since it has no perf harness of its own.
+
+Live and checked after deploy: `/dreamd`, `/autorota`, `/autorota/support`,
+`/autorota/privacy`, `/autorota/tutorials` all 200 at the slashless form; slashed forms
+are a single 307 hop; unknown paths 404; `/` and `/projects` still 200, so the zone route
+shadows only its own prefix. Served HTML was byte-identical to the local build. The
+cross-site link from paper_web's `/projects` hard-navigates cleanly despite that repo's
+`<ClientRouter />` — no paper_web DOM survives, `data-landing` is set, no errors — so no
+`data-astro-reload` is needed.
+
+Pushed: `b7c4e19` (the site), `3a51203` (`website/CLAUDE.md`), `e49b101` (canonical fix),
+plus the earlier `1e8cd8f` perf commit they carried along. autorota pushed separately as
+`6d96125`. paper_web's card was already pointing at `/dreamd` — committed by the user as
+`1159ea4` during the session.
+
+Open, and **not** from this session: `src-tauri/` and `ui/` have uncommitted
+modifications from parallel work (`benches/walk.rs`, `annotations.rs`, `fs_walk.rs`,
+`main.rs`, `markdown.rs`, `watcher.rs`, `ui/app.js`, `ui/index.html`). Deliberately left
+alone — staging was explicit throughout. Still open on the site itself: no `LICENSE`, so
+the copy cannot claim a licence; a gallery/media tab is scaffolded for but not built (the
+`nav` array in `Header.astro` is empty and wired).
+
 ## 2026-07-24 — Rust debloat pass
 
 A pure simplification sweep over `src-tauri/`: no behavior changes, no new

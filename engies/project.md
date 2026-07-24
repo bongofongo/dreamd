@@ -2,7 +2,7 @@
 
 *This page is the daily landing spot for everyone on the team. It's kept up to date
 automatically and written so that you can be away for a week, read this in five
-minutes, and know exactly where things stand. Last updated: 2026-07-24.*
+minutes, and know exactly where things stand. Last updated: 2026-07-25.*
 
 ## What we're building
 
@@ -184,6 +184,18 @@ causes were wrong.
 - **Regression** — something that used to be fast and now isn't.
 
 ## Recent updates
+
+- **2026-07-25** — dreamd has a public page for the first time, at
+  **fongo.uk/dreamd**. One dark page, no screenshots: it opens on a starfield with
+  the name floating on it, and the solid half of the site scrolls up over that like
+  a curtain being drawn, so it reads as two pages joined by a scroll. Below the fold
+  it explains what the app is, walks through the highlight → annotation → stack →
+  send loop, and lists what it's built from. The page lives in a new `website/`
+  folder inside this repo but is entirely separate from the app — it ships on its
+  own, and nothing about it can affect or slow down the program. Two things it
+  deliberately does not say: it makes no licence claim, because the project still
+  has no licence file, and it never explains what "dreamd" means. Pictures, video,
+  or a gallery tab can be added later without rearranging anything.
 
 - **2026-07-24** — A cleanup pass over the Rust code: about thirty lines removed by
   deleting things that had been written twice (two copies of the folder scanner,
