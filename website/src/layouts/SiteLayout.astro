@@ -13,7 +13,14 @@ interface Props {
 }
 
 const { title, description, landing = false } = Astro.props;
-const canonical = new URL(Astro.url.pathname, Astro.site);
+
+// Astro hands back "/dreamd" for the index but "/dreamd/404/" for a nested route,
+// so canonicals would disagree with each other. Normalise to the slashless form —
+// which is what the Worker serves, given html_handling: "drop-trailing-slash".
+const canonical = new URL(
+  Astro.url.pathname.replace(/\/+$/, "") || "/",
+  Astro.site
+);
 ---
 
 <html lang="en" data-landing={landing ? "" : undefined}>

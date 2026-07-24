@@ -8,7 +8,8 @@ export default defineConfig({
   site: "https://fongo.uk",
   base: "/dreamd",
   outDir: "./dist/dreamd",
-  trailingSlash: "ignore",
+  // Slashless URLs are canonical, matching the Worker's drop-trailing-slash.
+  trailingSlash: "never",
   experimental: {
     fonts: [
       {

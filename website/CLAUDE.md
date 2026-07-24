@@ -33,11 +33,14 @@ There is no build-time wiring between repos. No submodule, no symlink, no sync s
   on the zone route `fongo.uk/dreamd*`, which intercepts that one path before Vercel
   ever sees it. Two independent deploys, zero coupling.
 - Discovery is a hardcoded `link` string in
-  `paper_web/src/data/project_list.json` (slug 4). It still points at the GitHub
-  repo; flipping it to `/dreamd` is a separate commit in that repo. paper_web mounts
-  `<ClientRouter />`, so a same-origin `/dreamd` link is fetched as a view-transition
-  partial — if that produces a broken hybrid page, the fix is `data-astro-reload` on
-  the anchor.
+  `paper_web/src/data/project_list.json` (slug 4), pointing at `/dreamd`. Changing it
+  is a separate commit in that repo, and pushing that repo's `main` rebuilds the whole
+  personal site on Vercel.
+- paper_web mounts `<ClientRouter />`, so a same-origin `/dreamd` link is in principle
+  a candidate for a view-transition partial swap, which would glue two sites together.
+  **Checked against production: it hard-navigates cleanly** — no paper_web DOM
+  survives, `data-theme` is gone, `data-landing` is set, no console errors. No
+  `data-astro-reload` needed. Re-check if paper_web's router config changes.
 
 **The `outDir` trick is load-bearing.** `astro.config.mjs` sets `base: "/dreamd"` and
 `outDir: "./dist/dreamd"`, while `wrangler.jsonc` points `assets.directory` at
@@ -170,9 +173,16 @@ so unlike the app's perf numbers these results are the real thing, not a proxy.
   about how any of this is hosted.
 - Assets are content-hashed and `dist/` is gitignored, so a deploy uploads only what
   changed. "N already uploaded" in the output is normal.
-- `html_handling: "auto-trailing-slash"` means `/dreamd` 307s to `/dreamd/`, while the
-  page's own `<link rel="canonical">` is the slashless form. Harmless but untidy;
-  `"drop-trailing-slash"` would align them if it ever matters.
+- **Slashless URLs are canonical**, and three settings have to agree or you get a
+  redirect loop: `html_handling: "drop-trailing-slash"` in `wrangler.jsonc`,
+  `trailingSlash: "never"` in `astro.config.mjs`, and the canonical normalisation in
+  `SiteLayout.astro`. That last one is needed because Astro reports `/dreamd` for the
+  index but `/dreamd/404/` for a nested route, so canonicals disagree with each other
+  otherwise. autorota is configured identically.
+- **Cloudflare caches redirects.** Right after a deploy that changes
+  `html_handling`, the old redirect can still be served — briefly making `/dreamd` and
+  `/dreamd/` 307 at each other, which looks exactly like a loop you just shipped.
+  Re-check with a cache-buster query before debugging it.
 
 ## Adding a page
 
