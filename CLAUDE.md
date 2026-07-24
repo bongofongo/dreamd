@@ -102,6 +102,9 @@ highlights from a corpus fixture.
   changes the project story, update it in the same session rather than waiting.
 - `docs/plan.md` — original design intent. Historical; don't rewrite it.
 - `perf/README.md` — what each performance tier measures and how much to trust it.
+- `website/CLAUDE.md` — the public site at `fongo.uk/dreamd`. A standalone Astro
+  project, deployed separately; source of truth for everything under `website/`.
+  Nothing there touches the Rust build.
 
 Keep this CLAUDE.md terse and machine-facing — human-facing guidance belongs in
 `engies/`.
