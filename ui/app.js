@@ -3,6 +3,40 @@
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 
+// ---- perf instrumentation ------------------------------------------------
+// Marks are forwarded to Rust and printed as NDJSON on stderr — console.log
+// inside WKWebView never reaches the process's stdout, so this is the only way
+// to get real webview timings out of a running app. See src-tauri/src/perf.rs.
+//
+// `perf.on` is false unless the binary was built with `--features perf`, and
+// every method short-circuits when it is, so a normal build does no work here
+// beyond the single `perf_enabled` probe at startup. That probe disappears
+// once the startup IPCs are collapsed into one call.
+//
+// Phase naming: `d:` prefixed phases are *durations* in ms; everything else is
+// a timestamp on the webview's `performance.now()` clock.
+const perf = {
+  on: false,
+  async probe() {
+    try {
+      perf.on = await invoke("perf_enabled");
+    } catch {
+      perf.on = false;
+    }
+  },
+  /** Timestamp mark. */
+  at(phase) {
+    if (perf.on) invoke("perf_mark", { phase, ms: performance.now() }).catch(() => {});
+  },
+  /** Duration mark, measured from `t0` (a prior `performance.now()`). */
+  span(phase, t0) {
+    if (perf.on) {
+      invoke("perf_mark", { phase: "d:" + phase, ms: performance.now() - t0 }).catch(() => {});
+    }
+  },
+  now: () => performance.now(),
+};
+
 // ---- app state -----------------------------------------------------------
 let currentFile = null;
 let repoRoot = "";
@@ -25,6 +59,8 @@ const staleRail = $("stale-rail");
 
 // ---- init ----------------------------------------------------------------
 async function init() {
+  await perf.probe();
+  perf.at("js_start");
   if (/Macintosh/.test(navigator.userAgent)) document.body.classList.add("mac");
   try {
     const info = await invoke("repo_info");
@@ -33,22 +69,28 @@ async function init() {
     nameEl.textContent = info.display || info.name || info.root;
     nameEl.title = info.root || "";
   } catch (e) { console.error(e); }
+  perf.at("ipc_repo_info");
 
   try { keymap = await invoke("get_keymap"); } catch (e) {}
   $("search-hint").textContent = `Press ${keymap.palette} to search`;
+  perf.at("ipc_keymap");
 
   await loadTheme();
+  perf.at("ipc_theme");
   await loadTree();
+  perf.at("ipc_tree");
   wireEvents();
   wireKeys();
   wireUi();
   wireTooltips();
+  perf.at("wired");
 
   // nvim-style: `dreamd file.md` opens the file on load.
   try {
     const f = await invoke("initial_file");
-    if (f) openFile(f);
+    if (f) await openFile(f);
   } catch (e) { console.error(e); }
+  perf.at("first_paint");
 }
 
 async function loadTheme() {
@@ -119,6 +161,7 @@ async function openFile(path) {
 
 async function renderCurrent(preserveScroll) {
   if (!currentFile) return;
+  const t0 = perf.now();
   const prevScroll = preserveScroll ? scrollEl.scrollTop : 0;
   let html;
   try {
@@ -127,13 +170,28 @@ async function renderCurrent(preserveScroll) {
     contentEl.innerHTML = `<div class="empty">${escapeHtml(String(e))}</div>`;
     return;
   }
+  perf.span("ipc_render_markdown", t0);
+
+  let t = perf.now();
   contentEl.innerHTML = html;
+  perf.span("innerhtml", t);
+
+  t = perf.now();
   interceptLinks();
+  perf.span("intercept_links", t);
+
+  t = perf.now();
   const highlights = preserveScroll
     ? await invoke("reanchor", { path: currentFile })
     : await invoke("get_highlights", { path: currentFile });
+  perf.span(preserveScroll ? "ipc_reanchor" : "ipc_get_highlights", t);
+
+  t = perf.now();
   applyHighlights(highlights);
+  perf.span("apply_highlights", t);
+
   scrollEl.scrollTop = prevScroll;
+  perf.span("render_total", t0);
 }
 
 // External links open in the OS browser; internal .md links navigate in-app.
@@ -394,9 +452,16 @@ function openPalette() {
 function closePalette() { $("palette-overlay").classList.remove("open"); }
 
 async function runPalette(q) {
+  // Wired straight to `oninput` with no debounce, so this whole span runs once
+  // per keystroke on the main thread (fix B10).
+  const t0 = perf.now();
   paletteResults = await invoke("fuzzy_search", { query: q });
+  perf.span("ipc_fuzzy_search", t0);
   paletteSel = 0;
+  const t = perf.now();
   renderPalette();
+  perf.span("palette_render", t);
+  perf.span("palette_keystroke", t0);
 }
 function renderPalette() {
   const box = $("palette-results");
@@ -466,13 +531,30 @@ async function doDeleteFile() {
 
 // ---- events / wiring -----------------------------------------------------
 function wireEvents() {
-  listen("file-changed", (e) => {
-    if (e.payload && e.payload.path === currentFile) renderCurrent(true);
+  listen("file-changed", async (e) => {
+    // `save_to_paint` is the core product loop: one :w in Neovim through to a
+    // fully re-anchored, repainted document. `watcher_event` counts emissions
+    // per save — anything above 1 is the missing debounce (fix B2).
+    perf.at("watcher_event");
+    if (e.payload && e.payload.path === currentFile) {
+      const t0 = perf.now();
+      await renderCurrent(true);
+      perf.span("save_to_paint", t0);
+    }
   });
-  listen("file-added", async () => { await invoke("rebuild_index"); loadTree(); });
-  listen("file-removed", async (e) => {
+  listen("file-added", async () => {
+    perf.at("watcher_event");
+    const t0 = perf.now();
     await invoke("rebuild_index");
-    loadTree();
+    await loadTree();
+    perf.span("tree_rebuild", t0);
+  });
+  listen("file-removed", async (e) => {
+    perf.at("watcher_event");
+    const t0 = perf.now();
+    await invoke("rebuild_index");
+    await loadTree();
+    perf.span("tree_rebuild", t0);
     if (e.payload && e.payload.path === currentFile) {
       currentFile = null;
       contentEl.innerHTML = `<div class="empty">File removed.</div>`;

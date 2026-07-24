@@ -1,0 +1,16 @@
+{
+  "name": "dreamd-perf-harness",
+  "private": true,
+  "type": "module",
+  "description": "Test-only Chromium harness for dreamd's frontend. Never shipped, never referenced by tauri.conf.json.",
+  "scripts": {
+    "setup": "npm install && npx playwright install chromium",
+    "render": "node scenarios/render.mjs",
+    "scroll": "node scenarios/scroll.mjs",
+    "highlight": "node scenarios/highlight.mjs",
+    "palette": "node scenarios/palette.mjs"
+  },
+  "devDependencies": {
+    "playwright": "^1.49.0"
+  }
+}

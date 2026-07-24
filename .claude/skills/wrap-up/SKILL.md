@@ -28,6 +28,14 @@ before you commit. Never commit over a failing build — fix it, or stop and rep
 Frontend-only (`ui/`) or docs/skills-only changes need no gate; say so rather than
 running a pointless build.
 
+If the session touched `src-tauri/` or `ui/`, also run the `perf-pass` skill. A red
+regression is **not** an automatic block — performance is the user's call, not
+yours — but it must be stated before the commit lands, and named in the session log
+under `### State`. Never update `perf/baseline.json` as part of wrapping up: that
+takes a deliberate `perf-deep` run, and it belongs in the commit that justified it.
+Docs- or skills-only sessions skip this; say so rather than spending five minutes
+measuring an unchanged binary.
+
 ## 3. Write the session log
 
 Prepend a new section to `docs/session-log.md`, directly under the `# Session log`

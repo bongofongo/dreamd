@@ -107,6 +107,57 @@ Known limits, all deliberate for v1:
   Heavily formatted inline selections may fail to re-locate and will read as stale.
 - Nothing persists, by design.
 
+## Measuring speed
+
+Speed is the priority after the interface itself, and the project now measures it
+rather than guessing. Everything runs on this machine — there is no build server
+involved.
+
+There are three depths, so the cost of checking matches the size of the change:
+
+- **quick** (about a minute) — run right after an edit, to catch anything that got
+  obviously slower.
+- **pass** (about five minutes) — run before committing. Launches the real app and
+  times the thing that matters most: saving a file in your editor and seeing the
+  reading view catch up.
+- **deep** (about fifteen minutes) — run when investigating. Builds the fully
+  optimized app and records a profile showing exactly where the time goes.
+
+Every run compares against a stored set of reference numbers (a *baseline*) and
+prints only what moved. The baseline is only ever updated on purpose, as part of the
+change that earned it — a reference point that quietly drifts would hide the slow
+decline it exists to catch.
+
+Two honesty rules are built into the reports. First, some measurements come from
+Google's browser engine standing in for the real one, because it is far quicker to
+script; those numbers are reliable for spotting *that* something got slower, and are
+never presented as the app's true timings. Second, the tests run against a generated
+set of documents — from small notes up to 2MB — that is identical every time, since
+a measurement is only comparable if what it measured is.
+
+The first run already explained both symptoms that prompted this work.
+
+Saving a file re-checks every highlight in it, and each check rebuilds a full index
+of the document from scratch — about 7 milliseconds per highlight on a 2MB file.
+Worse, a single save is being noticed **more than once** (about 1.6 times), so the
+document is redrawn repeatedly and the work piles up: with a hundred highlights,
+saving takes over five seconds before the reading view catches up.
+
+Opening a large document takes about 1.4 seconds. Measuring it corrected an
+assumption we had: the app does scan the folder twice before drawing, but that only
+accounts for about 60 milliseconds. Almost all of the wait is converting the
+markdown into HTML and drawing it — a 512KB document becomes over a megabyte of
+HTML, because the syntax colouring writes styling into every single word of every
+code block.
+
+The measurements also turned up a bug nobody had reported: if you highlight text
+that crosses a formatting boundary — part bold, part link, part code — the highlight
+usually fails to reattach and gets quietly marked stale, even though the selection
+was perfectly valid. That happens most of the time for such selections.
+
+None of this was known before it was measured, and two of our guesses about the
+causes were wrong.
+
 ## Glossary (no shame in needing it)
 
 - **tmux** — a terminal multiplexer: splits one terminal window into many panes,
@@ -124,8 +175,25 @@ Known limits, all deliberate for v1:
   ranks the likely files.
 - **Crate (Rust)** — a Rust package/library. `ignore`, `notify`, `syntect` are
   crates we depend on.
+- **Benchmark** — a timed, repeatable test of one small piece of code, run many times
+  so the average means something.
+- **Baseline** — the stored "this is how fast it was" numbers that today's run is
+  compared against.
+- **Profiling** — recording where a program actually spends its time, function by
+  function, instead of reasoning about where it probably does.
+- **Regression** — something that used to be fast and now isn't.
 
 ## Recent updates
+
+- **2026-07-24** — Built a performance measurement setup with three depths (about
+  one minute, five minutes, fifteen minutes) so speed can be checked at a cost that
+  matches the size of the change. It explained both slowdowns we'd been feeling —
+  saves are noticed more than once and re-check every highlight from scratch;
+  opening a large file is dominated by converting it to HTML, not by scanning the
+  folder as we'd assumed. It also surfaced a bug: highlights spanning bold, links
+  or code usually fail to reattach and are wrongly marked stale. No fixes yet —
+  this round was about being able to prove them, and two of our guesses about the
+  causes turned out to be wrong.
 
 - **2026-07-24** — Hovering any icon-only button now pops up its name and keybind,
   so the toolbar is learnable without reading the docs. The keybind shown is read

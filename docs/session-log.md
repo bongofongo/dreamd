@@ -1,5 +1,122 @@
 # Session log
 
+## 2026-07-24 — performance measurement framework
+
+Built the three-tier performance harness (`perf/`) and captured a first baseline.
+No optimizations yet — this session was about being able to prove them. It got
+there, but only after the harness was caught lying five separate times.
+
+### What happened
+
+1. **`src-tauri` split into `lib.rs` + a thin `main.rs`.** `main.rs` keeps the CLI,
+   `AppState`, the 21 commands and the builder; everything they do moved to the
+   library. Code moved verbatim — no logic changed. This is what makes
+   `src-tauri/benches/` and future unit tests possible at all, since a `[[bin]]`
+   target can't be imported.
+
+2. **Deterministic corpus** (`perf/corpus/gen.mjs`, node, no deps). 5,536 files /
+   21MB: four document variants at 8KB–2MB, synthetic repos of 10/500/5000 files,
+   highlight sets of 1/10/100/500. Seeded PRNG, byte-identical across runs; a
+   3.5KB summary manifest with an aggregate digest is committed rather than 5,500
+   individual hashes.
+
+   Highlight fixtures carry both `quote` (exact source) and `rendered`
+   (whitespace-collapsed). That distinction turned out to be load-bearing — see
+   the findings below.
+
+3. **Four criterion suites** — `render`, `locate`, `search`, `walk` — with sample
+   counts capped per group so the deep sweep stays inside its budget.
+
+4. **A `perf` cargo feature** (off by default, verified to compile out) emitting
+   NDJSON timing marks on **stderr**, because `console.log` inside WKWebView never
+   reaches the process's stdout. Rust marks plus frontend marks forwarded through a
+   `perf_mark` command land in one ordered stream. Also `--bench-startup` and a
+   `DREAMD_PERF_SEED` hook so the save loop can be measured at a realistic
+   highlight count without driving the UI.
+
+5. **Playwright/Chromium harness** (`perf/harness/`, test-only, never referenced by
+   `tauri.conf.json`) with a stubbed `window.__TAURI__`. Scroll cost is taken from
+   CDP trace events, not `performance.now()` — style, paint, raster and composite
+   happen outside JavaScript, so timing a `scrollTop` assignment from inside the
+   page reports approximately zero no matter how expensive the scroll is.
+
+6. **Runner, three tiers, one entry point.** quick ~80s, pass ~6min, deep ~20min.
+   Metrics are flattened to dot-paths and diffed against `perf/baseline.json`;
+   adding a measurement anywhere shows up in the table with no registry to update.
+
+7. **Three skills** — `perf-quick`, `perf-pass`, `perf-deep` — plus a perf clause in
+   `wrap-up`'s gate and a line in CLAUDE.md.
+
+### Findings (all measured, release profile)
+
+- `reanchor` costs **~7ms per highlight** on a 2MB document — and a *live* highlight
+  costs exactly what a stale one does (7.08ms vs 7.10ms), because a quote taken from
+  the rendered DOM never matches `locate`'s cheap tiers and always rebuilds the
+  whitespace-stripped index. 500 highlights = 3.9s.
+- The watcher emits **1.6 events per save**, and they compound: `reanchor` measured
+  at 74ms in isolation becomes 2.5s in the live app because the re-renders serialize
+  on the main thread. Save→repaint is **5.4s** at 100 highlights.
+- First paint **1,417ms** on a 5000-file repo, 1,189ms on a trivial one. The entire
+  pre-window Rust sequence is only 59ms of that.
+- 512KB of markdown becomes **1.06MB of HTML** with ~12,000 inline-styled spans.
+- Selections spanning inline markup **fail to anchor 76–100%** of the time and are
+  silently demoted to stale chips. That is a correctness bug, found incidentally.
+
+### Mistakes & deviations
+
+This thread did not run clean; the harness produced confident, plausible, wrong
+numbers five times, and each one had to be caught by disbelieving a result.
+
+- **`grep -q` under `set -o pipefail`** reported every symbolicated binary as
+  stripped — `grep -q` exits early, `nm` dies of SIGPIPE, the pipeline reports
+  failure despite matching.
+- **`$!` on a subshell** meant the kill hit the subshell, not the app, leaking a
+  live `dreamd` per run. Fixed with `exec`.
+- **A relative binary path after `cd`** made first-paint measurement return empty
+  rather than wrong — silence, not an error.
+- **Workload mismatches keyed to the same metric path**, three times over: quick
+  rendered 512KB while deep rendered 2MB; quick cut `--sample-size` to 10 while deep
+  used full sampling; `pass` measured the debug binary while the baseline held
+  release. Each produced double-digit phantom deltas — the 250% "regression" in the
+  final `perf-pass` was the last of them.
+- **Thresholds set below the noise floor.** Two runs on identical code disagreed by
+  up to 27% on Chromium raster. 5%/15% guaranteed false positives.
+- I also **corrupted three of my own baseline runs** by running `cargo clippy` and
+  `gen.mjs --force` alongside them, and by killing leaked processes mid-measurement.
+
+The corrections, and the rule they produced: **tiers differ in how much they run,
+never in how they run it**, and anything that differs about a workload belongs in
+the metric's key, not silently in its value. Plus a lockfile, load recorded in
+`meta`, min-of-3 for launches (first-paint spread went from ~3x to 59ms), and
+thresholds measured rather than guessed.
+
+Two items from the plan were corrected by the measurements: adding prefix/suffix
+context does **not** fix `reanchor` (rendered context misses tier 1 identically —
+7.22ms vs 7.21ms; the fix is memoizing the stripped index once per call), and
+deduplicating the double repo walk is worth ~57ms, not the headline it was ranked
+as. The debounce fix is the top item, above where it was ranked.
+
+### State
+
+`cargo build` clean with and without `--features perf`; `cargo clippy --all-targets`
+clean; all shell and JS syntax-checked. Verified the harness detects the known
+missing-debounce bug positively (1.6 events/save where >1.0 is the signal), that
+injected +40% and +50% regressions are caught and exit non-zero, and that two runs
+on identical code flag nothing.
+
+The final `perf-pass` reported 33 regressions; **all are harness artifacts, not code
+regressions** — 21 from the debug-vs-release profile mismatch fixed in this commit,
+the rest sub-5ms benchmarks within noise. No measured Rust logic changed this
+session, so bench movement is noise by construction.
+
+`perf/baseline.json` is committed from a clean deep run. Its `real.*` entries
+predate the profile-keying fix and will realign on the next
+`./perf/run.sh deep --update-baseline`; `bench.*` and `chromium.*` are current. The
+baseline was deliberately not hand-edited to paper over this.
+
+Nothing optimized yet. The ranked fix list stands, led by watcher debounce,
+`reanchor` index memoization, and syntect warm-up.
+
 ## 2026-07-24 — icon-button tooltips with keybinds
 
 Every icon-only button in the GUI now shows a hover popup naming the button and,

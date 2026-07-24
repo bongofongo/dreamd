@@ -3,3 +3,9 @@
 /dist
 .DS_Store
 /src-tauri/gen
+/perf/results
+/perf/corpus/generated
+/perf/corpus/rendered
+/perf/harness/node_modules
+*.trace
+*.svg

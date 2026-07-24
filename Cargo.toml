@@ -8,3 +8,17 @@ lto = true
 strip = true
 codegen-units = 1
 panic = "abort"
+
+# Release code, but profilable. `strip = true` above discards the symbol table,
+# which leaves Instruments, samply and flamegraph showing nothing but hex
+# addresses — so profiling needs its own profile rather than a temporary edit
+# to the shipping one.
+#
+#   cargo build --profile profiling --features perf
+#
+# `debug = 1` (line tables) rather than full DWARF: enough to symbolicate every
+# frame, without the build-time and disk cost of `debug = 2`.
+[profile.profiling]
+inherits = "release"
+debug = 1
+strip = false

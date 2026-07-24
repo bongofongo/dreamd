@@ -21,6 +21,12 @@ highlight → annotation → stack → send loop.
 - Commits go **straight to main** — no branches, no PRs.
 - `cargo build` must pass before any commit touching `src-tauri/`.
 - Repeatable flows become skills in `.claude/skills/`.
+- Performance is measured, not guessed. `/perf-quick` (~60s) after an edit,
+  `/perf-pass` (~5min) before a commit touching `src-tauri/` or `ui/`, `/perf-deep`
+  (~15min) to profile or move the baseline. `perf/baseline.json` changes only via
+  `perf-deep`, in the same commit as the change that justified it.
+- Numbers from `perf/harness/` are Chromium, **not** WKWebView — relative regression
+  signal only. Say so whenever quoting one.
 
 ## Docs
 
@@ -31,6 +37,7 @@ highlight → annotation → stack → send loop.
   a scheduled job and by the `/update-project-doc` skill. If a session materially
   changes the project story, update it in the same session rather than waiting.
 - `docs/plan.md` — original design intent. Historical; don't rewrite it.
+- `perf/README.md` — what each performance tier measures and how much to trust it.
 
 Keep this CLAUDE.md terse and machine-facing — human-facing guidance belongs in
 `engies/`.

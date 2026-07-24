@@ -2,27 +2,21 @@
 
 //! dreamd — lightweight GUI markdown reader with a highlight/annotation ->
 //! agent loop. Launched from the CLI: `dreamd [path]`.
+//!
+//! This file is deliberately thin: CLI, `AppState`, the Tauri commands, and the
+//! builder. The work those commands do lives in the `dreamd` library crate
+//! (`src/lib.rs`) so benches and tests can drive it without a window.
 
-mod annotations;
-mod config;
-mod fs_walk;
-mod markdown;
-mod search;
-mod send;
-mod watcher;
-
-use annotations::{Highlight, Pair, Store};
 use clap::Parser;
-use config::{Config, Keymap};
-use fs_walk::FileNode;
-use search::SearchIndex;
-use send::SendResult;
+use dreamd::annotations::{Highlight, Pair, Store};
+use dreamd::config::{Config, Keymap};
+use dreamd::fs_walk::FileNode;
+use dreamd::search::SearchIndex;
+use dreamd::send::SendResult;
+use dreamd::{fs_walk, home_relative, markdown, perf, read_source, send, watcher, DEFAULT_THEME};
 use std::path::PathBuf;
 use std::sync::Mutex;
 use tauri::State;
-
-/// The bundled default theme, embedded so it works in a packaged binary.
-const DEFAULT_THEME: &str = include_str!("../../ui/theme.css");
 
 struct AppState {
     repo_root: PathBuf,
@@ -40,53 +34,12 @@ struct Cli {
     /// file opens it, but the file tree is still rooted at the repo of the
     /// current directory. Defaults to the current directory.
     path: Option<PathBuf>,
-}
 
-fn is_markdown(path: &std::path::Path) -> bool {
-    matches!(
-        path.extension().and_then(|e| e.to_str()),
-        Some("md") | Some("markdown") | Some("mdown") | Some("mkd")
-    )
-}
-
-fn resolve_repo_root(arg: Option<PathBuf>) -> PathBuf {
-    let start = arg.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-    let start = start.canonicalize().unwrap_or(start);
-    let mut cur = start.as_path();
-    loop {
-        if cur.join(".git").exists() {
-            return cur.to_path_buf();
-        }
-        match cur.parent() {
-            Some(p) => cur = p,
-            None => break,
-        }
-    }
-    start
-}
-
-/// Resolve the CLI argument into a (tree root, file-to-open) pair.
-/// - a file arg  -> root = repo of the current directory; open the file if markdown.
-/// - a dir arg   -> root = repo of that directory; nothing pre-opened.
-/// - no arg      -> root = repo of the current directory.
-fn resolve_target(arg: Option<PathBuf>) -> (PathBuf, Option<String>) {
-    match arg {
-        Some(p) => {
-            let abs = p.canonicalize().unwrap_or(p);
-            if abs.is_file() {
-                let root = resolve_repo_root(None);
-                let file = is_markdown(&abs).then(|| abs.to_string_lossy().into_owned());
-                (root, file)
-            } else {
-                (resolve_repo_root(Some(abs)), None)
-            }
-        }
-        None => (resolve_repo_root(None), None),
-    }
-}
-
-fn read_source(path: &str) -> Result<String, String> {
-    std::fs::read_to_string(path).map_err(|e| format!("cannot read {path}: {e}"))
+    /// Run the full pre-window startup sequence, then exit without opening a
+    /// window. Lets hyperfine measure the Rust half of cold start on its own.
+    /// Only emits timings when built with `--features perf`.
+    #[arg(long, hide = true)]
+    bench_startup: bool,
 }
 
 // ---- commands ------------------------------------------------------------
@@ -103,16 +56,6 @@ fn repo_info(state: State<AppState>) -> serde_json::Value {
         "name": state.repo_root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
         "display": home_relative(&state.repo_root),
     })
-}
-
-/// Render a path home-relative (`~/foo` instead of `/Users/me/foo`).
-fn home_relative(path: &std::path::Path) -> String {
-    if let Some(home) = dirs::home_dir() {
-        if let Ok(rest) = path.strip_prefix(&home) {
-            return format!("~/{}", rest.to_string_lossy());
-        }
-    }
-    path.to_string_lossy().into_owned()
 }
 
 #[tauri::command]
@@ -150,9 +93,11 @@ fn add_highlight(
         Some(loc) => (loc.line_start, loc.line_end),
         None => (0, 0),
     };
-    let id = state.store.lock().unwrap().add_highlight(
-        file_path, line_start, line_end, quote, prefix, suffix,
-    );
+    let id = state
+        .store
+        .lock()
+        .unwrap()
+        .add_highlight(file_path, line_start, line_end, quote, prefix, suffix);
     Ok(id)
 }
 
@@ -259,27 +204,100 @@ fn open_external(url: String) -> Result<(), String> {
     // schemes to the OS opener.
     let scheme = url.split_once(':').map(|(s, _)| s.to_ascii_lowercase());
     match scheme.as_deref() {
-        Some("http") | Some("https") | Some("mailto") => {
-            open::that(&url).map_err(|e| e.to_string())
-        }
+        Some("http") | Some("https") | Some("mailto") => open::that(&url).map_err(|e| e.to_string()),
         Some(other) => Err(format!("refusing to open scheme: {other}")),
         None => Err("refusing to open URL without a scheme".into()),
     }
 }
 
+/// Frontend-side timing mark, forwarded into the same NDJSON stream as the Rust
+/// marks. A no-op unless built with `--features perf`; `console.log` inside
+/// WKWebView never reaches our stdout, so this is the only way to get webview
+/// timings out of a real run.
+#[tauri::command]
+fn perf_mark(phase: String, ms: f64) {
+    perf::emit(&phase, ms);
+}
+
+/// Whether this binary carries timing instrumentation. The frontend checks this
+/// once at startup and skips its own `perf_mark` calls entirely when false.
+#[tauri::command]
+fn perf_enabled() -> bool {
+    perf::enabled()
+}
+
+/// Preload the store with highlights so the save→repaint loop can be measured
+/// at a realistic highlight count without driving the UI.
+///
+/// Reads a corpus fixture (`perf/corpus/generated/highlights/N.json`) named by
+/// `DREAMD_PERF_SEED`, and anchors every entry against the initially-opened
+/// file using its `rendered` quote — the whitespace-collapsed form the frontend
+/// actually sends, which is what forces `locate` down its expensive path.
+///
+/// Only compiled with `--features perf`.
+#[cfg(feature = "perf")]
+fn seed_highlights(store: &mut Store, file: &Option<String>) {
+    let (Ok(path), Some(target)) = (std::env::var("DREAMD_PERF_SEED"), file.as_ref()) else {
+        return;
+    };
+    let Ok(raw) = std::fs::read_to_string(&path) else {
+        eprintln!("perf: cannot read seed fixture {path}");
+        return;
+    };
+    let Ok(fixtures) = serde_json::from_str::<Vec<serde_json::Value>>(&raw) else {
+        eprintln!("perf: seed fixture {path} is not a JSON array");
+        return;
+    };
+    let n = fixtures.len();
+    for f in fixtures {
+        let quote = f
+            .get("rendered")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        if quote.is_empty() {
+            continue;
+        }
+        store.add_highlight(target.clone(), 0, 0, quote, String::new(), String::new());
+    }
+    eprintln!("perf: seeded {n} highlights against {target}");
+}
+
 fn main() {
+    perf::init();
+    perf::mark("process_start");
+
     let cli = Cli::parse();
-    let (repo_root, initial) = resolve_target(cli.path);
+    let (repo_root, initial) = dreamd::resolve_target(cli.path);
+    perf::mark("target_resolved");
+
     let cfg = Config::load(&repo_root);
+    perf::mark("config_loaded");
+
     let paths = fs_walk::markdown_paths(&repo_root, &cfg.extra_ignores);
+    perf::mark("walk_done");
+
     let index = SearchIndex::build(&repo_root, &paths);
+    perf::mark("index_built");
+
+    if cli.bench_startup {
+        perf::mark("bench_startup_exit");
+        return;
+    }
+
     let theme_path = cfg.theme_css.clone();
+
+    // `mut` is only needed by the seeding call below, which compiles out.
+    #[allow(unused_mut)]
+    let mut store = Store::default();
+    #[cfg(feature = "perf")]
+    seed_highlights(&mut store, &initial);
 
     let state = AppState {
         repo_root: repo_root.clone(),
         initial_file: initial,
         config: cfg.clone(),
-        store: Mutex::new(Store::default()),
+        store: Mutex::new(store),
         index: Mutex::new(index),
     };
 
@@ -307,8 +325,11 @@ fn main() {
             copy_to_clipboard,
             delete_file,
             open_external,
+            perf_mark,
+            perf_enabled,
         ])
         .setup(move |app| {
+            perf::mark("setup");
             watcher::spawn(app.handle().clone(), repo_root.clone(), theme_path.clone());
             Ok(())
         })

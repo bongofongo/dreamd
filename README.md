@@ -42,6 +42,33 @@ Build a release binary (small — no bundled Chromium):
 cargo tauri build
 ```
 
+## Performance
+
+Measurement lives in `perf/` and runs entirely locally — no CI.
+
+```sh
+./perf/run.sh quick     # ~60s    after an edit
+./perf/run.sh pass      # ~5min   before a commit
+./perf/run.sh deep      # ~15min  profiling; the only tier that sets the baseline
+```
+
+Optional tooling, each skipped with an install hint if absent:
+
+```sh
+brew install hyperfine samply
+cargo install cargo-bloat
+cd perf/harness && npm run setup   # Playwright + Chromium, test-only
+```
+
+The Playwright harness is a **test dependency only** — it has its own
+`package.json`, `node_modules` is gitignored, and nothing node-related is
+referenced by `tauri.conf.json` or enters the binary. Its numbers come from
+Chromium, not WKWebView, so they detect regressions but are not the app's real
+timings; those come from the instrumented binary (`cargo build --features perf`)
+and from Instruments.
+
+See `perf/README.md` for what each tier measures and how much to trust it.
+
 ## Usage
 
 - **Open a file:** click it in the tree, or open the fuzzy palette.

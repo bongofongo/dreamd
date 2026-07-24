@@ -1,0 +1,425 @@
+#!/usr/bin/env node
+//
+// Deterministic corpus generator for the dreamd perf harness.
+//
+//   node perf/corpus/gen.mjs [--stress] [--force] [--check]
+//
+// Everything here is driven by a seeded PRNG and fixed word banks, so two runs
+// on two machines produce byte-identical output. That is the whole point: a
+// benchmark number is only comparable if the input is.
+//
+// Writes to perf/corpus/generated/ (gitignored) and records every file's size
+// and sha256 in perf/corpus/manifest.json (committed). If the manifest already
+// matches what's on disk, generation is skipped — the perf tiers call this on
+// every run and regenerating ~11MB each time would be pure waste.
+//
+// No dependencies, and deliberately no `Math.random`, no `Date`, no locale-
+// dependent formatting.
+
+import { mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, rmSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { join, dirname, relative } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+const OUT = join(HERE, "generated");
+const MANIFEST = join(HERE, "manifest.json");
+
+/** Bump when a generator change invalidates previously-recorded numbers. */
+const GENERATOR = 2;
+
+const argv = new Set(process.argv.slice(2));
+const STRESS = argv.has("--stress");
+const FORCE = argv.has("--force");
+const CHECK = argv.has("--check");
+
+// ---- deterministic randomness --------------------------------------------
+
+/** mulberry32 — small, fast, and identical everywhere. */
+function rng(seed) {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+const pick = (r, xs) => xs[Math.floor(r() * xs.length) % xs.length];
+const int = (r, lo, hi) => lo + Math.floor(r() * (hi - lo + 1));
+
+// ---- word banks ----------------------------------------------------------
+
+const WORDS = `the quick brown fox jumps over lazy dog markdown reader highlight
+annotation stack send loop terminal webview render parse anchor quote prefix
+suffix theme palette fuzzy search index walk watcher debounce cache latency
+throughput frame paint layout reflow allocation buffer stream token syntax
+document heading paragraph list table code block inline link image escape
+sanitize repository commit branch session editor window pane tmux clipboard
+config keymap binding scroll selection range node tree leaf branch depth`
+  .split(/\s+/)
+  .filter(Boolean);
+
+const TITLES = [
+  "Architecture", "Rendering", "Anchoring", "The send loop", "Configuration",
+  "Themes", "Search", "File watching", "Security notes", "Known limits",
+  "Performance", "Glossary", "Open questions", "Design intent", "Trade-offs",
+];
+
+const CODE = {
+  rust: `pub fn locate(source: &str, quote: &str) -> Option<usize> {
+    if quote.trim().is_empty() {
+        return None;
+    }
+    source.find(quote)
+}`,
+  javascript: `function applyHighlights(list) {
+  for (const h of list) {
+    const range = findRange(h.quote);
+    if (range) wrapRange(range, h.id);
+  }
+}`,
+  python: `def strip_ws(source):
+    out, index = [], []
+    for i, ch in enumerate(source):
+        if not ch.isspace():
+            out.append(ch)
+            index.append(i)
+    return "".join(out), index`,
+  go: `func Walk(root string) ([]string, error) {
+	var out []string
+	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() {
+			out = append(out, p)
+		}
+		return err
+	})
+	return out, err
+}`,
+  c: `static size_t line_at(const char *src, size_t idx) {
+    size_t n = 1;
+    for (size_t i = 0; i < idx; i++)
+        if (src[i] == '\\n') n++;
+    return n;
+}`,
+  sql: `SELECT path, count(*) AS hits
+FROM highlights
+WHERE stale = 0
+GROUP BY path
+ORDER BY hits DESC
+LIMIT 20;`,
+  toml: `[keymap]
+palette = "cmd+p"
+highlight = "h"
+send = "cmd+enter"`,
+  bash: `#!/usr/bin/env bash
+set -euo pipefail
+for f in "$@"; do
+  printf '%s\\t%s\\n' "$(wc -c <"$f")" "$f"
+done`,
+};
+const LANGS = Object.keys(CODE);
+
+// ---- block builders ------------------------------------------------------
+
+function sentence(r, n = int(r, 8, 20)) {
+  const w = Array.from({ length: n }, () => pick(r, WORDS));
+  w[0] = w[0][0].toUpperCase() + w[0].slice(1);
+  return w.join(" ") + pick(r, [".", ".", ".", "?", "!"]);
+}
+
+function paragraph(r) {
+  return Array.from({ length: int(r, 3, 7) }, () => sentence(r)).join(" ");
+}
+
+function heading(r, depth) {
+  return `${"#".repeat(depth)} ${pick(r, TITLES)} ${int(r, 1, 99)}`;
+}
+
+function proseBlock(r) {
+  const roll = r();
+  if (roll < 0.12) return heading(r, int(r, 2, 4));
+  if (roll < 0.22) {
+    const n = int(r, 3, 8);
+    return Array.from({ length: n }, () => `- ${sentence(r, int(r, 4, 12))}`).join("\n");
+  }
+  if (roll < 0.3) {
+    const n = int(r, 2, 5);
+    return Array.from({ length: n }, (_, i) => `${i + 1}. ${sentence(r, int(r, 4, 12))}`).join("\n");
+  }
+  if (roll < 0.36) return `> ${sentence(r)}\n> ${sentence(r)}`;
+  if (roll < 0.42) {
+    // Inline markup — this is what makes single-text-node highlight matching
+    // fail, so the corpus has to contain plenty of it.
+    return `${sentence(r, 6)} \`${pick(r, WORDS)}\` ${sentence(r, 5)} **${pick(r, WORDS)}** and *${pick(r, WORDS)}*, see [${pick(r, WORDS)}](https://example.com/${pick(r, WORDS)}).`;
+  }
+  return paragraph(r);
+}
+
+function codeBlock(r) {
+  const lang = pick(r, LANGS);
+  const body = CODE[lang];
+  const reps = int(r, 1, 4);
+  return "```" + lang + "\n" + Array.from({ length: reps }, () => body).join("\n\n") + "\n```";
+}
+
+function tableBlock(r) {
+  const cols = int(r, 4, 9);
+  const rows = int(r, 5, 25);
+  const head = Array.from({ length: cols }, () => pick(r, WORDS));
+  const sep = Array.from({ length: cols }, () => "---");
+  const body = Array.from({ length: rows }, () =>
+    Array.from({ length: cols }, () => pick(r, WORDS) + " " + int(r, 1, 9999)),
+  );
+  return [head, sep, ...body].map((c) => `| ${c.join(" | ")} |`).join("\n");
+}
+
+const VARIANTS = {
+  // Isolates pulldown-cmark: no fenced blocks at all.
+  prose: (r) => proseBlock(r),
+  // Isolates syntect, the dominant render cost.
+  code: (r) => (r() < 0.75 ? codeBlock(r) : proseBlock(r)),
+  // Targets the per-table overflow-x scroll containers in theme.css.
+  table: (r) => (r() < 0.7 ? tableBlock(r) : proseBlock(r)),
+  // The headline number: what a real document looks like.
+  mixed: (r) => {
+    const roll = r();
+    if (roll < 0.15) return codeBlock(r);
+    if (roll < 0.25) return tableBlock(r);
+    return proseBlock(r);
+  },
+};
+
+const SIZES = {
+  "8k": 8 * 1024,
+  "128k": 128 * 1024,
+  "512k": 512 * 1024,
+  "2m": 2 * 1024 * 1024,
+};
+const STRESS_SIZES = { "8m": 8 * 1024 * 1024 };
+
+/**
+ * Build a document of at least `target` bytes. We never truncate mid-document:
+ * cutting a fenced block or table in half would produce markdown that isn't
+ * representative of anything. Actual size is recorded in the manifest.
+ */
+function buildDoc(variant, target, seed) {
+  const r = rng(seed);
+  const parts = [`# ${variant} corpus — ${target} bytes target`, ""];
+  let bytes = 0;
+  while (bytes < target) {
+    const block = VARIANTS[variant](r);
+    parts.push(block, "");
+    bytes += Buffer.byteLength(block) + 2;
+  }
+  return parts.join("\n");
+}
+
+// ---- highlight sets ------------------------------------------------------
+
+/**
+ * Sample quotes out of a real generated document, with the 40 characters of
+ * source either side captured as prefix/suffix.
+ *
+ * Three fields per entry, because `locate` has three tiers and which one you
+ * land in dominates the cost:
+ *
+ *   `quote`     the exact source slice. Hits tier 1/2 (`source.find`) and is
+ *               cheap. This is NOT what the app produces.
+ *   `rendered`  the same text with whitespace collapsed — an approximation of
+ *               what `window.getSelection().toString()` actually yields, since
+ *               the user selects from the *rendered* DOM, not the source. This
+ *               misses tiers 1 and 2 and falls through to `locate_normalized`,
+ *               which is the realistic path today and roughly 6x the cost.
+ *   `prefix`/`suffix`  context, which `ui/app.js:270` currently hardcodes to
+ *               `""`. Populating it is fix B5.
+ *
+ * Only quotes that span a newline are kept, so `rendered` is guaranteed to
+ * differ from `quote` — otherwise the fixture would silently benchmark the
+ * cheap path and understate the real cost.
+ */
+function buildHighlights(doc, n, seed) {
+  const r = rng(seed);
+  const out = [];
+  const guard = n * 400;
+  for (let i = 0; out.length < n && i < guard; i++) {
+    const start = int(r, 200, Math.max(201, doc.length - 400));
+    const len = int(r, 30, 180);
+    const quote = doc.slice(start, start + len);
+    // Skip fence markers and pipes: a quote straddling a code fence or table
+    // row isn't something a user could select in the rendered view.
+    if (quote.includes("```") || quote.includes("|") || !quote.trim()) continue;
+    // Must span a line break, or `rendered` would equal `quote`.
+    if (!/\n/.test(quote)) continue;
+    out.push({
+      quote,
+      rendered: quote.replace(/\s+/g, " ").trim(),
+      prefix: doc.slice(Math.max(0, start - 40), start),
+      suffix: doc.slice(start + len, start + len + 40),
+    });
+  }
+  if (out.length < n) throw new Error(`only sampled ${out.length}/${n} highlights`);
+  return out;
+}
+
+// ---- synthetic repos -----------------------------------------------------
+
+function buildRepo(files, seed) {
+  const r = rng(seed);
+  const out = [];
+  const dirs = ["docs", "notes", "src/adr", "vendor/lib/docs", "team/eng", "archive/2024"];
+  for (let i = 0; i < files; i++) {
+    const d = pick(r, dirs);
+    const depth = int(r, 0, 2);
+    const nested = Array.from({ length: depth }, () => pick(r, WORDS)).join("/");
+    const rel = join(d, nested, `${pick(r, WORDS)}-${i}.md`);
+    out.push({ rel, body: buildDoc("mixed", 1500, seed + i) });
+  }
+  return out;
+}
+
+// ---- write + manifest ----------------------------------------------------
+
+const written = [];
+function emit(rel, contents) {
+  const abs = join(OUT, rel);
+  mkdirSync(dirname(abs), { recursive: true });
+  writeFileSync(abs, contents);
+  written.push({
+    path: rel,
+    bytes: Buffer.byteLength(contents),
+    sha256: createHash("sha256").update(contents).digest("hex"),
+  });
+}
+
+/**
+ * One hash over every generated file. Committing 5,500 individual hashes would
+ * be a megabyte of churn in the repo for no benefit — a single digest answers
+ * the only question that matters ("is what's on disk what this generator
+ * produces?") and still catches a single corrupted byte anywhere.
+ */
+function digestOf(files) {
+  const h = createHash("sha256");
+  for (const f of [...files].sort((a, b) => (a.path < b.path ? -1 : 1))) {
+    h.update(`${f.path}:${f.sha256}\n`);
+  }
+  return h.digest("hex");
+}
+
+/** Hash everything currently under OUT, in the same shape `emit` records. */
+function scanDisk(dir = OUT, prefix = "") {
+  const out = [];
+  if (!existsSync(dir)) return out;
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+    if (entry.isDirectory()) out.push(...scanDisk(join(dir, entry.name), rel));
+    else {
+      const buf = readFileSync(join(dir, entry.name));
+      out.push({
+        path: rel,
+        bytes: buf.length,
+        sha256: createHash("sha256").update(buf).digest("hex"),
+      });
+    }
+  }
+  return out;
+}
+
+function manifestMatches() {
+  if (!existsSync(MANIFEST)) return false;
+  let prev;
+  try {
+    prev = JSON.parse(readFileSync(MANIFEST, "utf8"));
+  } catch {
+    return false;
+  }
+  // A generator change alters what the files *should* contain, but the stale
+  // files on disk still match the stale manifest — so the version has to be
+  // checked explicitly or a regenerate would be silently skipped.
+  if (prev.generator !== GENERATOR) return false;
+  if (prev.stress !== STRESS) return false;
+  const onDisk = scanDisk();
+  if (onDisk.length !== prev.fileCount) return false;
+  return digestOf(onDisk) === prev.digest;
+}
+
+function generate() {
+  rmSync(OUT, { recursive: true, force: true });
+
+  const sizes = { ...SIZES, ...(STRESS ? STRESS_SIZES : {}) };
+  let seed = 1;
+  const docs = {};
+  for (const variant of Object.keys(VARIANTS)) {
+    for (const [label, target] of Object.entries(sizes)) {
+      const doc = buildDoc(variant, target, seed++);
+      const rel = join("docs", `${variant}-${label}.md`);
+      emit(rel, doc);
+      docs[`${variant}-${label}`] = doc;
+    }
+  }
+
+  // Highlight sets are sampled from the 2MB mixed document — the size where
+  // the per-highlight cost in locate_normalized actually bites.
+  const base = docs["mixed-2m"];
+  for (const n of [1, 10, 100, 500]) {
+    emit(join("highlights", `${n}.json`), JSON.stringify(buildHighlights(base, n, 9000 + n), null, 2) + "\n");
+  }
+
+  for (const n of [10, 500, 5000]) {
+    const repo = `repos/repo-${n}`;
+    // A `.git` marker so `resolve_repo_root` stops here instead of walking up
+    // into dreamd's own repo and benchmarking the wrong tree.
+    emit(join(repo, ".git", "HEAD"), "ref: refs/heads/main\n");
+    emit(join(repo, ".gitignore"), "node_modules/\ntarget/\n");
+    for (const f of buildRepo(n, 20000 + n)) emit(join(repo, f.rel), f.body);
+  }
+
+  written.sort((a, b) => (a.path < b.path ? -1 : 1));
+  const isRepo = (p) => p.startsWith("repos/");
+  const manifest = {
+    generator: GENERATOR,
+    stress: STRESS,
+    fileCount: written.length,
+    totalBytes: written.reduce((n, f) => n + f.bytes, 0),
+    digest: digestOf(written),
+    // Per-file hashes for the documents and highlight sets, because those are
+    // the inputs whose exact bytes determine every benchmark number. The
+    // synthetic repos only matter in aggregate — they're walked and counted,
+    // never parsed — so they're summarized rather than enumerated.
+    docs: written.filter((f) => f.path.startsWith("docs/")),
+    highlights: written.filter((f) => f.path.startsWith("highlights/")),
+    repos: Object.entries(
+      written.filter((f) => isRepo(f.path)).reduce((acc, f) => {
+        const name = f.path.split("/")[1];
+        acc[name] ??= { files: 0, bytes: 0 };
+        acc[name].files += 1;
+        acc[name].bytes += f.bytes;
+        return acc;
+      }, {}),
+    ).map(([name, v]) => ({ name, ...v })),
+  };
+  writeFileSync(MANIFEST, JSON.stringify(manifest, null, 2) + "\n");
+  return manifest;
+}
+
+// ---- main ----------------------------------------------------------------
+
+if (CHECK) {
+  const ok = manifestMatches();
+  console.log(ok ? "corpus: up to date" : "corpus: stale or missing");
+  process.exit(ok ? 0 : 1);
+}
+
+if (!FORCE && manifestMatches()) {
+  const prev = JSON.parse(readFileSync(MANIFEST, "utf8"));
+  console.log(`corpus: up to date (${prev.fileCount} files, ${(prev.totalBytes / 1048576).toFixed(1)} MB)`);
+} else {
+  const m = generate();
+  console.log(
+    `corpus: generated ${m.fileCount} files, ${(m.totalBytes / 1048576).toFixed(1)} MB` +
+      (STRESS ? " (incl. 8MB stress docs)" : ""),
+  );
+  console.log(`corpus: manifest -> ${relative(process.cwd(), MANIFEST)}`);
+}

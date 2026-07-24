@@ -4,10 +4,25 @@ version = "0.1.0"
 description = "Lightweight GUI markdown reader with a highlight/annotation -> agent loop"
 edition = "2021"
 rust-version = "1.77"
+# Only the explicitly declared [[bench]] targets below are built, so
+# benches/common.rs stays a plain shared module rather than a bench of its own.
+autobenches = false
+
+[lib]
+# Exists so `benches/` and unit tests can import the internals. The binary is a
+# thin shell over this.
+name = "dreamd"
+path = "src/lib.rs"
 
 [[bin]]
 name = "dreamd"
 path = "src/main.rs"
+
+[features]
+default = []
+# Opt-in timing instrumentation (see `src/perf.rs`). Off by default so shipping
+# builds carry none of it. Enable with `cargo build --features perf`.
+perf = []
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -27,3 +42,22 @@ clap = { version = "4", features = ["derive"] }
 arboard = "3"
 open = "5"
 trash = "5"
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "render"
+harness = false
+
+[[bench]]
+name = "locate"
+harness = false
+
+[[bench]]
+name = "search"
+harness = false
+
+[[bench]]
+name = "walk"
+harness = false
