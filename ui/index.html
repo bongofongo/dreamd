@@ -162,6 +162,20 @@
       #confirm-msg { margin: 6px 0 4px; }
       #confirm-detail { font-size: 12px; opacity: 0.6; word-break: break-all; }
 
+      /* icon-button tooltip: name + keybind, positioned by JS */
+      #tooltip {
+        position: fixed; z-index: 90; display: none; pointer-events: none;
+        background: var(--sidebar-bg, #1b2029); border: 1px solid var(--border, #444);
+        border-radius: 6px; padding: 5px 8px; font-size: 12px; line-height: 1.35;
+        white-space: nowrap; box-shadow: 0 6px 18px rgba(0,0,0,0.45);
+        opacity: 0; transition: opacity 0.12s;
+      }
+      #tooltip.show { display: block; opacity: 1; }
+      #tooltip .tt-key {
+        margin-left: 8px; opacity: 0.65; font-size: 11px;
+        border: 1px solid var(--border, #444); border-radius: 4px; padding: 0 4px;
+      }
+
       /* toast */
       #toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--btn-bg, #232a35); border: 1px solid var(--border, #444); border-radius: 8px; padding: 10px 16px; opacity: 0; transition: opacity 0.2s; z-index: 80; pointer-events: none; }
       #toast.show { opacity: 1; }
@@ -172,14 +186,14 @@
   <body>
     <div id="titlebar" data-tauri-drag-region>
       <div id="tb-actions">
-        <button id="btn-hl-mode" class="icon" title="Highlight mode (auto-highlight on select)">
+        <button id="btn-hl-mode" class="icon" data-tip="Highlight mode (auto-highlight on select)">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l4 4-8 8-4 1 1-4z"/><path d="M13 7l4 4"/><path d="M5 21h6"/></svg>
         </button>
-        <button id="btn-stack" class="icon" title="Toggle stack">
+        <button id="btn-stack" class="icon" data-tip="Toggle stack" data-tip-key="toggle_stack">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l9 5-9 5-9-5 9-5z"/><path d="M3 12l9 5 9-5"/><path d="M3 17l9 5 9-5"/></svg>
           <span class="badge" id="stack-badge">0</span>
         </button>
-        <button id="btn-send" class="icon primary" title="Send stack to agent">
+        <button id="btn-send" class="icon primary" data-tip="Send stack to agent" data-tip-key="send_stack">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/></svg>
         </button>
       </div>
@@ -189,7 +203,7 @@
       <aside id="sidebar">
         <div id="sidebar-header">
           <span id="repo-name">…</span>
-          <button id="btn-collapse" class="icon" title="Collapse file tree">
+          <button id="btn-collapse" class="icon" data-tip="Collapse file tree">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
           </button>
         </div>
@@ -204,7 +218,7 @@
         </div>
 
         <div id="stack-panel">
-          <h3>Send stack <button id="stack-close" class="icon" title="Collapse">✕</button></h3>
+          <h3>Send stack <button id="stack-close" class="icon" data-tip="Close stack panel" data-tip-key="toggle_stack">✕</button></h3>
           <div id="stack-list"></div>
           <div id="stack-actions">
             <button id="btn-send-selected">Send selected</button>
@@ -214,7 +228,7 @@
       </div>
     </div>
 
-    <button id="btn-expand" class="icon" title="Show file tree">
+    <button id="btn-expand" class="icon" data-tip="Show file tree">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>
     </button>
 
@@ -255,6 +269,7 @@
       </div>
     </div>
 
+    <div id="tooltip"></div>
     <div id="toast"></div>
 
     <script src="app.js" defer></script>

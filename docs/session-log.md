@@ -1,5 +1,48 @@
 # Session log
 
+## 2026-07-24 — icon-button tooltips with keybinds
+
+Every icon-only button in the GUI now shows a hover popup naming the button and,
+where one exists, the keybind that triggers it. Frontend-only; landed.
+
+### What happened
+
+1. **Inventoried the icon-only buttons.** Seven: `#btn-hl-mode`, `#btn-stack`,
+   `#btn-send` (titlebar), `#btn-collapse` / `#btn-expand` (file tree),
+   `#stack-close`, and the per-file `⋯` (`.file-opts`, built in `app.js`).
+
+2. **Dropped native `title` in favour of `data-tip`.** The browser tooltip has a
+   ~1s delay, can't be styled, and can't render the keybind chip. Each button now
+   carries `data-tip="<label>"` plus an optional `data-tip-key="<keymap field>"`
+   (`toggle_stack`, `send_stack`). Storing the *keymap field name* rather than a
+   literal combo means a user-configured bind from `get_keymap` renders correctly
+   — the tooltip reads the live `keymap` object at show time.
+
+3. **`wireTooltips()` in `ui/app.js`.** One `#tooltip` div, delegated
+   `mouseover`/`mouseout` off `document` so tree rows rendered later are covered
+   without rewiring. 350ms delay, positioned below the button and flipped above
+   when it would clip the viewport bottom, clamped horizontally. Also fires on
+   `focusin` (keyboard parity) and hides on click, scroll, and blur — a click
+   means the user already knows what the button does.
+
+4. **Styling in `index.html`'s structural `<style>`, not `theme.css`.** The popup
+   is chrome, not reading surface; it inherits the existing `--sidebar-bg` /
+   `--border` vars so a theme still recolours it.
+
+### Mistakes & deviations
+
+- First cut called `scheduleTip()` without claiming `tipTarget` up front, so every
+  `mouseover` bubbling from inside the button restarted the 350ms timer and the
+  tooltip never appeared while the mouse was moving. Fixed by setting `tipTarget`
+  at schedule time, not at show time.
+- The `innerHTML` write tripped a security hook warning; both interpolations go
+  through the existing `escapeHtml()`, so it was left as-is.
+
+### State
+
+`node --check ui/app.js` passes. No Rust touched, so no `cargo build` gate. Not
+exercised in a running window — the hover behaviour is unverified visually.
+
 ## 2026-07-24 — session rituals: wrap-up skill + daily project doc
 
 Ported the blogregator docs setup into dreamd: a `/wrap-up` skill, a

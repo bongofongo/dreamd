@@ -42,6 +42,7 @@ async function init() {
   wireEvents();
   wireKeys();
   wireUi();
+  wireTooltips();
 
   // nvim-style: `dreamd file.md` opens the file on load.
   try {
@@ -96,7 +97,7 @@ function renderNode(node) {
   const opts = document.createElement("button");
   opts.className = "file-opts";
   opts.textContent = "⋯";
-  opts.title = "File options";
+  opts.dataset.tip = "File options";
   opts.onclick = (e) => { e.stopPropagation(); openFileMenu(opts, node); };
   item.appendChild(name);
   item.appendChild(opts);
@@ -583,6 +584,66 @@ function wireKeys() {
       return;
     }
   });
+}
+
+// ---- tooltips ------------------------------------------------------------
+// Icon-only buttons carry `data-tip` (label) and optionally `data-tip-key`
+// (a keymap field name). Native `title` is deliberately unused so the popup
+// appears instantly and can render the keybind alongside the label.
+let tipTimer = null;
+let tipTarget = null;
+
+function wireTooltips() {
+  document.addEventListener("mouseover", (e) => {
+    const el = e.target.closest && e.target.closest("[data-tip]");
+    if (el !== tipTarget) el ? scheduleTip(el) : hideTip();
+  });
+  document.addEventListener("mouseout", (e) => {
+    const el = e.target.closest && e.target.closest("[data-tip]");
+    if (el && el === tipTarget && !el.contains(e.relatedTarget)) hideTip();
+  });
+  // Keyboard focus gets the same affordance.
+  document.addEventListener("focusin", (e) => {
+    const el = e.target.closest && e.target.closest("[data-tip]");
+    if (el) showTip(el); else hideTip();
+  });
+  document.addEventListener("focusout", hideTip);
+  // A click means the user knows what the button does; get out of the way.
+  document.addEventListener("mousedown", hideTip, true);
+  window.addEventListener("scroll", hideTip, true);
+}
+
+function scheduleTip(el) {
+  hideTip();
+  tipTarget = el; // claimed up front so mousemove inside the button won't restart the timer
+  tipTimer = setTimeout(() => showTip(el), 350);
+}
+
+function showTip(el) {
+  clearTimeout(tipTimer);
+  tipTarget = el;
+  const tip = $("tooltip");
+  const combo = el.dataset.tipKey ? keymap[el.dataset.tipKey] : null;
+  tip.innerHTML = escapeHtml(el.dataset.tip) +
+    (combo ? `<span class="tt-key">${escapeHtml(combo)}</span>` : "");
+  tip.classList.add("show");
+
+  // Prefer below the button; flip above when it would clip the viewport.
+  const r = el.getBoundingClientRect();
+  const t = tip.getBoundingClientRect();
+  const gap = 6;
+  let top = r.bottom + gap;
+  if (top + t.height > window.innerHeight - 4) top = r.top - t.height - gap;
+  let left = r.left + r.width / 2 - t.width / 2;
+  left = Math.max(4, Math.min(left, window.innerWidth - t.width - 4));
+  tip.style.top = `${Math.max(4, top)}px`;
+  tip.style.left = `${left}px`;
+}
+
+function hideTip() {
+  clearTimeout(tipTimer);
+  tipTarget = null;
+  $("tooltip").classList.remove("show");
 }
 
 async function copyStack() {

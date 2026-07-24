@@ -127,6 +127,9 @@ Known limits, all deliberate for v1:
 
 ## Recent updates
 
+- **2026-07-24** — Hovering any icon-only button now pops up its name and keybind,
+  so the toolbar is learnable without reading the docs. The keybind shown is read
+  from your live keymap, so a custom binding displays correctly.
 - **2026-07-24** — Added the `engies/` docs directory (this file), a `/wrap-up`
   skill that commits a session and logs it to `docs/session-log.md`, and a
   `/update-project-doc` skill plus a daily scheduled job that keeps this page
