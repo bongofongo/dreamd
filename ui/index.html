@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>dreamd</title>
+    <!-- Structural layout (not user-themed). Reading styles live in theme.css,
+         injected at runtime into #user-theme so they can hot-reload. -->
+    <style>
+      * { box-sizing: border-box; }
+      html, body { height: 100%; margin: 0; }
+      body {
+        display: flex;
+        flex-direction: column;
+        height: 100vh;
+        font: 14px/1.5 system-ui, sans-serif;
+        overflow: hidden;
+      }
+
+      button {
+        font: inherit; cursor: pointer; border: 1px solid var(--border, #444);
+        background: var(--btn-bg, #232a35); color: inherit; border-radius: 6px; padding: 4px 10px;
+      }
+      button:hover { background: var(--hover, #2c3542); }
+      button.primary { background: var(--accent, #4c8bf5); border-color: var(--accent, #4c8bf5); color: #fff; }
+      button.icon { display: inline-flex; align-items: center; justify-content: center; padding: 5px 8px; }
+      button.danger { border-color: var(--stale, #e05561); color: var(--stale, #e05561); }
+      button.danger:hover { background: var(--stale-bg, #35181c); }
+
+      /* titlebar: shares the row with the macOS traffic lights (overlay style) */
+      #titlebar {
+        display: flex; align-items: center; gap: 8px;
+        height: 38px; flex: 0 0 38px; padding: 0 10px;
+        border-bottom: 1px solid var(--border, #333);
+        background: var(--sidebar-bg, #171b22);
+      }
+      body.mac #titlebar { padding-left: 78px; } /* clear the traffic lights */
+      #tb-actions { margin-left: auto; display: flex; gap: 6px; align-items: center; }
+      #btn-stack { position: relative; }
+      #btn-stack .badge {
+        position: absolute; top: -6px; right: -6px; display: none;
+        background: var(--accent, #4c8bf5); color: #fff; border-radius: 10px;
+        font-size: 10px; line-height: 1; padding: 2px 5px; min-width: 16px; text-align: center;
+      }
+      #btn-stack .badge.show { display: block; }
+      #btn-hl-mode.active { background: var(--hl, #f6d365); border-color: var(--hl, #f6d365); color: #1a1a1a; }
+
+      /* workspace grid: sidebar | main */
+      #workspace {
+        flex: 1; min-height: 0; display: grid;
+        grid-template-columns: 260px 1fr;
+        grid-template-rows: minmax(0, 1fr);
+        overflow: hidden;
+      }
+      body.nav-collapsed #workspace { grid-template-columns: 0 1fr; }
+      body.nav-collapsed #sidebar { overflow: hidden; border-right: none; }
+
+      #sidebar {
+        border-right: 1px solid var(--border, #333);
+        display: flex; flex-direction: column; min-height: 0; min-width: 0;
+        background: var(--sidebar-bg, #171b22);
+      }
+      #sidebar-header {
+        display: flex; align-items: center; gap: 6px;
+        padding: 8px 8px 8px 12px; border-bottom: 1px solid var(--border, #333);
+      }
+      #repo-name { flex: 1; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      #btn-collapse { flex: 0 0 auto; }
+      #tree { overflow: auto; flex: 1; padding: 6px 0; min-height: 0; }
+      .tree-item { padding: 2px 12px; cursor: pointer; white-space: nowrap; user-select: none; }
+      .tree-item:hover { background: var(--hover, #222b38); }
+      .tree-item.file { display: flex; align-items: center; gap: 6px; }
+      .tree-item.file .file-name { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+      .tree-item.file.active { background: var(--accent-dim, #2c3a4d); }
+      .tree-item.file .file-opts {
+        flex: 0 0 auto; border: none; background: none; padding: 0 4px; opacity: 0;
+        font-size: 16px; line-height: 1; border-radius: 4px;
+      }
+      .tree-item.file:hover .file-opts { opacity: 0.6; }
+      .tree-item.file .file-opts:hover { opacity: 1; background: var(--btn-bg, #232a35); }
+      .tree-dir > .tree-label { font-weight: 600; opacity: 0.8; }
+      .tree-children { margin-left: 12px; }
+      .hint { padding: 6px 12px; font-size: 12px; opacity: 0.6; }
+
+      /* floating expand arrow, shown only when the tree is collapsed */
+      #btn-expand {
+        position: fixed; left: 6px; top: 46px; z-index: 30; display: none;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+      }
+      body.nav-collapsed #btn-expand { display: inline-flex; }
+
+      #main-wrap { position: relative; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+      body.hl-mode #content { cursor: crosshair; }
+      body.hl-mode #content-scroll { box-shadow: inset 0 3px 0 var(--hl, #f6d365); }
+
+      #content-scroll { flex: 1; overflow: auto; position: relative; min-height: 0; }
+      #content { max-width: 820px; margin: 0 auto; padding: 32px 40px 120px; }
+
+      /* stale-highlight margin rail */
+      #stale-rail { position: absolute; top: 8px; right: 8px; width: 210px; display: flex; flex-direction: column; gap: 6px; z-index: 5; }
+      .stale-chip { background: var(--stale-bg, #3a1f22); border: 1px solid var(--stale, #e05561); border-radius: 6px; padding: 6px 8px; font-size: 12px; }
+      .stale-chip .q { opacity: 0.8; display: block; margin: 4px 0; max-height: 3em; overflow: hidden; }
+      .stale-chip .row { display: flex; gap: 6px; }
+
+      mark.hl { background: var(--hl, #f6d365); color: inherit; border-radius: 2px; padding: 0 1px; cursor: pointer; }
+      mark.hl:hover { outline: 1px solid var(--hl, #f6d365); outline-offset: 1px; }
+      mark.hl.stale { background: var(--stale, #e05561); }
+
+      /* stack panel */
+      #stack-panel {
+        position: absolute; top: 0; right: 0; bottom: 0; width: 340px;
+        background: var(--sidebar-bg, #171b22); border-left: 1px solid var(--border, #333);
+        display: none; flex-direction: column; z-index: 20;
+      }
+      #stack-panel.open { display: flex; }
+      #stack-panel h3 { margin: 0; padding: 10px 12px; border-bottom: 1px solid var(--border, #333); font-size: 13px; display: flex; align-items: center; justify-content: space-between; }
+      #stack-list { flex: 1; overflow: auto; padding: 8px; }
+      .pair { border: 1px solid var(--border, #333); border-radius: 6px; padding: 8px; margin-bottom: 8px; }
+      .pair .loc { font-size: 11px; opacity: 0.6; }
+      .pair .ev { font-size: 12px; opacity: 0.85; margin: 4px 0; border-left: 2px solid var(--hl, #f6d365); padding-left: 6px; }
+      .pair .an { font-size: 13px; }
+      .pair .top { display: flex; align-items: center; gap: 6px; }
+      #stack-actions { display: flex; gap: 8px; padding: 10px; border-top: 1px solid var(--border, #333); }
+
+      /* command palette */
+      #palette-overlay {
+        position: fixed; inset: 0; background: rgba(0,0,0,0.4);
+        display: none; align-items: flex-start; justify-content: center; z-index: 50;
+      }
+      #palette-overlay.open { display: flex; }
+      #palette {
+        margin-top: 80px; width: 620px; max-width: 90vw; max-height: 70vh;
+        background: var(--sidebar-bg, #1b2029); border: 1px solid var(--border, #444);
+        border-radius: 10px; display: flex; flex-direction: column; overflow: hidden;
+        box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+      }
+      #palette input { font: inherit; padding: 12px 14px; border: none; outline: none; background: transparent; color: inherit; border-bottom: 1px solid var(--border, #333); }
+      #palette-results { overflow: auto; }
+      .pr { padding: 8px 14px; cursor: pointer; }
+      .pr .rel { opacity: 0.6; font-size: 12px; }
+      .pr.sel { background: var(--accent-dim, #2c3a4d); }
+
+      /* file options popup */
+      #file-menu {
+        position: fixed; z-index: 70; display: none; min-width: 150px;
+        background: var(--sidebar-bg, #1b2029); border: 1px solid var(--border, #444);
+        border-radius: 8px; padding: 4px; box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+      }
+      #file-menu.open { display: block; }
+      .fm-item { padding: 7px 10px; cursor: pointer; border-radius: 5px; white-space: nowrap; }
+      .fm-item:hover { background: var(--hover, #2c3542); }
+      .fm-item.danger { color: var(--stale, #e05561); }
+
+      /* annotation prompt + confirm dialog */
+      .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: none; align-items: center; justify-content: center; z-index: 60; }
+      .modal-overlay.open { display: flex; }
+      #annot-box, #confirm-box { width: 520px; max-width: 92vw; background: var(--sidebar-bg, #1b2029); border: 1px solid var(--border, #444); border-radius: 10px; padding: 14px; }
+      #confirm-box { width: 420px; }
+      #annot-box .ev { font-size: 12px; opacity: 0.8; border-left: 2px solid var(--hl, #f6d365); padding-left: 8px; margin: 8px 0; max-height: 6em; overflow: auto; }
+      #annot-box textarea { width: 100%; min-height: 70px; font: inherit; background: var(--btn-bg, #232a35); color: inherit; border: 1px solid var(--border, #444); border-radius: 6px; padding: 8px; }
+      .modal-row { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
+      #confirm-msg { margin: 6px 0 4px; }
+      #confirm-detail { font-size: 12px; opacity: 0.6; word-break: break-all; }
+
+      /* toast */
+      #toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--btn-bg, #232a35); border: 1px solid var(--border, #444); border-radius: 8px; padding: 10px 16px; opacity: 0; transition: opacity 0.2s; z-index: 80; pointer-events: none; }
+      #toast.show { opacity: 1; }
+      .empty { opacity: 0.5; padding: 40px; text-align: center; }
+    </style>
+    <style id="user-theme"></style>
+  </head>
+  <body>
+    <div id="titlebar" data-tauri-drag-region>
+      <div id="tb-actions">
+        <button id="btn-hl-mode" class="icon" title="Highlight mode (auto-highlight on select)">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l4 4-8 8-4 1 1-4z"/><path d="M13 7l4 4"/><path d="M5 21h6"/></svg>
+        </button>
+        <button id="btn-stack" class="icon" title="Toggle stack">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l9 5-9 5-9-5 9-5z"/><path d="M3 12l9 5 9-5"/><path d="M3 17l9 5 9-5"/></svg>
+          <span class="badge" id="stack-badge">0</span>
+        </button>
+        <button id="btn-send" class="icon primary" title="Send stack to agent">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/></svg>
+        </button>
+      </div>
+    </div>
+
+    <div id="workspace">
+      <aside id="sidebar">
+        <div id="sidebar-header">
+          <span id="repo-name">…</span>
+          <button id="btn-collapse" class="icon" title="Collapse file tree">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
+          </button>
+        </div>
+        <div class="hint" id="search-hint">Press the palette key to search</div>
+        <div id="tree"></div>
+      </aside>
+
+      <div id="main-wrap">
+        <div id="content-scroll">
+          <div id="stale-rail"></div>
+          <div id="content"><div class="empty">Select a markdown file from the tree, or open the search palette.</div></div>
+        </div>
+
+        <div id="stack-panel">
+          <h3>Send stack <button id="stack-close" class="icon" title="Collapse">✕</button></h3>
+          <div id="stack-list"></div>
+          <div id="stack-actions">
+            <button id="btn-send-selected">Send selected</button>
+            <button id="btn-send-all" class="primary">Send all</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <button id="btn-expand" class="icon" title="Show file tree">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>
+    </button>
+
+    <div id="file-menu">
+      <div class="fm-item" id="fm-copy">Copy path</div>
+      <div class="fm-item danger" id="fm-delete">Delete file</div>
+    </div>
+
+    <div id="palette-overlay">
+      <div id="palette">
+        <input id="palette-input" placeholder="Fuzzy find markdown files…" autocomplete="off" />
+        <div id="palette-results"></div>
+      </div>
+    </div>
+
+    <div id="annot-overlay" class="modal-overlay">
+      <div id="annot-box">
+        <div style="font-weight:600" id="annot-title">Add annotation</div>
+        <div class="ev" id="annot-ev"></div>
+        <textarea id="annot-text" placeholder="Question or comment for the agent…"></textarea>
+        <div class="modal-row">
+          <button id="annot-delete" class="danger" style="margin-right:auto; display:none">Delete highlight</button>
+          <button id="annot-cancel">Cancel</button>
+          <button id="annot-save" class="primary">Add to stack</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="confirm-overlay" class="modal-overlay">
+      <div id="confirm-box">
+        <div style="font-weight:600">Delete file</div>
+        <div id="confirm-msg">Move this file to the Trash?</div>
+        <div id="confirm-detail"></div>
+        <div class="modal-row">
+          <button id="confirm-cancel">Cancel</button>
+          <button id="confirm-ok" class="danger">Move to Trash</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="toast"></div>
+
+    <script src="app.js" defer></script>
+  </body>
+</html>
