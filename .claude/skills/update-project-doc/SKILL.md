@@ -1,0 +1,88 @@
+---
+name: update-project-doc
+description: Refreshes engies/project.md — the plain-language, entry-level project brief for the human behind dreamd — from the current state of the repo, then commits it to main. Invoke when the user asks to update the project doc / project.md / the team page, when a scheduled job runs this, or when a session materially changed the project story.
+---
+
+# Update `engies/project.md`
+
+`engies/project.md` is the daily landing page for the developer on this project.
+Someone should be able to be away for a week, read it in five minutes, and know
+exactly where dreamd stands. It is written for an **entry-level engineer** — plain
+English, jargon explained on first use, no assumed familiarity with Rust, Tauri, or
+the codebase.
+
+A scheduled job runs this daily; the user can also invoke it on demand. Both paths
+run the same steps.
+
+## 1. Read the current state
+
+Do this before writing a word — the doc must describe what's *actually* true today,
+not what was true when it was last written:
+
+- `git log --since="<date at the top of project.md>" --stat` (or the last ~20
+  commits) — what has actually changed since the last refresh.
+- `docs/session-log.md` — the top few entries, for the narrative and the decisions
+  behind the changes.
+- `README.md` — the user-facing feature list and known limits.
+- The current `engies/project.md` — what it already says, and its *Last updated*
+  date.
+- `docs/plan.md` for original intent, and the source tree (`src-tauri/src/`, `ui/`)
+  if the architecture section looks stale.
+
+If nothing meaningful changed since the last update, **do not manufacture news**.
+Bump the *Last updated* date only if some genuine detail was corrected; otherwise
+leave the file untouched, skip the commit, and say so.
+
+## 2. Rewrite the doc
+
+Keep the existing structure — it's the contract:
+
+1. **Header italic line** — the "daily landing spot" framing plus
+   `Last updated: YYYY-MM-DD` (get the date with `date +%F`).
+2. **What we're building** — the product in plain terms: what it does, who it's
+   for, the highlight → annotation → stack → send loop, and the deliberate
+   constraints (read-only, nothing persisted).
+3. **How it's built** — stack, why Tauri rather than Electron, the backend modules
+   and what each one does, and the couple of ideas that come up constantly
+   (re-anchoring / stale highlights, CSS theming).
+4. **Where things stand right now** — the honest status: what works, what's
+   verified and how, what's deliberately not done yet.
+5. **Glossary** — terms an entry-level reader might not have. Add entries as new
+   concepts enter the project; drop ones no longer relevant.
+6. **Recent updates** — reverse-chronological dated bullets, newest first. Add
+   today's bullet at the top. Keep roughly the last 8–10 entries; collapse older
+   ones into a single `**(earlier)**` line rather than growing forever.
+
+Style rules:
+
+- Explain, don't list. Prose over bullet dumps where a sentence reads better.
+- Every piece of jargon gets defined the first time it appears, or lands in the
+  glossary.
+- Say what's *not* done and what's broken. A status page that only reports wins is
+  useless.
+- Target 2–3 pages. If it's growing past that, cut history, not explanation.
+- No hedging or hype — this is a status page, not a pitch.
+
+## 3. Commit to main
+
+This is a docs-only change and goes **straight to main**. Stage
+`engies/project.md` and nothing else (if other files are dirty, leave them alone —
+they belong to whatever session is in flight):
+
+```sh
+git add engies/project.md
+git commit -m "docs: refresh engies/project.md" -m "<one line on what changed>" \
+           -m "Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
+git push origin main
+```
+
+If the working tree has unrelated staged changes, unstage nothing — just commit the
+single path with `git commit engies/project.md` so nothing else is swept in.
+
+If the push is rejected because main moved, `git pull --rebase origin main` and push
+again.
+
+## 4. Report
+
+One short paragraph: what changed in the doc, the commit hash, and confirmation of
+the push — or "no meaningful change since <date>, left untouched."
