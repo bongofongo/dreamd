@@ -1,0 +1,13 @@
+export const APP_NAME = "dreamd";
+export const EMAIL = "fongo02@proton.me";
+export const PERSONAL_SITE = "https://fongo.uk";
+export const REPO_URL = "https://github.com/bongofongo/dreamd";
+export const VERSION = "0.1.0";
+
+export const TAGLINE = "Read your repo like a book. Then ask it questions.";
+export const SUBLINE =
+  "A desktop markdown reader for a tmux, Neovim, and Claude Code workflow — typography freed from the terminal, and a way to hand what you read straight to your agent.";
+
+// import.meta.env.BASE_URL is '/dreamd'; normalize so href('/gallery') is safe either way.
+const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
+export const href = (path: string) => `${BASE}${path === "/" ? "/" : path}`;

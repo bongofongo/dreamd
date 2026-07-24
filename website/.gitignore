@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.astro/
+.wrangler/
+
+# The repo root ignores *.svg wholesale; the site's favicon is source, not an
+# app icon asset, so re-include it or a fresh clone cannot rebuild the site.
+!public/favicon.svg

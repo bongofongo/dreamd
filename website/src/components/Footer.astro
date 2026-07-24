@@ -1,0 +1,51 @@
+---
+import { EMAIL, PERSONAL_SITE, REPO_URL } from "../consts";
+const year = new Date().getFullYear();
+---
+
+<footer class="site-footer">
+  <div class="wrap cols">
+    <nav aria-label="Footer">
+      <a href={REPO_URL} rel="noopener noreferrer">Source</a>
+      <a href={`mailto:${EMAIL}`}>{EMAIL}</a>
+    </nav>
+    <p>© {year} · Made by Oliver — <a href={PERSONAL_SITE}>fongo.uk</a></p>
+  </div>
+</footer>
+
+<style>
+  /* Above the sticky landing, with the rest of the page. */
+  .site-footer {
+    position: relative;
+    z-index: 1;
+    border-top: 1px solid var(--border);
+    background: var(--bg-deep);
+    padding-block: 2.4rem;
+    font-size: 0.9rem;
+    color: var(--muted);
+  }
+
+  .cols {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.8rem 2rem;
+    justify-content: space-between;
+    align-items: baseline;
+  }
+
+  nav {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1.5rem;
+  }
+
+  nav a,
+  p a {
+    color: var(--muted);
+  }
+
+  nav a:hover,
+  p a:hover {
+    color: var(--text);
+  }
+</style>

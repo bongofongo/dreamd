@@ -1,0 +1,107 @@
+---
+import SiteLayout from "../layouts/SiteLayout.astro";
+import Landing from "../components/Landing.astro";
+import LoopSteps from "../components/LoopSteps.astro";
+import SpecStrip from "../components/SpecStrip.astro";
+import { APP_NAME, REPO_URL, SUBLINE, TAGLINE, VERSION } from "../consts";
+---
+
+<SiteLayout title={`${APP_NAME} — ${TAGLINE}`} description={SUBLINE} landing>
+  <Landing />
+
+  <div class="page">
+  <section class="section section-alt what">
+    <div class="wrap">
+      <span class="eyebrow">what it is</span>
+      <p>
+        Terminal text is fine for code and miserable for prose. dreamd opens as
+        its own window, shows a file tree of every markdown file in whatever
+        repository you are sitting in, and renders the one you click with real
+        fonts, real spacing, and syntax-highlighted code blocks.
+      </p>
+      <p>
+        It was built for a day spent inside a terminal — tmux for windows, Neovim
+        for editing, Claude Code for the rest. Existing markdown previewers dump
+        you into a browser tab, which breaks the flow. This is the reading window
+        that belongs in that setup.
+      </p>
+    </div>
+  </section>
+
+  <LoopSteps />
+  <SpecStrip />
+
+  <section class="section section-alt get">
+    <div class="wrap">
+      <span class="eyebrow">get it</span>
+      <h2>Build it yourself</h2>
+      <p class="lede">
+        macOS and Linux, version {VERSION}. There are no packaged releases yet —
+        clone it and run it.
+      </p>
+      <pre><code>git clone {REPO_URL}
+cd dreamd
+cargo tauri dev</code></pre>
+      <p class="note">
+        Needs a Rust toolchain and <code>cargo install tauri-cli --version "^2"</code>.
+        Run it anywhere: <code>dreamd</code> opens the repo you are standing in,
+        <code>dreamd notes/todo.md</code> opens a file. Like nvim.
+      </p>
+      <p class="src">
+        <a href={REPO_URL} rel="noopener noreferrer">Source on GitHub →</a>
+      </p>
+    </div>
+  </section>
+  </div>
+</SiteLayout>
+
+<style>
+  .what p {
+    max-width: 36em;
+    color: var(--muted);
+  }
+
+  .what p + p {
+    margin-top: 1.2rem;
+  }
+
+  .get h2 {
+    margin-bottom: 1rem;
+  }
+
+  .get .lede {
+    max-width: 34em;
+  }
+
+  pre {
+    margin-top: 1.8rem;
+    padding: 1.1rem 1.25rem;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-size: 0.9rem;
+    line-height: 1.7;
+    /* Wrap rather than scroll: the clone URL is wider than a phone, and a
+       hidden scroll region is a worse way to read a command than a soft wrap. */
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+
+  pre code {
+    background: none;
+    padding: 0;
+    font-size: inherit;
+    color: var(--text);
+  }
+
+  .note {
+    margin-top: 1.2rem;
+    font-size: 0.94rem;
+    color: var(--muted);
+    max-width: 40em;
+  }
+
+  .src {
+    margin-top: 1.8rem;
+  }
+</style>

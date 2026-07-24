@@ -1,0 +1,14 @@
+// Assets-only Worker serving the dreamd site at fongo.uk/dreamd*.
+// The rest of fongo.uk is paper_web on Vercel; this zone route shadows just the
+// /dreamd path before Vercel ever sees the request. Assets are free and unmetered.
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "dreamd-web",
+  "compatibility_date": "2026-07-24",
+  "assets": {
+    "directory": "./dist",
+    "not_found_handling": "404-page",
+    "html_handling": "auto-trailing-slash"
+  },
+  "routes": [{ "pattern": "fongo.uk/dreamd*", "zone_name": "fongo.uk" }]
+}

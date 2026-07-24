@@ -1,0 +1,105 @@
+---
+import { Font } from "astro:assets";
+import "../styles/global.css";
+import Header from "../components/Header.astro";
+import Footer from "../components/Footer.astro";
+import { APP_NAME, href } from "../consts";
+
+interface Props {
+  title: string;
+  description: string;
+  /** Set on the page that opens with the sticky dream screen. */
+  landing?: boolean;
+}
+
+const { title, description, landing = false } = Astro.props;
+const canonical = new URL(Astro.url.pathname, Astro.site);
+---
+
+<html lang="en" data-landing={landing ? "" : undefined}>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    <link rel="canonical" href={canonical} />
+    <link rel="icon" type="image/svg+xml" href={href("/favicon.svg")} />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content={APP_NAME} />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:url" content={canonical} />
+    <meta name="theme-color" content="#0b0e14" />
+    <Font cssVariable="--font-display" preload />
+    <script is:inline>
+      // `js` gates the one progressive enhancement on the site: hiding the
+      // corner wordmark until the reader has left the landing screen. Without
+      // this class the mark is simply always visible.
+      document.documentElement.classList.add("js");
+    </script>
+  </head>
+  <body>
+    <a class="skip" href="#main">Skip to content</a>
+    <Header />
+    <main id="main">
+      <slot />
+    </main>
+    <Footer />
+    <script is:inline>
+      // Toggle near the end of the curtain, once the solid page has most of the
+      // landing covered — not on the first wheel tick.
+      (() => {
+        const root = document.documentElement;
+        let on = null;
+        let wake = -1;
+        let queued = false;
+        const sync = () => {
+          queued = false;
+          const h = window.innerHeight;
+          const y = window.scrollY;
+
+          // --wake drives the landing dissolving as the solid page rises over
+          // it. Complete well before the page's top edge reaches the text, so
+          // the curtain never cuts a line of type in half.
+          const next = Math.min(1, Math.max(0, y / (h * 0.4)));
+          if (Math.abs(next - wake) > 0.01 || next === 0 || next === 1) {
+            wake = next;
+            root.style.setProperty("--wake", String(next));
+          }
+
+          const scrolled = y > h * 0.7;
+          if (scrolled === on) return;
+          on = scrolled;
+          root.classList.toggle("scrolled", scrolled);
+        };
+        addEventListener(
+          "scroll",
+          () => {
+            if (!queued) {
+              queued = true;
+              requestAnimationFrame(sync);
+            }
+          },
+          { passive: true }
+        );
+        sync();
+      })();
+    </script>
+    <style>
+      .skip {
+        position: absolute;
+        left: -9999px;
+        top: 0;
+        z-index: 200;
+        padding: 0.6em 1em;
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 0 0 6px 0;
+      }
+
+      .skip:focus-visible {
+        left: 0;
+      }
+    </style>
+  </body>
+</html>

@@ -1,0 +1,104 @@
+---
+const specs = [
+  {
+    term: "Rust + Tauri 2",
+    def: "Its own application window with a small binary, not a browser tab pretending to be one.",
+  },
+  {
+    term: "Rendered server-side",
+    def: "pulldown-cmark for CommonMark and GFM, syntect for fenced code. No markdown logic in the frontend.",
+  },
+  {
+    term: "Fuzzy file palette",
+    def: "nucleo over every markdown path in the repo, walked by the same ignore crate ripgrep uses — your .gitignore is respected.",
+  },
+  {
+    term: "Live on save",
+    def: "A notify watcher reloads the file, keeps your scroll position, and re-anchors highlights. If an edit changed the highlighted text itself, the highlight goes red and asks whether it still stands rather than quietly pointing at the wrong words.",
+  },
+  {
+    term: "Themeable to the CSS",
+    def: "theme.css is a user-facing surface and hot-reloads on save. Reading comfort is the product, so the paint job is a first-class knob.",
+  },
+];
+---
+
+<section class="section" id="under-the-hood">
+  <div class="wrap">
+    <span class="eyebrow">under the hood</span>
+    <h2>Small, quiet, and read-only</h2>
+    <p class="lede intro">
+      dreamd never writes to your markdown — editing stays in Neovim, where it
+      belongs. Nothing persists either: highlights, annotations, and the stack
+      live in memory and vanish with the process. It is a working surface for one
+      reading session, not a note-taking database.
+    </p>
+    <dl>
+      {
+        specs.map((spec) => (
+          <div class="row">
+            <dt>{spec.term}</dt>
+            <dd>{spec.def}</dd>
+          </div>
+        ))
+      }
+    </dl>
+    <p class="caveat">
+      Search matches file paths, not file contents — content search is not in yet.
+    </p>
+  </div>
+</section>
+
+<style>
+  h2 {
+    margin-bottom: 1.1rem;
+  }
+
+  .intro {
+    max-width: 38em;
+    margin-bottom: 3rem;
+  }
+
+  dl {
+    display: grid;
+    gap: 1.6rem;
+  }
+
+  .row {
+    display: grid;
+    grid-template-columns: 12rem 1fr;
+    gap: 0 1.4rem;
+    padding-top: 1.6rem;
+    border-top: 1px solid var(--border);
+  }
+
+  dt {
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+    letter-spacing: 0.02em;
+    color: var(--text);
+    line-height: 1.9;
+  }
+
+  dd {
+    color: var(--muted);
+    max-width: 40em;
+  }
+
+  .caveat {
+    margin-top: 2.4rem;
+    font-size: 0.92rem;
+    color: var(--muted);
+  }
+
+  @media (max-width: 620px) {
+    .row {
+      grid-template-columns: 1fr;
+      gap: 0.2rem;
+    }
+
+    dt {
+      line-height: 1.6;
+    }
+  }
+</style>

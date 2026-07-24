@@ -1,0 +1,125 @@
+---
+import { APP_NAME, REPO_URL, href } from "../consts";
+
+// No nav links yet — the <nav> is here so a later Gallery tab is one <a> away.
+const nav: { label: string; path: string }[] = [];
+---
+
+<header class="site-header">
+  <div class="wrap bar">
+    <a class="brand" href="#top">{APP_NAME}</a>
+    <div class="right">
+      {
+        nav.length > 0 && (
+          <nav aria-label="Site">
+            {nav.map((item) => <a href={href(item.path)}>{item.label}</a>)}
+          </nav>
+        )
+      }
+      <a class="repo" href={REPO_URL} rel="noopener noreferrer">
+        <svg
+          width="16"
+          height="16"
+          viewBox="0 0 16 16"
+          fill="currentColor"
+          aria-hidden="true"
+        >
+          <path
+            d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.4 7.4 0 0 1 2-.27c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"
+          ></path>
+        </svg>
+        <span>GitHub</span>
+      </a>
+    </div>
+  </div>
+</header>
+
+<style>
+  /* Fixed and bare over the landing; once the solid page has risen it takes a
+     fill and a rule, because content now passes underneath it. */
+  .site-header {
+    position: fixed;
+    inset: 0 0 auto;
+    z-index: 50;
+    background: transparent;
+    border-bottom: 1px solid transparent;
+    transition: background 0.3s ease, border-color 0.3s ease;
+  }
+
+  :global(html.scrolled) .site-header,
+  :global(html:not([data-landing])) .site-header {
+    background: var(--bg);
+    border-bottom-color: var(--border);
+  }
+
+  .bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    height: 58px;
+  }
+
+  .brand {
+    font-family: var(--font-display), Georgia, serif;
+    font-style: italic;
+    font-weight: 500;
+    font-size: 1.35rem;
+    letter-spacing: -0.01em;
+    color: var(--text);
+  }
+
+  .brand:hover {
+    text-decoration: none;
+    color: var(--accent);
+  }
+
+  /* On the landing the name is already the headline, so the corner mark would
+     just be saying it twice. It arrives — as the way home — once the reader has
+     scrolled into the page proper. Without JS it is simply always there. */
+  :global(html.js[data-landing]:not(.scrolled)) .brand {
+    opacity: 0;
+    transform: translateY(-4px);
+    pointer-events: none;
+  }
+
+  .brand {
+    transition: opacity 0.35s ease, transform 0.35s ease, color 0.18s ease;
+  }
+
+  .right {
+    display: flex;
+    align-items: center;
+    gap: 1.4rem;
+  }
+
+  nav {
+    display: flex;
+    gap: 1.4rem;
+  }
+
+  nav a,
+  .repo {
+    font-size: 0.9rem;
+    color: var(--muted);
+  }
+
+  .repo {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45em;
+  }
+
+  nav a:hover,
+  .repo:hover {
+    color: var(--text);
+    text-decoration: none;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .site-header,
+    .brand {
+      transition: none;
+    }
+  }
+</style>

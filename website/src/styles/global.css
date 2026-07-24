@@ -1,0 +1,268 @@
+/* dreamd site — design tokens + base styles.
+   Dark only, by decision: there is no light theme, no toggle, no pre-paint script.
+   The palette is lifted verbatim from the app's own ui/theme.css, so the site is
+   the colour the product actually is. */
+
+:root {
+  /* Darker than the app itself: the site is the dream the app opens onto, so
+     the ground is void rather than the app's slate. Accents, the highlight
+     yellow, and the text colour are still the app's own. */
+  --bg: #0b0e14;
+  --bg-deep: #070910;
+  --panel: #161c26;
+  --border: #1f2733;
+  --text: #c7cedb;
+  --muted: #8a93a3;
+  --accent: #6ea8fe;
+  --accent-dim: #26374d;
+  --link: #74b0ff;
+  --hl: #f6d365;
+  --hl-ink: #1a1a1a;
+
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+
+  --content-max: 720px;
+  --pad-x: clamp(20px, 6vw, 36px);
+  --section-y: clamp(64px, 9vw, 108px);
+
+  color-scheme: dark;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  scroll-behavior: smooth;
+  /* Anchor targets clear the fixed header. */
+  scroll-padding-top: 74px;
+  background: var(--bg);
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
+body {
+  font-family: var(--font-sans);
+  font-size: 1.0625rem;
+  line-height: 1.7;
+  color: var(--text);
+  background: var(--bg);
+  max-width: 100%;
+  /* No overflow-x here on purpose: it would make <body> a scroll container and
+     silently break the landing's position: sticky. html handles the clamp. */
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Grain. A single inline feTurbulence tile, fixed over everything, blended so it
+   reads as sand caught in the light rather than a grey wash. Never animated. */
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  pointer-events: none;
+  opacity: 0.045;
+  mix-blend-mode: soft-light;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+a {
+  color: var(--link);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: 3px;
+}
+
+p,
+li,
+a {
+  overflow-wrap: anywhere;
+}
+
+/* ---- type ---- */
+
+h1,
+h2,
+h3 {
+  font-family: var(--font-display), Georgia, serif;
+  font-weight: 500;
+  line-height: 1.18;
+  letter-spacing: -0.015em;
+  text-wrap: balance;
+}
+
+.display {
+  font-size: clamp(2.1rem, 6.4vw, 3.4rem);
+  line-height: 1.12;
+}
+
+h2 {
+  font-size: clamp(1.5rem, 3.4vw, 2rem);
+}
+
+h3 {
+  font-size: 1.15rem;
+  letter-spacing: -0.005em;
+}
+
+.lede {
+  font-size: clamp(1.05rem, 2vw, 1.2rem);
+  line-height: 1.6;
+  color: var(--muted);
+  text-wrap: pretty;
+}
+
+.eyebrow {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 1.1rem;
+}
+
+/* The app's own highlight, doing the app's own job. Used two or three times on
+   the whole page — the moment it becomes decoration it stops meaning anything. */
+mark,
+.hl {
+  background: var(--hl);
+  color: var(--hl-ink);
+  border-radius: 2px;
+  padding: 0 0.14em;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+
+code {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  background: var(--panel);
+  border-radius: 4px;
+  padding: 0.12em 0.36em;
+}
+
+/* ---- layout ---- */
+
+.wrap {
+  max-width: var(--content-max);
+  margin-inline: auto;
+  padding-inline: var(--pad-x);
+}
+
+.section {
+  padding-block: var(--section-y);
+}
+
+.section-alt {
+  background: var(--bg-deep);
+  border-block: 1px solid var(--border);
+}
+
+/* The second half of the site. Opaque, and stacked above the sticky landing so
+   that scrolling raises it over the dream like a page being drawn across. The
+   shadow is what sells the overlap; the hairline is its top edge. */
+.page {
+  position: relative;
+  z-index: 1;
+  background: var(--bg);
+  border-top: 1px solid var(--border);
+  box-shadow: 0 -32px 64px rgb(0 0 0 / 55%);
+}
+
+/* .page already draws the top edge; don't double the hairline. */
+.page > .section-alt:first-child {
+  border-top: 0;
+}
+
+/* Pages without a landing screen start straight under the fixed header. */
+main > .section:first-child {
+  padding-top: calc(var(--section-y) + 58px);
+}
+
+.rule {
+  height: 1px;
+  border: 0;
+  background: var(--border);
+}
+
+/* ---- buttons ---- */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5em;
+  padding: 0.72em 1.35em;
+  border-radius: 6px;
+  font-size: 0.98rem;
+  font-weight: 500;
+  line-height: 1.2;
+  border: 1px solid transparent;
+  transition: transform 0.18s ease, background 0.18s ease, border-color 0.18s ease;
+}
+
+.btn:hover {
+  text-decoration: none;
+  transform: translateY(-1px);
+}
+
+.btn-primary {
+  background: var(--accent);
+  color: #10141a;
+  font-weight: 600;
+}
+
+.btn-primary:hover {
+  background: #86b6ff;
+}
+
+.btn-quiet {
+  color: var(--text);
+  border-color: var(--border);
+  background: var(--panel);
+}
+
+.btn-quiet:hover {
+  border-color: var(--accent-dim);
+  background: #283040;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  .btn:hover {
+    transform: none;
+  }
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

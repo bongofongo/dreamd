@@ -1,0 +1,123 @@
+---
+import DreamField from "./DreamField.astro";
+import { APP_NAME, REPO_URL } from "../consts";
+---
+
+<section class="landing" id="top">
+  <DreamField />
+  <div class="wrap inner">
+    <span class="eyebrow">a markdown reader</span>
+    <h1 class="name">{APP_NAME}</h1>
+    <p class="sub">Read your repo like a book. Then ask it questions.</p>
+    <p class="lede">
+      Renders the markdown you already wrote with real typography — in its own
+      window, not a browser tab. <mark>Highlight a passage</mark>, attach a
+      question to it, and send the whole stack to your agent in one action.
+    </p>
+    <div class="actions">
+      <a class="btn btn-primary" href={REPO_URL} rel="noopener noreferrer">
+        Source on GitHub
+      </a>
+      <a class="btn btn-quiet" href="#loop">How it works</a>
+    </div>
+  </div>
+  <a class="cue" href="#loop" aria-label="Scroll to how it works">
+    <span aria-hidden="true">↓</span>
+  </a>
+</section>
+
+<style>
+  /* Sticky, exactly one screen tall: the solid page below scrolls up over it,
+     so the two halves of the site read as two pages joined by a scroll rather
+     than one page with a decorated top. */
+  .landing {
+    position: sticky;
+    top: 0;
+    z-index: 0;
+    min-height: 100svh;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    overflow: hidden;
+    padding-block: clamp(80px, 14vh, 130px) clamp(76px, 12vh, 120px);
+    text-align: center;
+  }
+
+  /* Waking: the text lifts and dissolves as the page below rises. --wake is
+     written by the scroll handler in SiteLayout; without JS it stays 0 and the
+     landing simply never fades. */
+  .inner {
+    opacity: calc(1 - var(--wake, 0));
+    transform: translateY(calc(var(--wake, 0) * -28px));
+  }
+
+  .name {
+    font-style: italic;
+    font-size: clamp(3.6rem, 13vw, 7rem);
+    line-height: 0.98;
+    letter-spacing: -0.03em;
+    margin-bottom: clamp(0.8rem, 2vw, 1.2rem);
+  }
+
+  .sub {
+    font-family: var(--font-display), Georgia, serif;
+    font-size: clamp(1.3rem, 3.2vw, 2rem);
+    line-height: 1.25;
+    letter-spacing: -0.015em;
+    text-wrap: balance;
+    max-width: 22em;
+    margin-inline: auto;
+  }
+
+  .lede {
+    margin: clamp(1.2rem, 3vw, 1.8rem) auto 0;
+    max-width: 34em;
+    font-size: clamp(1rem, 1.8vw, 1.1rem);
+    line-height: 1.6;
+    color: var(--muted);
+    text-wrap: pretty;
+  }
+
+  .actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 0.7rem;
+    margin-top: clamp(1.8rem, 4vw, 2.4rem);
+  }
+
+  .cue {
+    position: absolute;
+    left: 50%;
+    bottom: clamp(20px, 3.5vh, 36px);
+    translate: -50% 0;
+    color: var(--muted);
+    font-size: 1.1rem;
+    line-height: 1;
+    padding: 0.5rem 0.8rem;
+    opacity: calc(1 - var(--wake, 0));
+    animation: bob 3.4s ease-in-out infinite;
+  }
+
+  .cue:hover {
+    color: var(--text);
+    text-decoration: none;
+  }
+
+  /* Transform only — opacity belongs to --wake, and the two would fight. */
+  @keyframes bob {
+    0%,
+    100% {
+      transform: translateY(0);
+    }
+    50% {
+      transform: translateY(5px);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .cue {
+      animation: none;
+    }
+  }
+</style>

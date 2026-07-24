@@ -1,0 +1,155 @@
+---
+// The dream, scoped to the landing screen only. Void, veils, starlight, sand.
+// Transform- and opacity-only animation, all of it compositor work, no JS.
+---
+
+<div class="dream" aria-hidden="true">
+  <div class="veil veil-a"></div>
+  <div class="veil veil-b"></div>
+  <div class="veil veil-c"></div>
+  <div class="stars"></div>
+  <div class="vignette"></div>
+</div>
+
+<style>
+  .dream {
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    pointer-events: none;
+    overflow: hidden;
+    /* The sky: a shade lifted at the horizon, void everywhere else. */
+    background: radial-gradient(
+      150% 95% at 50% -12%,
+      #17202e 0%,
+      #0e131c 42%,
+      #080a10 74%,
+      #05060a 100%
+    );
+  }
+
+  /* Veils. Blurred past being shapes, drifting on unrelated clocks so they
+     cross instead of moving as one mass. */
+  .veil {
+    position: absolute;
+    filter: blur(70px);
+    will-change: transform;
+  }
+
+  .veil-a {
+    inset: -30% 55% 30% -35%;
+    background: radial-gradient(
+      closest-side,
+      rgb(72 86 168 / 30%) 0%,
+      rgb(72 86 168 / 9%) 55%,
+      transparent 100%
+    );
+    animation: veil-a 34s ease-in-out infinite alternate;
+  }
+
+  .veil-b {
+    inset: 20% -35% -30% 52%;
+    background: radial-gradient(
+      closest-side,
+      rgb(118 92 196 / 24%) 0%,
+      rgb(118 92 196 / 7%) 58%,
+      transparent 100%
+    );
+    animation: veil-b 43s ease-in-out infinite alternate;
+  }
+
+  /* The aurora — a cold teal band across the upper sky. Breathes rather than
+     drifts; it is the thing that makes the screen feel awake. */
+  .veil-c {
+    inset: -20% -15% 45% -15%;
+    background: radial-gradient(
+      70% 55% at 50% 40%,
+      rgb(70 148 160 / 13%) 0%,
+      transparent 72%
+    );
+    animation: veil-c 52s ease-in-out infinite alternate;
+  }
+
+  @keyframes veil-a {
+    from {
+      transform: translate3d(-4%, -3%, 0) scale(1);
+    }
+    to {
+      transform: translate3d(7%, 5%, 0) scale(1.2);
+    }
+  }
+
+  @keyframes veil-b {
+    from {
+      transform: translate3d(5%, 5%, 0) scale(1.16);
+    }
+    to {
+      transform: translate3d(-7%, -4%, 0) scale(1);
+    }
+  }
+
+  @keyframes veil-c {
+    from {
+      transform: translate3d(-3%, 0, 0);
+      opacity: 0.45;
+    }
+    to {
+      transform: translate3d(4%, -2%, 0);
+      opacity: 1;
+    }
+  }
+
+  /* Starlight and sand — sparse on purpose. Two repeating tiles at different
+     scales so the drift reads as depth; one grain per tile is the highlight
+     yellow, the same colour the app marks text with. The element overhangs the
+     screen by 18%, so the tiles never show an edge as it moves. */
+  .stars {
+    position: absolute;
+    inset: -18%;
+    background-image:
+      radial-gradient(circle at 14% 22%, rgb(214 224 240 / 62%) 0 1px, transparent 1.6px),
+      radial-gradient(circle at 61% 9%, rgb(214 224 240 / 50%) 0 1px, transparent 1.6px),
+      radial-gradient(circle at 38% 74%, rgb(246 211 101 / 44%) 0 1px, transparent 1.6px),
+      radial-gradient(circle at 87% 55%, rgb(214 224 240 / 44%) 0 1px, transparent 1.6px),
+      radial-gradient(circle at 8% 63%, rgb(170 190 220 / 30%) 0 0.8px, transparent 1.3px),
+      radial-gradient(circle at 47% 31%, rgb(170 190 220 / 26%) 0 0.8px, transparent 1.3px),
+      radial-gradient(circle at 72% 86%, rgb(170 190 220 / 28%) 0 0.8px, transparent 1.3px),
+      radial-gradient(circle at 93% 17%, rgb(170 190 220 / 22%) 0 0.8px, transparent 1.3px);
+    background-size: 720px 720px, 720px 720px, 720px 720px, 720px 720px,
+      400px 400px, 400px 400px, 400px 400px, 400px 400px;
+    animation: sand 96s ease-in-out infinite alternate;
+    will-change: transform;
+  }
+
+  @keyframes sand {
+    from {
+      transform: translate3d(-26px, 34px, 0);
+    }
+    to {
+      transform: translate3d(22px, -40px, 0);
+    }
+  }
+
+  /* Corners pulled down into the dark, so the screen has an edge to fall off. */
+  .vignette {
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(
+      120% 90% at 50% 42%,
+      transparent 0%,
+      transparent 52%,
+      rgb(3 4 7 / 55%) 100%
+    );
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .veil,
+    .stars {
+      animation: none;
+    }
+
+    .veil-c {
+      opacity: 0.8;
+    }
+  }
+</style>

@@ -1,0 +1,25 @@
+---
+import SiteLayout from "../layouts/SiteLayout.astro";
+import { href } from "../consts";
+---
+
+<SiteLayout
+  title="Not found — dreamd"
+  description="That page does not exist."
+>
+  <section class="section">
+    <div class="wrap">
+      <span class="eyebrow">404</span>
+      <h1 class="display">Nothing anchored here.</h1>
+      <p class="lede">
+        The page you were after has gone stale. <a href={href("/")}>Start again</a>.
+      </p>
+    </div>
+  </section>
+</SiteLayout>
+
+<style>
+  .display {
+    margin-bottom: 1rem;
+  }
+</style>
