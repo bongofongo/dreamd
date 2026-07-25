@@ -1,0 +1,29 @@
+/* Tokyo Night — enkia's neon-after-rain palette. */
+
+:root {
+  --bg: #1a1b26;
+  --sidebar-bg: #16161e;
+  --btn-bg: #24283b;
+  --hover: #2f334d;
+  --border: #2f334d;
+
+  --text: #c0caf5;
+  --muted: #565f89;
+  --link: #7dcfff;
+
+  --accent: #7aa2f7;
+  --accent-dim: #283457;
+
+  --hl: #e0af68;
+  --stale: #f7768e;
+  --stale-bg: #38202c;
+
+  --font-body: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --font-size: 16px;
+  --line-height: 1.7;
+  --content-width: 820px;
+  --ui-font-size: 14px;
+
+  --syntax-theme: "base16-ocean.dark";
+}

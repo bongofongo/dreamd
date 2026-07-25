@@ -7,9 +7,10 @@ loop: highlight passages as evidence, attach a question to each, build up a
 stack, then push the selected pairs to your agent in one action.
 
 Rust backend (Tauri, its own window — not a browser tab), file-tree + fuzzy
-search explorer, CSS-themeable, read-only viewer. Nothing is persisted:
+search explorer, CSS-themeable, read-only viewer. No session state is persisted:
 highlights, annotations, and the stack live in memory and are gone when the
-process exits.
+process exits. Your preferences do persist — config and themes under
+`~/.config/dreamd/` — and that is the only thing dreamd ever writes.
 
 ## Requirements
 
@@ -116,7 +117,8 @@ Global `~/.config/dreamd/config.toml`, overridden by a repo-local `.dreamd.toml`
 All fields optional:
 
 ```toml
-theme_css = "/path/to/your/theme.css"   # hot-reloaded on save
+theme = "tokyo-night"                    # see `dreamd theme list`
+# theme_css = "/path/to/your.css"        # or a complete stylesheet of your own
 extra_ignores = ["vendor", "*.tmp.md"]
 tmux_target = "work:0.1"                 # pin a pane; skips auto-detect
 tmux_autodetect = true
@@ -129,15 +131,55 @@ highlight = "Ctrl+H"
 send_stack = "Ctrl+Enter"
 toggle_stack = "Ctrl+O"
 copy_stack = "Ctrl+C"
+settings = "Ctrl+,"
+save_annotation = "Ctrl+Y"
+quick_highlight = true                   # also accept a bare `h` for highlight
 ```
+
+The repo-local file overrides the global one key by key, so a `.dreamd.toml` that
+sets one thing leaves the rest of your setup alone. It may name a `theme` but
+cannot set `theme_css` — a cloned repo does not get to point dreamd at an
+arbitrary file on your disk.
+
+From the shell:
+
+```sh
+dreamd config path                       # where the global file lives
+dreamd config edit                       # open it in $VISUAL/$EDITOR
+dreamd config get keymap.palette
+dreamd config set keymap.palette Ctrl+Space
+```
+
+`config set` and the settings panel rewrite the file. Values you set by hand are
+preserved; comments and key ordering are not.
 
 ## Theming
 
-`ui/theme.css` is the default reading theme (embedded in the binary). Point
-`theme_css` at your own file and edit it live — the file watcher hot-reloads the
-webview on save, no restart. Note: macOS (WKWebView) and Linux (WebKitGTK) use
-different web engines, so pixel-identical rendering across platforms isn't
-guaranteed — theme against both.
+A theme is two files: `ui/theme.css` holds the reading *rules*, and a **palette**
+is a bare `:root { --bg: …; }` block. Ten palettes ship in the binary —
+`dreamd`, `gruvbox-dark`, `gruvbox-light`, `catppuccin-mocha`, `catppuccin-latte`,
+`tokyo-night`, `nord`, `solarized-light`, `high-contrast-dark`,
+`high-contrast-light`.
+
+```sh
+dreamd theme list                        # bundled + yours, active marked
+dreamd theme set nord
+dreamd --theme gruvbox-light             # this run only
+dreamd theme new mine --from nord        # copy into ~/.config/dreamd/themes/
+dreamd theme show mine                   # print the full stylesheet
+```
+
+A palette carries colour *and* typography (`--font-size`, `--line-height`,
+`--content-width`), plus `--syntax-theme`, which names the syntect theme used for
+fenced code — that is what keeps code blocks from staying dark under a light
+theme. Palettes in `~/.config/dreamd/themes/` hot-reload on save; bundled ones
+are embedded in the binary and need a rebuild.
+
+Setting `theme_css` instead points at a complete stylesheet of your own,
+replacing the base rules entirely — no palette is appended. It hot-reloads too.
+
+Note: macOS (WKWebView) and Linux (WebKitGTK) use different web engines, so
+pixel-identical rendering across platforms isn't guaranteed — theme against both.
 
 ## Highlights and live edits
 

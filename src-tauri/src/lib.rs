@@ -7,6 +7,7 @@
 //! target cannot be imported.
 
 pub mod annotations;
+pub mod cli;
 pub mod config;
 pub mod fs_walk;
 pub mod markdown;
@@ -17,9 +18,6 @@ pub mod theme;
 pub mod watcher;
 
 use std::path::{Path, PathBuf};
-
-/// The bundled default theme, embedded so it works in a packaged binary.
-pub const DEFAULT_THEME: &str = include_str!("../../ui/theme.css");
 
 /// Extensions we treat as markdown.
 pub fn is_markdown(path: &Path) -> bool {

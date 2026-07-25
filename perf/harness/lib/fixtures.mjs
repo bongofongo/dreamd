@@ -95,7 +95,14 @@ export function highlights(n, filePath) {
 }
 
 export function themeCss() {
-  return readFileSync(join(UI, "theme.css"), "utf8");
+  // Mirrors `theme::resolve`: base rules plus a palette. Reading theme.css
+  // alone would leave every `var(--…)` unresolved and quietly change what the
+  // Chromium scenarios are measuring.
+  return (
+    readFileSync(join(UI, "theme.css"), "utf8") +
+    "\n" +
+    readFileSync(join(UI, "themes", "dreamd.css"), "utf8")
+  );
 }
 
 export const KEYMAP = {

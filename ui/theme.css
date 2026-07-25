@@ -1,29 +1,21 @@
-/* dreamd default reading theme — dark, tuned for long-form markdown.
- * User-editable and hot-reloaded: edit this file (or point config.theme_css at
- * your own) and save; the app restyles without a restart.
- * Code-block colors come from the `base16-ocean.dark` syntect theme, set on the
- * Rust side; these variables are picked to sit well alongside it. */
-
-:root {
-  --bg: #1b1f27;
-  --sidebar-bg: #171b22;
-  --btn-bg: #232a35;
-  --hover: #262f3d;
-  --border: #2c3542;
-  --text: #c7cedb;
-  --muted: #8a93a3;
-  --accent: #6ea8fe;
-  --accent-dim: #26374d;
-  --hl: #f6d365;        /* default highlight (yellow) */
-  --stale: #e05561;     /* stale highlight (red) */
-  --stale-bg: #35181c;
-  --link: #74b0ff;
-}
+/* dreamd base reading stylesheet — the rules, not the palette.
+ *
+ * The palette (`:root { --bg: … }`) lives in `ui/themes/<name>.css` and is
+ * appended after this file, so a theme is just a variable block. Pick one with
+ * `theme = "gruvbox-dark"` in config.toml, or in the settings panel.
+ *
+ * Setting `theme_css = "/path/to/your.css"` instead replaces this file entirely
+ * — full control, no palette appended.
+ *
+ * Both paths are hot-reloaded: save and the app restyles without a restart.
+ * Code-block colours come from syntect on the Rust side; the palette picks the
+ * syntect theme with `--syntax-theme`. */
 
 body { background: var(--bg); color: var(--text); }
 
 #content {
-  font: 16px/1.7 -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  font: var(--font-size, 16px)/var(--line-height, 1.7)
+        var(--font-body, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif);
 }
 
 #content h1, #content h2, #content h3, #content h4 {
@@ -39,9 +31,9 @@ body { background: var(--bg); color: var(--text); }
 #content a:hover { text-decoration: underline; }
 
 #content code {
-  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-family: var(--font-mono, ui-monospace, "SF Mono", Menlo, Consolas, monospace);
   font-size: 0.9em;
-  background: #232a35;
+  background: var(--btn-bg);
   padding: 0.1em 0.35em;
   border-radius: 4px;
 }

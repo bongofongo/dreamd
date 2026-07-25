@@ -1,0 +1,29 @@
+/* Nord — Arctic Ice Studio's cool north-bluish palette. */
+
+:root {
+  --bg: #2e3440;
+  --sidebar-bg: #292e39;
+  --btn-bg: #3b4252;
+  --hover: #434c5e;
+  --border: #434c5e;
+
+  --text: #d8dee9;
+  --muted: #7b88a1;
+  --link: #81a1c1;
+
+  --accent: #88c0d0;
+  --accent-dim: #3a4a55;
+
+  --hl: #ebcb8b;
+  --stale: #bf616a;
+  --stale-bg: #3b2b2e;
+
+  --font-body: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --font-size: 16px;
+  --line-height: 1.7;
+  --content-width: 820px;
+  --ui-font-size: 14px;
+
+  --syntax-theme: "base16-ocean.dark";
+}

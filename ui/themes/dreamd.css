@@ -1,0 +1,45 @@
+/* dreamd — the default palette. Dark, tuned for long-form markdown.
+ *
+ * A palette is a single `:root` block. It is appended after `ui/theme.css`
+ * (the base rules), so every variable below wins. Copy this file to
+ * `~/.config/dreamd/themes/<name>.css` to start your own — or use the Custom
+ * tab in the settings panel, which writes exactly that.
+ *
+ * `--syntax-theme` is not CSS: the Rust side parses it to pick the syntect
+ * theme for fenced code blocks. It must name one of syntect's bundled themes
+ * (base16-ocean.dark, base16-ocean.light, base16-eighties.dark,
+ * base16-mocha.dark, InspiredGitHub, "Solarized (dark)", "Solarized (light)").
+ * An unrecognised name falls back to base16-ocean.dark. */
+
+:root {
+  /* surfaces */
+  --bg: #1b1f27;
+  --sidebar-bg: #171b22;
+  --btn-bg: #232a35;
+  --hover: #262f3d;
+  --border: #2c3542;
+
+  /* text */
+  --text: #c7cedb;
+  --muted: #8a93a3;
+  --link: #74b0ff;
+
+  /* accents */
+  --accent: #6ea8fe;
+  --accent-dim: #26374d;
+
+  /* annotation states */
+  --hl: #f6d365;        /* highlight */
+  --stale: #e05561;     /* stale highlight */
+  --stale-bg: #35181c;
+
+  /* reading typography */
+  --font-body: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --font-size: 16px;
+  --line-height: 1.7;
+  --content-width: 820px;
+  --ui-font-size: 14px;
+
+  --syntax-theme: "base16-ocean.dark";
+}

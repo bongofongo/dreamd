@@ -1,0 +1,29 @@
+/* Solarized Light — Ethan Schoonover's precision colours, light mode. */
+
+:root {
+  --bg: #fdf6e3;
+  --sidebar-bg: #eee8d5;
+  --btn-bg: #e4ddc8;
+  --hover: #ddd6c1;
+  --border: #d3cbb7;
+
+  --text: #586e75;
+  --muted: #93a1a1;
+  --link: #268bd2;
+
+  --accent: #268bd2;
+  --accent-dim: #d4e5f2;
+
+  --hl: #b58900;
+  --stale: #dc322f;
+  --stale-bg: #f6dcd8;
+
+  --font-body: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --font-size: 16px;
+  --line-height: 1.7;
+  --content-width: 820px;
+  --ui-font-size: 14px;
+
+  --syntax-theme: "Solarized (light)";
+}

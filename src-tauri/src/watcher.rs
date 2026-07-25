@@ -2,7 +2,7 @@
 //! open preview stay live while the user edits in Neovim in another pane. Also
 //! watches the active theme CSS for hot-reload.
 
-use crate::is_markdown;
+use crate::{is_markdown, theme};
 use notify::{EventKind, RecursiveMode, Watcher};
 use serde::Serialize;
 use std::collections::HashMap;
@@ -52,30 +52,62 @@ pub fn spawn(app: AppHandle, repo_root: PathBuf, theme_path: Option<PathBuf>) {
         if let Err(e) = watcher.watch(&repo_root, RecursiveMode::Recursive) {
             eprintln!("dreamd: failed to watch {}: {e}", repo_root.display());
         }
-        if let Some(tp) = &theme_path {
+        let themes = ThemeWatch::new(theme_path);
+        if let Some(tp) = &themes.file {
             let _ = watcher.watch(tp, RecursiveMode::NonRecursive);
         }
+        // Best-effort: the directory only exists once the user has saved a
+        // theme. Bundled palettes live in the binary and cannot be watched at
+        // all — editing `ui/themes/*.css` needs a rebuild.
+        let _ = watcher.watch(&themes.dir, RecursiveMode::NonRecursive);
 
-        pump(&app, &rx, theme_path.as_deref());
+        pump(&app, &rx, &themes);
     });
 }
 
+/// The theme paths worth watching: an explicit `theme_css` file, and the user
+/// themes directory. Paths are canonicalized because macOS FSEvents reports
+/// resolved paths, so a theme under `/tmp` (really `/private/tmp`) or behind a
+/// symlinked home would never compare equal otherwise.
+struct ThemeWatch {
+    file: Option<PathBuf>,
+    dir: PathBuf,
+}
+
+impl ThemeWatch {
+    fn new(theme_path: Option<PathBuf>) -> Self {
+        let dir = theme::user_dir();
+        Self {
+            file: theme_path.map(|p| p.canonicalize().unwrap_or(p)),
+            dir: dir.canonicalize().unwrap_or(dir),
+        }
+    }
+
+    /// Whether a changed path restyles the app: the watched stylesheet itself,
+    /// or any `.css` in the user themes directory. The directory is matched
+    /// wholesale rather than against the *active* palette, so saving a theme
+    /// you are not currently using still refreshes the settings panel's list —
+    /// and re-resolving is a file read, not a re-render.
+    fn matches(&self, path: &Path) -> bool {
+        if self.file.as_deref() == Some(path) {
+            return true;
+        }
+        path.parent() == Some(&self.dir) && path.extension().is_some_and(|e| e == "css")
+    }
+}
+
 /// Drain the watcher channel, coalescing bursts, until the channel closes.
-fn pump(
-    app: &AppHandle,
-    rx: &Receiver<notify::Result<notify::Event>>,
-    theme_path: Option<&Path>,
-) {
+fn pump(app: &AppHandle, rx: &Receiver<notify::Result<notify::Event>>, themes: &ThemeWatch) {
     let mut pending: HashMap<PathBuf, Acc> = HashMap::new();
 
     while let Ok(first) = rx.recv() {
         let mut theme_touched = false;
-        absorb(first, theme_path, &mut pending, &mut theme_touched);
+        absorb(first, themes, &mut pending, &mut theme_touched);
 
         // Keep absorbing while events are still arriving inside the window.
         let disconnected = loop {
             match rx.recv_timeout(DEBOUNCE) {
-                Ok(ev) => absorb(ev, theme_path, &mut pending, &mut theme_touched),
+                Ok(ev) => absorb(ev, themes, &mut pending, &mut theme_touched),
                 Err(RecvTimeoutError::Timeout) => break false,
                 Err(RecvTimeoutError::Disconnected) => break true,
             }
@@ -120,13 +152,15 @@ fn emit(app: &AppHandle, path: &Path, acc: &Acc) {
 
 fn absorb(
     event: notify::Result<notify::Event>,
-    theme_path: Option<&Path>,
+    themes: &ThemeWatch,
     pending: &mut HashMap<PathBuf, Acc>,
     theme_touched: &mut bool,
 ) {
     let Ok(event) = event else { return };
     for path in event.paths {
-        if theme_path == Some(path.as_path()) {
+        // Checked before the markdown filter, which is what lets a `.css`
+        // inside the repo root be seen at all.
+        if themes.matches(&path) {
             *theme_touched = true;
             continue;
         }

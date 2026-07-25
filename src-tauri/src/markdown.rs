@@ -11,12 +11,20 @@ use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 use serde::Serialize;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
-use syntect::highlighting::ThemeSet;
+use syntect::highlighting::{Theme, ThemeSet};
 use syntect::html::highlighted_html_for_string;
 use syntect::parsing::SyntaxSet;
 
 /// Code-block color theme. Chosen to match the bundled dark `theme.css`.
-const CODE_THEME: &str = "base16-ocean.dark";
+/// Used when a palette names no syntect theme, or names one this build of
+/// syntect does not carry.
+pub const CODE_THEME: &str = "base16-ocean.dark";
+
+/// The syntect themes available to `--syntax-theme`, so the settings panel can
+/// only offer names that will actually work.
+pub fn syntax_theme_names() -> Vec<String> {
+    themes().themes.keys().cloned().collect()
+}
 
 fn syntaxes() -> &'static SyntaxSet {
     static S: OnceLock<SyntaxSet> = OnceLock::new();
@@ -38,14 +46,21 @@ fn options() -> Options {
     o
 }
 
-fn highlight_code(lang: &str, code: &str) -> String {
+/// Look a syntect theme up by name, falling back to [`CODE_THEME`] so a palette
+/// naming a theme this build of syntect doesn't carry degrades to the default
+/// rather than to unhighlighted text.
+fn code_theme(name: &str) -> Option<&'static Theme> {
+    let set = &themes().themes;
+    set.get(name).or_else(|| set.get(CODE_THEME))
+}
+
+fn highlight_code(lang: &str, code: &str, theme: Option<&Theme>) -> String {
     let ss = syntaxes();
     let syntax = ss
         .find_syntax_by_token(lang)
         .unwrap_or_else(|| ss.find_syntax_plain_text());
-    let theme = match themes().themes.get(CODE_THEME) {
-        Some(t) => t,
-        None => return fallback_code(code),
+    let Some(theme) = theme else {
+        return fallback_code(code);
     };
     highlighted_html_for_string(code, ss, syntax, theme).unwrap_or_else(|_| fallback_code(code))
 }
@@ -63,8 +78,15 @@ fn escape_html(s: &str) -> String {
         .replace('>', "&gt;")
 }
 
-/// Render markdown source to a sanitized HTML string.
+/// Render markdown source to a sanitized HTML string, with fenced code blocks
+/// highlighted using the default syntect theme.
 pub fn render(source: &str) -> String {
+    render_with(source, CODE_THEME)
+}
+
+/// As [`render`], but with the syntect theme named by the active dreamd
+/// palette's `--syntax-theme`. An unknown name falls back to [`CODE_THEME`].
+pub fn render_with(source: &str, code_theme: &str) -> String {
     let parser = Parser::new_ext(source, options());
 
     let mut events: Vec<Event> = Vec::new();
@@ -108,7 +130,7 @@ pub fn render(source: &str) -> String {
         }
     }
 
-    for (at, html) in highlight_blocks(&blocks) {
+    for (at, html) in highlight_blocks(&blocks, code_theme) {
         events[at] = Event::Html(html.into());
     }
 
@@ -126,18 +148,19 @@ struct Block {
 
 /// Highlight every block, spreading them across the available cores. Returns
 /// `(event index, html)` pairs in arbitrary order.
-fn highlight_blocks(blocks: &[Block]) -> Vec<(usize, String)> {
+fn highlight_blocks(blocks: &[Block], theme_name: &str) -> Vec<(usize, String)> {
     if blocks.len() < 2 {
+        let theme = code_theme(theme_name);
         return blocks
             .iter()
-            .map(|b| (b.at, highlight_code(&b.lang, &b.text)))
+            .map(|b| (b.at, highlight_code(&b.lang, &b.text, theme)))
             .collect();
     }
 
     // Force the lazy syntect statics here rather than letting the workers race
     // into `OnceLock::get_or_init`, which would just serialize them again.
     syntaxes();
-    themes();
+    let theme = code_theme(theme_name);
 
     let next = AtomicUsize::new(0);
     let out = Mutex::new(Vec::with_capacity(blocks.len()));
@@ -154,7 +177,7 @@ fn highlight_blocks(blocks: &[Block]) -> Vec<(usize, String)> {
                 let Some(b) = blocks.get(next.fetch_add(1, Ordering::Relaxed)) else {
                     break;
                 };
-                let html = highlight_code(&b.lang, &b.text);
+                let html = highlight_code(&b.lang, &b.text, theme);
                 out.lock().unwrap().push((b.at, html));
             });
         }

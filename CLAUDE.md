@@ -29,25 +29,40 @@ cd perf/harness && npm run setup     # Playwright + Chromium, test-only, never s
 
 ```sh
 cargo run --release --example locate_check   # highlight anchoring, 611 corpus fixtures
+cargo run --example config_check             # config layering + write-back
+cargo run --example theme_check              # bundled palettes: vars, --bg, --syntax-theme
+```
+
+```sh
+dreamd theme list|set <name>|show [name]|new <name> [--from <base>]
+dreamd config path|edit|get <key>|set <key> <value>
+dreamd --theme nord [path]           # one run, no config write
 ```
 
 There are no `#[cfg(test)]` unit tests — `cargo test` compiles and reports nothing.
-Correctness is checked by running the app, by the benches, and by `locate_check`
-(the one real correctness harness — it exits non-zero on a wrong anchor); don't
-claim coverage beyond those.
+Correctness is checked by running the app, by the benches, and by the two example
+harnesses above (each exits non-zero on failure); don't claim coverage beyond those.
 `perf/run.sh` takes an exclusive lock: one tier at a time, no `cargo` alongside it.
 
 ## Tenets
 
-1. **Read-only.** dreamd never writes to the user's markdown. Editing stays in Neovim.
-2. **Nothing persists.** Highlights, annotations, and the stack are in-memory and die
-   with the process. Don't add a database without an explicit decision to.
+1. **Read-only.** dreamd never writes to the user's markdown, and never writes anything
+   inside the repo. Editing stays in Neovim. The one place it writes is
+   `~/.config/dreamd/` (see tenet 2).
+2. **No session state persists.** Highlights, annotations, and the stack are in-memory
+   and die with the process. Don't add a database without an explicit decision to.
+   *Preferences* are the deliberate exception: `config.toml` and saved themes under
+   `~/.config/dreamd/` are written by the settings panel and the `config`/`theme`
+   subcommands. Nothing else is ever written.
 3. **No shell interpolation of user content.** Sent queries go through a temp file and
    a fixed `read @<file>` prompt. Highlighted text never enters a command line.
 4. **Escape, don't execute.** Raw HTML in markdown is escaped. External links are
    restricted to `http`/`https`/`mailto`; relative images must resolve inside the repo
    root.
-5. **Themeable to the CSS level.** `ui/theme.css` is a user-facing surface, hot-reloaded.
+5. **Themeable to the CSS level.** A theme is `ui/theme.css` (base rules) plus a palette
+   — a bare `:root` block from `ui/themes/*.css` or `~/.config/dreamd/themes/*.css`.
+   Both are user-facing surfaces and hot-reloaded. `theme_css` points at a complete
+   stylesheet instead, replacing the base.
 
 ## Architecture
 
@@ -56,8 +71,10 @@ handlers, the builder. All logic lives in the `dreamd` **library** crate (`src/l
 modules) *because a `[[bin]]` target cannot be imported*: the split is what makes
 `src-tauri/benches/` possible. New logic goes in a module, not in `main.rs`.
 
-State is one `AppState`: `repo_root`, `Mutex<Store>` (highlights + stack), `Mutex<SearchIndex>`.
-It spans every file opened in the session and dies with the process.
+State is one `AppState`: `repo_root`, `Mutex<Config>`, `Mutex<Store>` (highlights + stack),
+`Mutex<SearchIndex>`. It spans every file opened in the session and dies with the process.
+`Config` is behind a lock because the settings panel rewrites it at runtime — it is the
+only configuration that changes after startup.
 
 Data flow: `ui/app.js` (plain JS, no build step; `tauri.conf.json` points `frontendDist` at
 `../ui`) calls commands over IPC and listens for watcher events.
@@ -68,8 +85,23 @@ Data flow: `ui/app.js` (plain JS, no build step; `tauri.conf.json` points `front
   re-emitted as `Event::Text` (escaped); only syntect's own markup is trusted.
 - `annotations::Store` — `Highlight { quote, prefix, suffix, line_start/end, state }` plus an
   ordered `stack` of ids. `set_annotation` is what enqueues a pair.
+- `config` — layered TOML: global `~/.config/dreamd/config.toml` under a repo-local
+  `.dreamd.toml`. Merging happens on raw `toml::Table`s, *not* on deserialized structs:
+  with `#[serde(default)]` an absent key is indistinguishable from a defaulted one, which
+  is how a local file that never mentioned `[keymap]` used to wipe the global one. Writes
+  patch the global table and rename over the file; unknown keys survive, comments do not.
+  `.dreamd.toml` is repo content and therefore untrusted (tenet 4) — it may name a `theme`
+  but may not set `theme_css`, which would read an arbitrary file into a `<style>` tag.
+- `theme` — the palette registry: `BUNDLED` (`include_str!`'d), user palettes in
+  `~/.config/dreamd/themes/`, and the `--bg` / `--syntax-theme` values parsed back out of
+  the CSS for the native window and syntect. Debug builds read bundled palettes off disk
+  so they hot-reload like user ones.
+- `cli` — the headless `dreamd theme …` / `dreamd config …` subcommands. They run and exit
+  before the Tauri builder, sharing the panel's write paths so both produce the same file.
 - `watcher` — `notify` thread emitting `file-changed` / `file-added` / `file-removed` /
-  `theme-reloaded`; the frontend responds by re-rendering and calling `reanchor`.
+  `theme-reloaded`; the frontend responds by re-rendering and calling `reanchor`. It
+  watches the repo, the user themes directory, and an explicit `theme_css` path — changing
+  `theme_css` needs a restart to re-arm that watch.
 - `send` — assembles markdown, writes a temp file, then tmux `send-keys` a fixed
   `read @<file>` prompt (falling back to clipboard). See tenet 3.
 
