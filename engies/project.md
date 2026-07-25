@@ -223,6 +223,26 @@ causes were wrong.
 
 ## Recent updates
 
+- **2026-07-25** — Opening a single file got out of its own way. Running
+  `dreamd notes.md` is meant to be the same gesture as double-clicking a document:
+  you asked for one file, you should get one file. What actually happened was that
+  the app first went and catalogued every markdown file in the surrounding project —
+  and on a large project that is thousands of files — *before it would even put a
+  window on screen*. You waited for a file list you hadn't asked for.
+
+  That cataloguing now happens quietly in the background. The document opens
+  straight away, and the file browser down the side starts closed, since you didn't
+  ask for it; the button to open it is right there, and by the time you press it the
+  list has usually finished building. If you do ask for it early — by opening the
+  file search — it simply waits the moment it needs rather than showing you a wrong
+  or empty answer. Launching on a folder instead of a file behaves exactly as before,
+  browser open and ready.
+
+  On a 5,000-file project, roughly 95 milliseconds of work now happens after the
+  window exists instead of before it. That is the honest measurement; the
+  end-to-end "time until you can read it" number moved too, but by less than the
+  measurement's own noise, so it isn't being claimed.
+
 - **2026-07-25** — Settings and themes. Until now, changing a keybinding or a colour
   meant editing a configuration file by hand and restarting; there was exactly one
   colour scheme, and it was the one baked into the app. Now `Ctrl+,` opens a settings

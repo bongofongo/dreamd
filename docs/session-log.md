@@ -1,5 +1,123 @@
 # Session log
 
+## 2026-07-25 — deferring the repo walk on a single-file launch
+
+Executed `perf-plan.md`, a handoff plan written in a Linux container that could
+neither build the project nor run any perf tier. The plan held up: `dreamd file.md`
+now opens the document without walking the repo first, and the ~95 ms of pre-window
+work that used to cost is measurably gone.
+
+### What happened
+
+**The problem, restated.** `dreamd file.md` is meant to be a Preview-style "open
+this one document" gesture. It wasn't. `main()` ran `markdown_paths` →
+`SearchIndex::build` → `build_tree` unconditionally *before* `tauri::Builder` was
+even constructed, so the walk blocked window creation rather than merely first
+paint. Then `init()` awaited `loadTree()` before it asked `initial_file` whether
+there was a document at all, so the frontend built and painted the entire sidebar
+DOM before rendering the thing the user actually asked for.
+
+1. **`src-tauri/src/catalog.rs` (new).** The tree and the index come from one walk
+   and share one lifecycle, so they became one type rather than two independent
+   `Mutex`es: `Mutex<Option<Built>>` + `Condvar`. `build` fills it and wakes every
+   waiter, `rebuild` re-walks and replaces (the watcher path), `wait_tree` /
+   `wait_query` block until it exists. The walk happens *outside* the lock, so
+   waiters are only blocked for the handover.
+2. **Perf marks moved into the module.** `walk_done` / `index_built` / `tree_built`
+   are emitted inside `catalog::walk`, so the synchronous and the deferred path
+   report identical phases. Safe from a background thread: `perf::mark` reads a
+   global origin set in `main`'s first statement and writes one line under the
+   stderr lock, so a late `walk_done` is still a correct timestamp in one
+   uncorrupted NDJSON stream.
+3. **`main()` keys off `initial.is_some()`.** A directory, no argument, or a
+   *non-markdown* file all build synchronously exactly as before — the last of
+   those matters, because it yields `initial_file: None` and therefore an empty
+   reading pane where the sidebar is the only usable surface. Only a markdown file
+   argument spawns the build on a background thread.
+4. **`--bench-startup` returns before the spawn** on the deferred path. Exiting
+   into a live walk thread would have had hyperfine timing a teardown racing it.
+   The flag's doc comment says so.
+5. **The three catalog commands became `async`** and do their waiting inside
+   `tauri::async_runtime::spawn_blocking` — `list_markdown_files`, `fuzzy_search`,
+   `rebuild_index`. Whether Tauri 2 runs sync commands on the main thread wasn't
+   worth resolving; this is correct either way. No frontend change was needed:
+   `invoke()` already returns a promise, and the palette's existing `paletteSeq`
+   guard already handles out-of-order resolution, so opening it before the catalog
+   is ready simply waits.
+6. **`ui/app.js` `init()` reordered.** `initial_file` moved to the front because it
+   decides the sidebar, `loadTree()` is started without being awaited (with a
+   `.catch` — unawaited, a rejection there is an unhandled one), and `openFile`
+   runs against it. A late tree was already safe: `paintTree` ends with
+   `markActiveInTree(currentFile)`, so a tree arriving after `openFile` still marks
+   the open document.
+7. **The sidebar ships collapsed in markup** — `<body class="nav-collapsed">` — and
+   `init()` *removes* the class when there is no initial file. That direction round
+   makes the single-file case deterministically flash-free; a directory launch gets
+   its sidebar a few ms into JS boot, invisible against the time the window took to
+   exist. The class, its CSS and `#btn-expand` all already existed.
+8. **`perf/scripts/startup.sh` gained a `prewindow/single-file` hyperfine case.**
+   Without it the sweep only ever measures the directory path and this change is
+   invisible to it.
+9. **`ui-check.mjs` covers both branches now**, 33/33. The existing page stubs
+   `initial_file: null`, so it only ever exercised the sidebar-*open* branch; a
+   second page stubs a real initial file and a deliberately-late
+   `list_markdown_files`, then asserts the document paints while the tree is still
+   absent and that the tree marks the open file active when it lands.
+10. **`docs/todo.md`** lost its "Startup: optimize for single-file launch" section —
+    it's a queue, not a log.
+
+**Deliberately not touched:** `fs_walk::markdown_paths` stays sequential. Moving the
+walk off the critical path does weaken its "thread-spawn cost isn't worth it on
+small repos" comment, but switching to `build_parallel()` is a separate change that
+deserves its own measurement.
+
+### Mistakes & deviations
+
+- **`find | sort | head -1` killed `startup.sh` silently.** Added to pick a corpus
+  document for the new hyperfine case. `head` exits after one line, `sort` dies on
+  SIGPIPE, and under `set -o pipefail` + `set -e` that took the whole script with
+  it — exit 141, *no stderr at all*, and the first `perf-pass` came back with
+  `real.startup: null` rather than an error. Caught by noticing the REAL APP section
+  had loop metrics but no startup ones. Replaced with `${var%%$'\n'*}` on the full
+  sorted list and re-ran the tier; that's why there are two `pass-*.json` files from
+  this session.
+- **`openFile`'s error handling was nearly dropped.** The old `init()` wrapped
+  `initial_file` + `openFile` in one `try/catch`; the plan's replacement had a
+  `.catch` on the invoke but left `await openFile(f)` bare, which would have made a
+  render failure reject `init()`. Restored.
+- **A throwaway `examples/catalog_check.rs` was written and deleted.** It asserted
+  that `wait_query` actually blocks on a pending catalog (369 ms against a 300 ms
+  deferred build) and that `rebuild` agrees with `wait_tree`. Kept out of the tree
+  because the plan didn't ask for a fourth permanent harness.
+- The plan named a branch `claude/performance-improvements-todo-pedjj7`; ignored in
+  favour of CLAUDE.md's straight-to-main rule.
+
+### State
+
+`cargo build` passes plain and with `--features perf`. `locate_check` 611 fixtures
+unmoved, `config_check` 25/25, `theme_check` 10 palettes, `ui-check.mjs` 33/33.
+`cargo bench --bench walk` / `--bench search` unmoved, as expected — the walk isn't
+faster, only moved.
+
+`perf-pass` (`perf/results/pass-8a2df48-20260725-105523.json`): 195 metrics, **0
+regressed**. The two "slower" rows are Chromium scroll/highlightMode and unrelated
+to this change. New `prewindow/single-file` is **5.3 ms** against
+`prewindow/repo-5000` **100.5 ms** — ~95 ms of pre-window work off the critical
+path on a 5000-file repo, which is the win. End-to-end `first_paint` moved
+2104 → 2043 ms, but that run's spread was 222 ms and debug first paint is dominated
+by the 2 MB markdown render, so the launch-level number is **unconfirmed**; the
+pre-window number is the one to quote.
+
+`ipc_tree` **has changed meaning**: it is now marked inside `loadTree()` after
+`paintTree`, so it records when the sidebar painted (110 → 1956 ms) rather than a
+cumulative boot timestamp. Not a regression, and not comparable to the old baseline.
+
+Left open: the GUI was never driven by hand — no `cargo tauri` in this environment.
+`startup.sh`'s real launches do exercise the deferred path end-to-end in WKWebView
+(first paint reached, tree landed at 1956 ms), but "open the palette instantly after
+launch" and "touch a file → tree repaints" are only covered by the Chromium stub.
+`perf-plan.md` is still sitting untracked in the working tree.
+
 ## 2026-07-25 — settings panel, ten themes, a writable config
 
 Asked for a settings/preferences panel: interactive keybinds, interactive colour
