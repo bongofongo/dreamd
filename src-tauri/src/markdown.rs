@@ -176,11 +176,144 @@ pub struct Location {
 /// text can no longer be found — i.e. the highlighted text itself was edited,
 /// which the caller treats as a *stale* highlight.
 ///
+/// The span reported is that of the first and last **non-whitespace** character
+/// of the quote. A selection that happens to end in a newline does not claim
+/// the following line.
+///
 /// To locate many quotes in the same document, build a [`SourceIndex`] once and
 /// call [`SourceIndex::locate`] instead — this function throws away every index
 /// it builds.
 pub fn locate(source: &str, prefix: &str, quote: &str, suffix: &str) -> Option<Location> {
     SourceIndex::new(source).locate(prefix, quote, suffix)
+}
+
+/// How much context either side is used to disambiguate, in bytes. The
+/// frontend sends more than this; anything past the window buys nothing, and
+/// the comparison runs once per candidate occurrence.
+const CONTEXT_WINDOW: usize = 64;
+
+/// The last `max` bytes of `s`, rounded outward to a char boundary.
+fn tail(s: &str, max: usize) -> &str {
+    if s.len() <= max {
+        return s;
+    }
+    let mut i = s.len() - max;
+    while !s.is_char_boundary(i) {
+        i += 1;
+    }
+    &s[i..]
+}
+
+/// The first `max` bytes of `s`, rounded inward to a char boundary.
+fn head(s: &str, max: usize) -> &str {
+    if s.len() <= max {
+        return s;
+    }
+    let mut i = max;
+    while !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    &s[..i]
+}
+
+fn common_suffix_len(a: &[u8], b: &[u8]) -> usize {
+    a.iter()
+        .rev()
+        .zip(b.iter().rev())
+        .take_while(|(x, y)| x == y)
+        .count()
+}
+
+fn common_prefix_len(a: &[u8], b: &[u8]) -> usize {
+    a.iter().zip(b.iter()).take_while(|(x, y)| x == y).count()
+}
+
+/// Byte offsets of every occurrence of `needle` in `hay`, **including
+/// overlapping ones**.
+///
+/// `str::match_indices` resumes after each match and so cannot see an
+/// occurrence that begins inside the previous one. That is not a corner case
+/// here: a quote dragged across a repeated block (a config sample, a table, a
+/// repeated heading) is periodic, and the copy the reader actually selected is
+/// routinely one of the overlapping ones `match_indices` skips.
+fn occurrences<'h>(hay: &'h str, needle: &'h str) -> impl Iterator<Item = usize> + 'h {
+    let mut from = 0;
+    std::iter::from_fn(move || {
+        let pos = from + hay.get(from..)?.find(needle)?;
+        from = pos + 1;
+        while from < hay.len() && !hay.is_char_boundary(from) {
+            from += 1;
+        }
+        Some(pos)
+    })
+}
+
+/// Byte offset of the occurrence of `needle` in `hay` that best fits the
+/// evidence an anchor carries: the context either side, and — on a re-anchor —
+/// where the quote was last found.
+///
+/// Without context this is `hay.find(needle)`: the first occurrence, which is
+/// only right by luck when the quote is repeated. With context, occurrences are
+/// scored by how many bytes of `before` they share with the text immediately to
+/// their left plus how many bytes of `after` they share with the text to their
+/// right, and the best-scoring one wins.
+///
+/// Scoring rather than requiring an exact context match matters because the
+/// context the frontend can supply comes from the rendered DOM: it has lost the
+/// markdown syntax (`**`, `` ` ``, link brackets) that the source still carries,
+/// so it agrees with the source for a few characters and then diverges. A
+/// partial agreement is still enough to pick between two copies of a quote.
+///
+/// Two copies of the same block are byte-identical *including* their context,
+/// though, and no amount of scoring separates those. `hint` does: an anchor
+/// that has not moved should not jump to a different copy just because that
+/// copy comes first in the file. Occurrences are produced in order, so the
+/// nearest full context match is either the last one before the hint or the
+/// first one at or after it, and the scan can stop as soon as it has both.
+fn best_match(
+    hay: &str,
+    needle: &str,
+    before: &str,
+    after: &str,
+    hint: Option<usize>,
+) -> Option<usize> {
+    if before.is_empty() && after.is_empty() {
+        return hay.find(needle);
+    }
+    let before = tail(before, CONTEXT_WINDOW);
+    let after = head(after, CONTEXT_WINDOW);
+    let perfect = before.len() + after.len();
+
+    let dist = |pos: usize| hint.map_or(0, |h| h.abs_diff(pos));
+    let mut best: Option<(usize, usize)> = None; // (score, position)
+    let mut perfect_below: Option<usize> = None;
+
+    for pos in occurrences(hay, needle) {
+        let score = context_score(hay, pos, needle.len(), before, after);
+        if score >= perfect {
+            match hint {
+                None => return Some(pos),
+                Some(h) if pos < h => perfect_below = Some(pos),
+                Some(h) => {
+                    return Some(match perfect_below {
+                        Some(b) if h - b < pos - h => b,
+                        _ => pos,
+                    })
+                }
+            }
+        }
+        // Better context wins; between equal contexts, the copy nearer to
+        // where the highlight already was.
+        if best.map_or(true, |(s, p)| score > s || (score == s && dist(pos) < dist(p))) {
+            best = Some((score, pos));
+        }
+    }
+    perfect_below.or(best.map(|(_, pos)| pos))
+}
+
+fn context_score(hay: &str, pos: usize, needle_len: usize, before: &str, after: &str) -> usize {
+    common_suffix_len(&hay.as_bytes()[..pos], before.as_bytes())
+        + common_prefix_len(&hay.as_bytes()[pos + needle_len..], after.as_bytes())
 }
 
 /// Reusable per-document scratch for [`SourceIndex::locate`].
@@ -229,37 +362,90 @@ impl<'a> SourceIndex<'a> {
 
     /// See [`locate`]. Tiers are tried in order; a rendered selection (what
     /// `getSelection().toString()` yields) normally falls through to tier 3.
+    ///
+    /// The quote is trimmed first, so all three tiers agree on what the span
+    /// of a selection is: the first through the last non-whitespace character.
+    /// Tier 3 could never report anything else — it works from a source with
+    /// the whitespace removed — and an untrimmed tier 2 disagreed with it
+    /// whenever a selection began or ended on a line break.
     pub fn locate(&mut self, prefix: &str, quote: &str, suffix: &str) -> Option<Location> {
-        if quote.trim().is_empty() {
+        self.locate_near(prefix, quote, suffix, 0)
+    }
+
+    /// [`SourceIndex::locate`], told where the quote was last found.
+    ///
+    /// `hint_line` is a 1-based line number, or 0 for "no idea" — the first
+    /// anchoring of a fresh highlight. Re-anchoring always has one, and it is
+    /// the only thing that can separate two byte-identical copies of a block,
+    /// which quote plus context cannot. It is a hint in the strict sense: a
+    /// wrong or stale one costs a little time and never a worse answer.
+    pub fn locate_near(
+        &mut self,
+        prefix: &str,
+        quote: &str,
+        suffix: &str,
+        hint_line: usize,
+    ) -> Option<Location> {
+        let quote = quote.trim();
+        if quote.is_empty() {
             return None;
         }
 
-        // 1) Exact match with context.
-        let needle = format!("{prefix}{quote}{suffix}");
-        if let Some(pos) = self.source.find(&needle) {
-            return Some(self.span(pos + prefix.len(), quote.len()));
+        let has_context = !prefix.is_empty() || !suffix.is_empty();
+
+        // 1) Exact match with context. Only worth trying when there *is*
+        // context — otherwise the needle is just the quote and this repeats
+        // tier 2's scan verbatim.
+        if has_context {
+            let needle = format!("{prefix}{quote}{suffix}");
+            if let Some(pos) = self.source.find(&needle) {
+                return Some(self.span(pos + prefix.len(), quote.len()));
+            }
         }
 
-        // 2) Exact match of the quote alone.
-        if let Some(pos) = self.source.find(quote) {
-            return Some(self.span(pos, quote.len()));
+        // 2) Exact match of the quote alone — but only when there is no
+        // context, because then there is nothing better to go on. With context
+        // this tier is actively harmful: it takes the first exact occurrence
+        // while ignoring the context that says the quote came from a later
+        // copy, and the context it would have to weigh is *rendered*, which
+        // only tier 3 can compare against the source.
+        if !has_context {
+            if let Some(pos) = self.source.find(quote) {
+                return Some(self.span(pos, quote.len()));
+            }
         }
 
-        // 3) Whitespace-normalized match (rendered selections collapse whitespace).
-        let quote_ns: String = quote.chars().filter(|c| !c.is_whitespace()).collect();
+        // 3) Whitespace-normalized match (rendered selections collapse
+        // whitespace). The context is stripped the same way as the quote —
+        // collapsed context no more matches raw source than a collapsed quote
+        // does, so tier 3 has to do its own disambiguation or the quote lands
+        // on whichever copy comes first in the file.
+        let quote_ns = strip_ws(quote);
         if quote_ns.is_empty() {
             return None;
         }
+        let (prefix_ns, suffix_ns) = (strip_ws(prefix), strip_ws(suffix));
+        // Where the hint line begins in the source, before the index is
+        // borrowed — `line_starts` and `stripped` are both fields of `self`.
+        let hint_src = hint_line
+            .checked_sub(1)
+            .and_then(|i| self.line_starts.get(i).copied());
         let source = self.source;
         let stripped = self
             .stripped
             .get_or_insert_with(|| Stripped::build(source));
-        let (start, end) = stripped.find(&quote_ns)?;
+        let hint = hint_src.map(|b| stripped.offset_of(b));
+        let (start, end) = stripped.find(&quote_ns, &prefix_ns, &suffix_ns, hint)?;
         Some(Location {
             line_start: self.line_at(start),
             line_end: self.line_at(end),
         })
     }
+}
+
+/// Every non-whitespace char of `s`, in order.
+fn strip_ws(s: &str) -> String {
+    s.chars().filter(|c| !c.is_whitespace()).collect()
 }
 
 /// The source with all whitespace removed, plus the offset table needed to map
@@ -290,10 +476,28 @@ impl Stripped {
         }
     }
 
+    /// Offset into `text` of the first char at or after source byte `src`.
+    /// `source_offsets` is non-decreasing, so this is a binary search.
+    fn offset_of(&self, src: usize) -> usize {
+        let mut i = self.source_offsets.partition_point(|&o| o < src);
+        while i < self.text.len() && !self.text.is_char_boundary(i) {
+            i += 1;
+        }
+        i
+    }
+
     /// Byte offsets in the *original* source of the first and last char of
-    /// `quote_ns` (itself already whitespace-stripped).
-    fn find(&self, quote_ns: &str) -> Option<(usize, usize)> {
-        let at = self.text.find(quote_ns)?;
+    /// `quote_ns` (itself already whitespace-stripped). `prefix_ns`/`suffix_ns`
+    /// are the stripped context, used to pick between repeated occurrences, and
+    /// `hint` is where the quote was last found, as an offset into `text`.
+    fn find(
+        &self,
+        quote_ns: &str,
+        prefix_ns: &str,
+        suffix_ns: &str,
+        hint: Option<usize>,
+    ) -> Option<(usize, usize)> {
+        let at = best_match(&self.text, quote_ns, prefix_ns, suffix_ns, hint)?;
         let last = at + quote_ns.len().saturating_sub(1);
         let start = *self.source_offsets.get(at)?;
         let end = self.source_offsets.get(last).copied().unwrap_or(start);

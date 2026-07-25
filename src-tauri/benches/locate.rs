@@ -6,26 +6,30 @@
 //! retained char — roughly 8 bytes per character — and throws it away again.
 //! Per highlight. Against a 2MB document.
 //!
-//! Three scenarios, because which of `locate`'s three tiers you land in
+//! Four scenarios, because which of `locate`'s three tiers you land in
 //! dominates everything else:
 //!
-//!   `today`         what the app actually does. The quote comes from the
-//!                   rendered DOM (whitespace collapsed) and `ui/app.js:270`
-//!                   sends empty context, so tiers 1 and 2 both miss and every
-//!                   highlight pays for `locate_normalized`.
+//!   `today`         a rendered (whitespace-collapsed) quote with **empty**
+//!                   context. The name is historical: this is what the app sent
+//!                   before highlights carried context, kept as the reference
+//!                   the baseline was set against. Tiers 1 and 2 both miss and
+//!                   every highlight pays for the whitespace-stripped tier.
 //!   `exact_source`  the quote is a byte-exact source slice, so tier 2 hits
 //!                   immediately. This is the floor — what `today` would cost
 //!                   if anchoring were exact.
-//!   `with_context`  rendered quote *plus* rendered context. Deliberately kept
-//!                   because it is the obvious-looking fix that **does not
-//!                   work**: collapsed context can't match raw source either,
-//!                   so tier 1 misses just the same and the cost is unchanged.
-//!                   Adding prefix/suffix improves disambiguation, not speed.
+//!   `with_context`  rendered quote *plus* rendered context. This is what the
+//!                   app sends now. Note what it does and does not buy: the
+//!                   collapsed context still cannot match raw source, so tier 1
+//!                   misses and the cost is roughly `today`'s. It was kept for
+//!                   a while as proof that context is not a *speed* fix. It is
+//!                   a correctness fix — without it a quote that appears twice
+//!                   anchors to whichever copy comes first — and
+//!                   `examples/locate_check.rs` is where that is measured.
 //!   `stale`         the quote no longer exists, so all three tiers run to
 //!                   completion before returning `None`.
 //!
 //! The headline: `today` and `stale` cost the same, because a rendered quote
-//! never hits the cheap tiers. So the real fix is not richer anchors — it is
+//! never hits the cheap tiers. So the speed fix is not richer anchors — it is
 //! building the whitespace-stripped index **once per `reanchor_file` call**
 //! instead of once per highlight.
 
@@ -42,12 +46,12 @@ const COUNTS: &[usize] = &[1, 10, 100, 500];
 #[derive(Clone, Copy)]
 #[allow(dead_code)] // WithContext is only used by locate_single
 enum Mode {
-    /// Rendered (whitespace-collapsed) quote, empty context — current behavior.
+    /// Rendered (whitespace-collapsed) quote, empty context — what the app sent
+    /// before highlights carried context.
     Today,
     /// Byte-exact source quote — the tier-2 floor.
     ExactSource,
-    /// Rendered quote plus *rendered* context, i.e. what the frontend could
-    /// actually supply. Shows that context alone doesn't help.
+    /// Rendered quote plus *rendered* context — what the frontend sends.
     WithContext,
 }
 
@@ -74,9 +78,10 @@ fn bench_reanchor(c: &mut Criterion) {
 
     // `with_context` is deliberately absent from this sweep. At 500 highlights it
     // costs the same 4s/iteration as `today` — because it *is* the same path — so
-    // running it here would double the group's wall time to re-prove a negative.
-    // The cheap `locate_single/with_context` case below keeps that finding on the
-    // record for a few milliseconds.
+    // running it here would double the group's wall time to re-measure the same
+    // number. The cheap `locate_single/with_context` case below tracks it for a
+    // few milliseconds instead, and the seeded save→repaint loop in `perf-pass`
+    // covers it end to end.
     for (label, mode) in [("today", Mode::Today), ("exact_source", Mode::ExactSource)] {
         let mut g = c.benchmark_group(format!("reanchor/{label}"));
         // `reanchor/today/500` is ~4 SECONDS per iteration — that is the finding,

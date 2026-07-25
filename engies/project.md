@@ -103,8 +103,9 @@ Known limits, all deliberate for v1:
 
 - Fuzzy search matches **file paths only** — searching inside file contents
   (`live_grep`) is a v2 item.
-- Highlight anchoring matches on the selected text with whitespace normalized.
-  Heavily formatted inline selections may fail to re-locate and will read as stale.
+- Highlight anchoring matches on the selected text with whitespace normalized,
+  plus the text either side of it. Heavily formatted inline selections may still
+  fail to re-locate and will read as stale.
 - Nothing persists, by design.
 
 ## Measuring speed
@@ -166,10 +167,10 @@ revisited rather than rediscovered.
 The measurements also turned up two bugs nobody had reported. If you highlight text
 that crosses a formatting boundary — part bold, part link, part code — the highlight
 usually fails to reattach and gets quietly marked stale, even though the selection was
-perfectly valid. And separately, about one highlight in fifteen reattaches to the
-*wrong* place: if the same wording appears more than once in a document, the app
-currently picks the first copy rather than the one you actually selected. Both are
-still open.
+perfectly valid; that one is still open. The second was that highlights could reattach
+to the *wrong* place when the same wording appears more than once in a document. That
+one has since been fixed — and turned out to be far more common than the first estimate
+of one in fifteen. See the most recent update below.
 
 None of this was known before it was measured, and two of our guesses about the
 causes were wrong.
@@ -200,6 +201,21 @@ causes were wrong.
 - **Regression** — something that used to be fast and now isn't.
 
 ## Recent updates
+
+- **2026-07-25** — Fixed the highlight-in-the-wrong-place bug found the same day, and
+  found it was much bigger than reported. A highlight remembers the words you selected;
+  when the file is saved, the app looks those words up again to find out which lines
+  they are on now. If the same wording appears twice in a document, it was picking
+  whichever copy came first. The first estimate was that this affected about one
+  selection in fifteen; the estimate turned out to be measured against a yardstick that
+  was itself wrong, and the real figure was closer to **one in three**. Three things
+  changed. The app now sends the text on either side of your selection along with the
+  selection itself, which tells the copies apart. When a file is saved, it also uses
+  where the highlight was a moment ago, which settles the cases where two copies are
+  word-for-word identical including their surroundings. And the whole thing is now
+  checked automatically: a new test runs all 611 sample highlights and fails if any
+  lands in the wrong place. It passes with zero wrong. This is the project's first real
+  automated correctness check — until now, correctness was verified by using the app.
 
 - **2026-07-25** — The first round of speed work, using the measuring setup built the
   day before. Six changes: saving a file now checks all its highlights against one

@@ -237,8 +237,9 @@ fn perf_enabled() -> bool {
 ///
 /// Reads a corpus fixture (`perf/corpus/generated/highlights/N.json`) named by
 /// `DREAMD_PERF_SEED`, and anchors every entry against the initially-opened
-/// file using its `rendered` quote — the whitespace-collapsed form the frontend
-/// actually sends, which is what forces `locate` down its expensive path.
+/// file using its `rendered` quote and whitespace-collapsed context — the form
+/// the frontend actually sends, which is what forces `locate` down its
+/// expensive path.
 ///
 /// Only compiled with `--features perf`.
 #[cfg(feature = "perf")]
@@ -254,6 +255,16 @@ fn seed_highlights(store: &mut Store, file: &Option<String>) {
         eprintln!("perf: seed fixture {path} is not a JSON array");
         return;
     };
+    // Whatever the DOM would have handed us: whitespace collapsed to single
+    // spaces, no leading or trailing run.
+    let collapsed = |f: &serde_json::Value, key: &str| {
+        f.get(key)
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
     let mut seeded = 0;
     for f in &fixtures {
         let quote = f
@@ -268,8 +279,8 @@ fn seed_highlights(store: &mut Store, file: &Option<String>) {
             0,
             0,
             quote.to_string(),
-            String::new(),
-            String::new(),
+            collapsed(f, "prefix"),
+            collapsed(f, "suffix"),
         );
         seeded += 1;
     }

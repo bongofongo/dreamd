@@ -1,5 +1,103 @@
 # Session log
 
+## 2026-07-25 — highlight anchoring: 31.6% of selections landed on the wrong copy
+
+Bug-hunting thread. The brief was a suspected off-by-one plus a "quote appears
+twice" case in `markdown::locate`, estimated at 6.5% of selections. Both were
+real; the estimate was low by a factor of five, because the ground truth the
+estimate was measured against was itself wrong.
+
+### What happened
+
+1. **Built the harness first.** `src-tauri/examples/locate_check.rs` runs all 611
+   corpus highlight fixtures through `locate` and exits non-zero on a wrong
+   anchor. The repo had no `#[cfg(test)]` tests and the session log had named
+   `locate()` as the obvious first target for one; this is it. It reimplements the
+   whitespace-stripping and line lookup independently rather than importing them —
+   a checker that reuses the code under test cannot catch it being wrong.
+
+2. **The original ground truth was wrong, which hid most of the bug.** The brief
+   defined truth as `locate(source, "", exact_source_quote, "")`, i.e.
+   `source.find`. But the generated corpus repeats whole blocks — one sampled code
+   block occurs **195 times** — so `find` returns the first copy, which is usually
+   not the one the fixture was sampled from. `perf/corpus/gen.mjs` now records
+   `lineStart`/`lineEnd` at sample time (GENERATOR bumped to 3; quote, rendered,
+   prefix and suffix bytes are unchanged, so bench inputs are identical). Against
+   the recorded origin the real pre-fix failure rate is **193/611 = 31.6%**, not
+   6.5%.
+
+3. **Class (b), the off-by-one, was tier 2's bug, not tier 3's.** Tier 3 maps to
+   the first and last *non-whitespace* character; tier 2's `span()` used the raw
+   byte range, so a selection ending on a line break claimed the following line.
+   Tier 3's answer is the right one. `locate` now trims the quote up front and all
+   three tiers agree by construction.
+
+4. **Class (a), the wrong copy, needed four separate fixes.** `ui/app.js` sent
+   `prefix: ""`, so nothing could disambiguate:
+   - `selectionContext()` in `ui/app.js` walks out node by node from the selection
+     for 96 chars each side. Deliberately not a Range back to document start —
+     `toString()` on that would build a copy of the whole file.
+   - Tier 3 became context-aware. Rendered context has lost the markdown syntax
+     the source still carries, so occurrences are *scored* by shared bytes either
+     side rather than required to match exactly; a full match short-circuits, so
+     the common case still stops at the first hit.
+   - Tier 2 now runs **only** when there is no context. With context it was
+     actively harmful — it took the first exact hit while ignoring the context
+     saying otherwise. Worth 10 of the residual failures.
+   - `str::match_indices` was replaced by an overlapping-aware `occurrences()`.
+     Non-overlapping iteration cannot see a match that begins inside the previous
+     one, and periodic text (a repeated config block) is exactly where the right
+     copy hides. The last 10 failures.
+
+5. **A position hint settles what context cannot.** Two byte-identical copies of a
+   block have byte-identical context; no anchor can choose between them. But a
+   re-anchor knows where the highlight was a moment ago. `SourceIndex::locate_near`
+   takes the previous line, `Store::reanchor_file` passes it, and among full
+   context matches the nearest to the hint wins. One pass, early-exit once it has
+   bracketed the hint.
+
+6. **Kept the bench row names, corrected the story.** `benches/locate.rs` led with
+   "context is the obvious-looking fix that **does not work**" — true about
+   *speed*, and it reads as an argument against the correctness fix. Rewritten.
+   The row ids (`today`, `with_context`, …) were left alone so the committed
+   baseline still lines up, with a note that `today` is now the pre-fix reference.
+   `seed_highlights` in `main.rs` now seeds collapsed context, since that is what
+   the app sends.
+
+### Mistakes & deviations
+
+- **Trusted the brief's ground truth.** The first harness reproduced 40/611 as
+  advertised, then the fix appeared to make things *worse* (96 mismatches). It
+  hadn't: the "correct" answers were wrong. Caught by dumping every occurrence of
+  one failing quote and finding 195 of them. Cost a rebuild of the fixtures and
+  the harness, and was the single most useful thing in the session — the real
+  failure rate is five times what was reported.
+- **First hint implementation started the scan at `hint − 4096` bytes and took the
+  first full match.** Two bugs: it returned the first match rather than the
+  *nearest*, and its "don't rescan from the top" shortcut silently discarded the
+  hint for any highlight near the top of a file. It also needed a second pass when
+  no full match existed, which is the common case in real markdown. Replaced with
+  a single hint-aware pass. 74 highlights still moved on re-anchor before this;
+  0 after.
+- **`is_none_or` broke MSRV.** Stable since 1.82, `rust-version` is 1.77. Caught by
+  `cargo clippy`, not by the build.
+
+### State
+
+`cargo build` clean, `cargo clippy --all-targets` clean apart from one pre-existing
+`while_let_loop` in `render`. `locate_check`: 611 fixtures, **0 wrong** on first
+anchor, **0 moved** on re-anchor, 0 batched-vs-one-shot disagreements. 146 remain
+*ambiguous* — another copy exists where quote and context both match in full, so no
+anchor built from that evidence can choose; that is a synthetic-corpus artifact and
+re-anchoring resolves all of them via the hint.
+
+`perf/run.sh quick` after the fix: 49 metrics, **0 regressed, 11 improved**;
+`locate_single/with_context`, the path the app is now on, 8.23 → 6.66ms. Caveat: the
+committed baseline predates the perf commit already in the tree, so that run confirms
+no regression rather than isolating this change. **`perf-pass` was skipped at the
+user's request** — it should run before the next commit touching `src-tauri/` or
+`ui/`.
+
 ## 2026-07-25 — the first optimization pass, measured end to end
 
 The measurement framework built last session finally got used for what it was for.

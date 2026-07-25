@@ -145,7 +145,10 @@ impl Store {
             .iter_mut()
             .filter(|h| h.file_path == file_path)
         {
-            match index.locate(&h.prefix, &h.quote, &h.suffix) {
+            // The previous line is passed as a hint: when a block appears twice
+            // verbatim, the quote and its context are identical in both copies
+            // and only "it was here a moment ago" can tell them apart.
+            match index.locate_near(&h.prefix, &h.quote, &h.suffix, h.line_start) {
                 Some(loc) => {
                     h.line_start = loc.line_start;
                     h.line_end = loc.line_end;

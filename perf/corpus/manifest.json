@@ -1,9 +1,9 @@
 {
-  "generator": 2,
+  "generator": 3,
   "stress": false,
   "fileCount": 5536,
-  "totalBytes": 22207137,
-  "digest": "18b43763128ed1f33a4649c13781318d7a15cf8c439d57a8bde5f066660b4524",
+  "totalBytes": 22234775,
+  "digest": "8479540296c5b684264b0d4b78a972d757c9ac6c01596f49e3490047768b8911",
   "docs": [
     {
       "path": "docs/code-128k.md",
@@ -89,23 +89,23 @@
   "highlights": [
     {
       "path": "highlights/1.json",
-      "bytes": 497,
-      "sha256": "a105fed27bb5b6b85a8b591694a28b0f813cc7a55b75adb50dc7872b9586298c"
+      "bytes": 543,
+      "sha256": "8fba2f9469d8ef078191d20b022654a1b279cbbb3f68b425a7179ee7407ae59e"
     },
     {
       "path": "highlights/10.json",
-      "bytes": 4104,
-      "sha256": "60227c141a24c09c4420cf1359063a94527e64134141965c82e6c49ac5b0ebf0"
+      "bytes": 4550,
+      "sha256": "592f38a0048cdd71a0a0e2fa6542ed23d8d6854d980247fa440b3c0a729e56fe"
     },
     {
       "path": "highlights/100.json",
-      "bytes": 37280,
-      "sha256": "ba76516850b3630df59205b61ba543cd41ef3daad14fa81939397dfa53afba58"
+      "bytes": 41816,
+      "sha256": "126452af527dc2043a2bf8867ae0afd23ca37c84d4eea2317ca633e8cb4e24fa"
     },
     {
       "path": "highlights/500.json",
-      "bytes": 192101,
-      "sha256": "09065f6b647a03c661e7af840f71b9762d58b1684460cd01140912bed4003072"
+      "bytes": 214711,
+      "sha256": "f359567d07ed235cecd4dcfd8c44bf4d66c6db994eb3c5a0b164984c41340996"
     }
   ],
   "repos": [

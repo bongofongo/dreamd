@@ -26,7 +26,7 @@ const OUT = join(HERE, "generated");
 const MANIFEST = join(HERE, "manifest.json");
 
 /** Bump when a generator change invalidates previously-recorded numbers. */
-const GENERATOR = 2;
+const GENERATOR = 3;
 
 const argv = new Set(process.argv.slice(2));
 const STRESS = argv.has("--stress");
@@ -233,8 +233,14 @@ function buildDoc(variant, target, seed) {
  *               the user selects from the *rendered* DOM, not the source. This
  *               misses tiers 1 and 2 and falls through to `locate_normalized`,
  *               which is the realistic path today and roughly 6x the cost.
- *   `prefix`/`suffix`  context, which `ui/app.js:270` currently hardcodes to
- *               `""`. Populating it is fix B5.
+ *   `prefix`/`suffix`  context, from the source either side of the quote.
+ *   `lineStart`/`lineEnd`  where the quote was actually sampled from — the
+ *               ground truth `src-tauri/examples/locate_check.rs` checks
+ *               `markdown::locate` against. It has to be recorded here because
+ *               it is not recoverable afterwards: the corpus repeats whole
+ *               blocks, so searching for the quote finds the first copy, which
+ *               is usually not the one it came from. Measured to the first and
+ *               last non-whitespace character, matching what `locate` reports.
  *
  * Only quotes that span a newline are kept, so `rendered` is guaranteed to
  * differ from `quote` — otherwise the fixture would silently benchmark the
@@ -244,6 +250,21 @@ function buildHighlights(doc, n, seed) {
   const r = rng(seed);
   const out = [];
   const guard = n * 400;
+  // Byte offset of each line start, so line lookup is a binary search rather
+  // than a scan of a 2MB document per highlight.
+  const lineStarts = [0];
+  for (let i = doc.indexOf("\n"); i !== -1; i = doc.indexOf("\n", i + 1)) lineStarts.push(i + 1);
+  const lineAt = (idx) => {
+    let lo = 0;
+    let hi = lineStarts.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (lineStarts[mid] <= idx) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo; // 1-based
+  };
+
   for (let i = 0; out.length < n && i < guard; i++) {
     const start = int(r, 200, Math.max(201, doc.length - 400));
     const len = int(r, 30, 180);
@@ -253,11 +274,15 @@ function buildHighlights(doc, n, seed) {
     if (quote.includes("```") || quote.includes("|") || !quote.trim()) continue;
     // Must span a line break, or `rendered` would equal `quote`.
     if (!/\n/.test(quote)) continue;
+    const lead = quote.length - quote.trimStart().length;
+    const trail = quote.length - quote.trimEnd().length;
     out.push({
       quote,
       rendered: quote.replace(/\s+/g, " ").trim(),
       prefix: doc.slice(Math.max(0, start - 40), start),
       suffix: doc.slice(start + len, start + len + 40),
+      lineStart: lineAt(start + lead),
+      lineEnd: lineAt(start + len - trail - 1),
     });
   }
   if (out.length < n) throw new Error(`only sampled ${out.length}/${n} highlights`);

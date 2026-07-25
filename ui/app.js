@@ -380,6 +380,46 @@ function addStaleChip(h) {
   staleRail.appendChild(chip);
 }
 
+// How much rendered text either side of a selection is sent as context. The
+// backend only compares the first/last 64 bytes of it; the rest is slack for
+// the markdown syntax the DOM has thrown away.
+const CONTEXT_CHARS = 96;
+
+// The rendered text immediately before and after a selection.
+//
+// Without it a quote that appears twice in the file anchors to whichever copy
+// comes first, not the one the reader selected — the quote alone cannot tell
+// them apart. This is DOM text, so it has lost the markdown syntax the source
+// still carries; `markdown::locate` scores it as a partial match rather than
+// requiring it to line up exactly.
+//
+// It walks out node by node rather than taking a Range back to the start of
+// the document, whose `toString()` would build a copy of the whole file.
+function selectionContext(range) {
+  const walker = document.createTreeWalker(contentEl, NodeFilter.SHOW_TEXT);
+  const text = (n) => n.nodeValue || "";
+
+  let prefix = "";
+  if (range.startContainer.nodeType === Node.TEXT_NODE) {
+    walker.currentNode = range.startContainer;
+    prefix = text(range.startContainer).slice(0, range.startOffset);
+    while (prefix.length < CONTEXT_CHARS && walker.previousNode()) {
+      prefix = text(walker.currentNode) + prefix;
+    }
+  }
+
+  let suffix = "";
+  if (range.endContainer.nodeType === Node.TEXT_NODE) {
+    walker.currentNode = range.endContainer;
+    suffix = text(range.endContainer).slice(range.endOffset);
+    while (suffix.length < CONTEXT_CHARS && walker.nextNode()) {
+      suffix += text(walker.currentNode);
+    }
+  }
+
+  return { prefix: prefix.slice(-CONTEXT_CHARS), suffix: suffix.slice(0, CONTEXT_CHARS) };
+}
+
 function wrapRange(range, id, stale) {
   const mark = document.createElement("mark");
   mark.className = "hl" + (stale ? " stale" : "");
@@ -415,8 +455,9 @@ async function triggerHighlight() {
   if (!quote.trim()) return;
   if (!contentEl.contains(sel.anchorNode)) return; // only within the preview
   const range = sel.getRangeAt(0).cloneRange();
+  const { prefix, suffix } = selectionContext(range);
   const id = await invoke("add_highlight", {
-    filePath: currentFile, quote, prefix: "", suffix: "",
+    filePath: currentFile, quote, prefix, suffix,
   });
   const mark = wrapRange(range, id, false);
   pending = { id, mark };

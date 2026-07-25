@@ -44,6 +44,13 @@ pub struct Fixture {
     pub rendered: String,
     pub prefix: String,
     pub suffix: String,
+    /// Where the quote was actually sampled from, to the first and last
+    /// non-whitespace char. Recorded by the generator because it cannot be
+    /// recovered by searching: the corpus repeats whole blocks verbatim.
+    #[serde(rename = "lineStart")]
+    pub line_start: usize,
+    #[serde(rename = "lineEnd")]
+    pub line_end: usize,
 }
 
 pub fn highlights(n: usize) -> Vec<Fixture> {

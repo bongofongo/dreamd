@@ -27,8 +27,14 @@ node perf/corpus/gen.mjs             # rebuild fixtures (run.sh does this itself
 cd perf/harness && npm run setup     # Playwright + Chromium, test-only, never ships
 ```
 
+```sh
+cargo run --release --example locate_check   # highlight anchoring, 611 corpus fixtures
+```
+
 There are no `#[cfg(test)]` unit tests — `cargo test` compiles and reports nothing.
-Correctness is checked by running the app and by the benches; don't claim test coverage.
+Correctness is checked by running the app, by the benches, and by `locate_check`
+(the one real correctness harness — it exits non-zero on a wrong anchor); don't
+claim coverage beyond those.
 `perf/run.sh` takes an exclusive lock: one tier at a time, no `cargo` alongside it.
 
 ## Tenets
