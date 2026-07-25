@@ -105,6 +105,8 @@ export function themeCss() {
   );
 }
 
+// Mirrors `Keymap::default()` in src-tauri/src/config.rs. Kept complete so the
+// frontend takes the same code paths it does against the real backend.
 export const KEYMAP = {
   palette: "Ctrl+F",
   palette_prev: "Ctrl+P",
@@ -113,4 +115,7 @@ export const KEYMAP = {
   send_stack: "Ctrl+Enter",
   toggle_stack: "Ctrl+O",
   copy_stack: "Ctrl+C",
+  settings: "Ctrl+,",
+  save_annotation: "Ctrl+Y",
+  quick_highlight: true,
 };

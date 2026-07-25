@@ -31,6 +31,7 @@ cd perf/harness && npm run setup     # Playwright + Chromium, test-only, never s
 cargo run --release --example locate_check   # highlight anchoring, 611 corpus fixtures
 cargo run --example config_check             # config layering + write-back
 cargo run --example theme_check              # bundled palettes: vars, --bg, --syntax-theme
+node perf/harness/ui-check.mjs               # settings panel in Chromium (needs harness setup)
 ```
 
 ```sh
@@ -128,7 +129,9 @@ highlights from a corpus fixture.
   (~20min) to profile or move the baseline only on user request. `perf/baseline.json` changes only via
   `perf-deep`, in the same commit as the change that justified it.
 - Numbers from `perf/harness/` are Chromium, **not** WKWebView — relative regression
-  signal only. Say so whenever quoting one.
+  signal only. Say so whenever quoting one. `perf/harness/ui-check.mjs` is the exception:
+  it lives there for the Playwright install, asserts on DOM and IPC rather than timings,
+  and feeds no baseline.
 
 ## Docs
 

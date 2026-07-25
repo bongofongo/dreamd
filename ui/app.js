@@ -40,6 +40,8 @@ const perf = {
 // ---- app state -----------------------------------------------------------
 let currentFile = null;
 let repoRoot = "";
+// Overwritten wholesale from Rust at startup, and again whenever the settings
+// panel saves — rebinding a key takes effect without a restart.
 let keymap = {
   palette: "Ctrl+F",
   palette_prev: "Ctrl+P",
@@ -48,6 +50,9 @@ let keymap = {
   send_stack: "Ctrl+Enter",
   toggle_stack: "Ctrl+O",
   copy_stack: "Ctrl+C",
+  settings: "Ctrl+,",
+  save_annotation: "Ctrl+Y",
+  quick_highlight: true,
 };
 let pending = null; // { id, mark } while awaiting an annotation
 let highlightMode = false; // highlighter tool: auto-highlight on selection
@@ -98,11 +103,37 @@ async function init() {
   perf.at("first_paint");
 }
 
+// The syntect theme baked into the last render. Code-block colours are inline
+// styles produced in Rust, not CSS, so they only change on a re-render — and a
+// re-render is far too expensive to do on every save of a theme being edited.
+let appliedSyntaxTheme = null;
+
 async function loadTheme() {
   try {
     const css = await invoke("get_theme_css");
     $("user-theme").textContent = css;
+    const syntax = readCssVar(css, "--syntax-theme");
+    const changed = appliedSyntaxTheme !== null && syntax !== appliedSyntaxTheme;
+    appliedSyntaxTheme = syntax;
+    if (changed) await renderCurrent(true);
   } catch (e) { console.error(e); }
+}
+
+/// Drop `/* … */` blocks. Every reader below has to do this first: the base
+/// stylesheet's own header comment contains a `:root { --bg: … }` example, and
+/// a matcher that doesn't strip comments happily parses the documentation
+/// instead of the theme. Mirrors `theme::strip_comments` on the Rust side.
+function stripCssComments(css) {
+  return String(css).replace(/\/\*[\s\S]*?(?:\*\/|$)/g, "");
+}
+
+/// The last declaration of a custom property, quotes stripped. Mirrors
+/// `theme::custom_property`.
+function readCssVar(css, name) {
+  const m = stripCssComments(css).match(new RegExp(`(?:^|[^\\w-])${name}\\s*:([^;}]*)`, "g"));
+  if (!m || !m.length) return null;
+  const last = m[m.length - 1];
+  return last.slice(last.indexOf(":") + 1).trim().replace(/^["']|["']$/g, "");
 }
 
 // ---- file tree -----------------------------------------------------------
@@ -484,8 +515,8 @@ let annotCtx = null;
 function openAnnot({ mode, quote, id, text }) {
   annotCtx = { mode, id, quote };
   $("annot-title").textContent = mode === "edit" ? "Edit annotation" : "Add annotation";
-  const sc = document.body.classList.contains("mac") ? "⌃Y" : "Ctrl+Y";
-  $("annot-save").textContent = (mode === "edit" ? "Save" : "Add to stack") + "  " + sc;
+  $("annot-save").textContent =
+    (mode === "edit" ? "Save" : "Add to stack") + "  " + displayCombo(keymap.save_annotation);
   $("annot-delete").style.display = mode === "edit" ? "" : "none";
   $("annot-ev").textContent = quote;
   $("annot-text").value = text || "";
@@ -740,9 +771,10 @@ function wireUi() {
   $("annot-save").onclick = saveAnnot;
   $("annot-cancel").onclick = cancelAnnot;
   $("annot-delete").onclick = deleteHighlight;
-  // Ctrl+Y submits the annotation straight from the textarea (keyboard-only flow).
+  // Submits the annotation straight from the textarea (keyboard-only flow).
+  // The global handler can't do this: it bails on editable targets.
   $("annot-text").addEventListener("keydown", (e) => {
-    if (e.ctrlKey && !e.metaKey && !e.altKey && (e.key || "").toLowerCase() === "y") {
+    if (matchCombo(e, keymap.save_annotation)) {
       e.preventDefault();
       saveAnnot();
     }
@@ -773,6 +805,9 @@ function wireUi() {
   $("palette-overlay").onclick = (e) => { if (e.target.id === "palette-overlay") closePalette(); };
   $("annot-overlay").onclick = (e) => { if (e.target.id === "annot-overlay") cancelAnnot(); };
   $("confirm-overlay").onclick = (e) => { if (e.target.id === "confirm-overlay") closeConfirm(); };
+  $("settings-overlay").onclick = (e) => { if (e.target.id === "settings-overlay") closeSettings(); };
+
+  wireSettings();
 }
 
 function isEditable(el) {
@@ -783,26 +818,32 @@ function isEditable(el) {
 function wireKeys() {
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
+      // Recording a keybind swallows Escape as "cancel", not "close panel".
+      if (cancelRecording()) { e.preventDefault(); return; }
       closePalette();
       closeFileMenu();
       if ($("annot-overlay").classList.contains("open")) cancelAnnot();
       if ($("confirm-overlay").classList.contains("open")) closeConfirm();
+      if ($("settings-overlay").classList.contains("open")) closeSettings();
       return;
     }
     // While an overlay is open, let its own inputs handle keys.
     if ($("palette-overlay").classList.contains("open") ||
         $("annot-overlay").classList.contains("open") ||
-        $("confirm-overlay").classList.contains("open")) return;
+        $("confirm-overlay").classList.contains("open") ||
+        $("settings-overlay").classList.contains("open")) return;
 
     // Palette works from anywhere.
     if (matchCombo(e, keymap.palette)) { e.preventDefault(); openPalette(); return; }
+    if (matchCombo(e, keymap.settings)) { e.preventDefault(); openSettings(); return; }
 
     // Bare-letter shortcuts must not fire while typing in a field.
     if (isEditable(e.target)) return;
 
-    // `h` (or the configured highlight key) turns the current selection into a
-    // dreamd highlight and prompts for an annotation. It does NOT toggle mode.
-    if (matchCombo(e, "h") || matchCombo(e, keymap.highlight)) {
+    // The configured highlight key turns the current selection into a dreamd
+    // highlight and prompts for an annotation. It does NOT toggle mode. Bare
+    // `h` is the pre-keymap shortcut, kept as an alias unless turned off.
+    if ((keymap.quick_highlight && matchCombo(e, "h")) || matchCombo(e, keymap.highlight)) {
       e.preventDefault();
       triggerHighlight();
       return;
@@ -906,6 +947,402 @@ function matchCombo(e, combo) {
   if (e.altKey !== parts.includes("alt")) return false;
   if (e.metaKey !== parts.includes("meta")) return false;
   return (e.key || "").toLowerCase() === key;
+}
+
+/// Render a combo the way the platform writes it. Purely cosmetic — what gets
+/// stored and matched is always the `Ctrl+Shift+X` form.
+const MAC_SYMBOLS = { ctrl: "⌃", shift: "⇧", alt: "⌥", meta: "⌘" };
+function displayCombo(combo) {
+  if (!combo) return "—";
+  if (!document.body.classList.contains("mac")) return combo;
+  const parts = combo.split("+");
+  const key = parts.pop();
+  return parts.map((p) => MAC_SYMBOLS[p.toLowerCase()] || p + "+").join("") + key;
+}
+
+// ---- settings panel ------------------------------------------------------
+// Three tabs over one payload from `get_settings`. Everything the panel writes
+// goes through `set_config`, which is the same path `dreamd config set` takes,
+// so a change made here and one made from the shell produce the same file.
+
+const KEY_ACTIONS = [
+  { id: "palette", label: "Open file palette", sub: "Fuzzy find markdown files" },
+  { id: "palette_next", label: "Palette: next result" },
+  { id: "palette_prev", label: "Palette: previous result" },
+  { id: "highlight", label: "Highlight selection", sub: "Turn the selection into evidence and ask for an annotation" },
+  { id: "save_annotation", label: "Save annotation", sub: "From inside the annotation box" },
+  { id: "toggle_stack", label: "Toggle stack panel" },
+  { id: "send_stack", label: "Send stack to agent" },
+  { id: "copy_stack", label: "Copy stack", sub: "Ignored while text is selected, so OS copy still works" },
+  { id: "settings", label: "Open settings" },
+];
+
+let settings = null;        // the last `get_settings` payload
+let recording = null;       // { action, btn } while capturing a keybind
+let draft = null;           // { css } being edited in the Custom tab
+const themeCache = new Map(); // name -> full stylesheet
+let draftTimer = null;
+
+function wireSettings() {
+  $("btn-settings").onclick = openSettings;
+  $("settings-close").onclick = closeSettings;
+  $("settings-done").onclick = closeSettings;
+  for (const tab of document.querySelectorAll(".st-tab")) {
+    tab.onclick = () => selectPane(tab.dataset.pane);
+  }
+  $("st-save-theme").onclick = saveCustomTheme;
+  $("st-custom-css").oninput = () => {
+    draft = { css: $("st-custom-css").value };
+    clearTimeout(draftTimer);
+    draftTimer = setTimeout(() => { previewCss(draft.css); renderVars(); }, 180);
+  };
+}
+
+async function openSettings() {
+  const overlay = $("settings-overlay");
+  if (overlay.classList.contains("open")) return;
+  try {
+    settings = await invoke("get_settings");
+  } catch (e) { toast(String(e)); return; }
+  $("settings-path").textContent = settings.config_path;
+  renderKeys();
+  overlay.classList.add("open");
+  selectPane("keys");
+}
+
+function closeSettings() {
+  cancelRecording();
+  previewCss("");
+  $("settings-overlay").classList.remove("open");
+}
+
+function selectPane(pane) {
+  for (const t of document.querySelectorAll(".st-tab")) t.classList.toggle("sel", t.dataset.pane === pane);
+  for (const p of document.querySelectorAll(".st-pane")) p.classList.toggle("sel", p.id === "st-pane-" + pane);
+  if (pane === "themes") renderThemes();
+  if (pane === "custom") openCustom();
+}
+
+/// Refetch after any write, so the panel shows what the *merged* config says
+/// rather than what it just asked for — a repo-local `.dreamd.toml` can shadow
+/// a key we saved globally, and the badge is only honest if we re-read.
+async function applyPatch(patch) {
+  try {
+    settings = await invoke("set_config", { patch });
+    keymap = settings.config.keymap;
+    return true;
+  } catch (e) { toast(String(e)); return false; }
+}
+
+function shadowed(key) {
+  return settings && settings.local_overrides.includes(key);
+}
+
+// ---- keys tab ----
+function renderKeys() {
+  const box = $("st-keys");
+  box.innerHTML = "";
+  const clashes = comboClashes();
+
+  for (const action of KEY_ACTIONS) {
+    const row = document.createElement("div");
+    row.className = "st-row";
+    const combo = keymap[action.id];
+    row.innerHTML =
+      `<span class="lbl">${escapeHtml(action.label)}` +
+      (action.sub ? `<span class="sub">${escapeHtml(action.sub)}</span>` : "") +
+      (shadowed("keymap." + action.id) ? `<span class="sub shadowed">overridden by .dreamd.toml in this repo</span>` : "") +
+      `</span>`;
+    const btn = document.createElement("button");
+    btn.className = "combo" + (clashes.has(combo) ? " clash" : "");
+    btn.textContent = displayCombo(combo);
+    btn.title = combo || "";
+    btn.onclick = () => startRecording(action.id, btn);
+    row.appendChild(btn);
+    box.appendChild(row);
+  }
+
+  const quick = document.createElement("div");
+  quick.className = "st-row";
+  quick.innerHTML =
+    `<span class="lbl">Also accept a bare <code>h</code> to highlight` +
+    `<span class="sub">How the app worked before keybinds were configurable</span></span>`;
+  const cb = document.createElement("input");
+  cb.type = "checkbox";
+  cb.checked = !!keymap.quick_highlight;
+  cb.onchange = async () => {
+    if (!(await applyPatch({ keymap: { quick_highlight: cb.checked } }))) cb.checked = !cb.checked;
+  };
+  quick.appendChild(cb);
+  box.appendChild(quick);
+
+  const reset = document.createElement("button");
+  reset.textContent = "Reset all shortcuts";
+  reset.style.marginTop = "14px";
+  reset.onclick = async () => {
+    const defaults = await invoke("default_keymap");
+    if (await applyPatch({ keymap: defaults })) { renderKeys(); toast("Shortcuts reset"); }
+  };
+  box.appendChild(reset);
+
+  if (clashes.size) {
+    const warn = document.createElement("p");
+    warn.className = "st-warn";
+    warn.textContent = "Two actions share a shortcut — the first one listed wins.";
+    box.appendChild(warn);
+  }
+}
+
+/// Combos bound to more than one action. The global handler is an if-chain, so
+/// a duplicate is not an error — it just means the later action is unreachable.
+function comboClashes() {
+  const seen = new Map();
+  const dupes = new Set();
+  for (const a of KEY_ACTIONS) {
+    const c = keymap[a.id];
+    if (!c) continue;
+    if (seen.has(c)) dupes.add(c);
+    seen.set(c, a.id);
+  }
+  return dupes;
+}
+
+function startRecording(action, btn) {
+  cancelRecording();
+  recording = { action, btn, listener: onRecordKey };
+  btn.classList.add("rec");
+  btn.textContent = "Press keys…";
+  document.addEventListener("keydown", onRecordKey, true);
+}
+
+/// Returns true if it actually cancelled something, so Escape can be consumed
+/// by the recorder instead of closing the whole panel.
+function cancelRecording() {
+  if (!recording) return false;
+  document.removeEventListener("keydown", recording.listener, true);
+  recording.btn.classList.remove("rec");
+  recording = null;
+  renderKeys();
+  return true;
+}
+
+async function onRecordKey(e) {
+  e.preventDefault();
+  e.stopPropagation();
+  if (e.key === "Escape") { cancelRecording(); return; }
+  const combo = comboFromEvent(e);
+  if (!combo) return; // a modifier on its own, or a key we can't encode
+  const { action } = recording;
+  cancelRecording();
+  if (await applyPatch({ keymap: { [action]: combo } })) {
+    renderKeys();
+    toast(`${action} → ${displayCombo(combo)}`);
+  }
+}
+
+const MODIFIER_KEYS = ["Control", "Shift", "Alt", "Meta"];
+
+function comboFromEvent(e) {
+  const key = e.key || "";
+  if (MODIFIER_KEYS.includes(key)) return null;
+  // `matchCombo` splits on "+", so a combo whose key is "+" can never match.
+  if (key === "+") { toast("“+” can't be used as a shortcut key"); return null; }
+  const parts = [];
+  if (e.ctrlKey) parts.push("Ctrl");
+  if (e.shiftKey) parts.push("Shift");
+  if (e.altKey) parts.push("Alt");
+  if (e.metaKey) parts.push("Meta");
+  parts.push(key);
+  return parts.join("+");
+}
+
+// ---- themes tab ----
+async function cacheTheme(name) {
+  if (themeCache.has(name)) return themeCache.get(name);
+  try {
+    const css = await invoke("theme_css", { name });
+    themeCache.set(name, css);
+    return css;
+  } catch { return null; }
+}
+
+async function renderThemes() {
+  const grid = $("st-theme-grid");
+  await Promise.all(settings.themes.map((t) => cacheTheme(t.name)));
+  grid.innerHTML = "";
+
+  for (const info of settings.themes) {
+    const css = themeCache.get(info.name) || "";
+    const card = document.createElement("div");
+    card.className = "th-card" + (info.name === settings.theme ? " sel" : "");
+    card.innerHTML =
+      `<div class="top"><span class="name">${escapeHtml(info.name)}</span>` +
+      `<span class="kind">${escapeHtml(info.kind)}</span></div>` +
+      `<div class="th-swatch"></div>`;
+    // Set as a property, not an interpolated `style="…"`: the value comes from
+    // a CSS file and would otherwise carry arbitrary declarations into the
+    // attribute.
+    const swatch = card.querySelector(".th-swatch");
+    for (const v of ["--bg", "--text", "--accent", "--hl"]) {
+      const stripe = document.createElement("i");
+      stripe.style.background = readCssVar(css, v) || "transparent";
+      swatch.appendChild(stripe);
+    }
+
+    card.onclick = () => {
+      previewCss(css);
+      for (const c of grid.children) c.classList.remove("sel");
+      card.classList.add("sel");
+    };
+
+    const acts = document.createElement("div");
+    acts.className = "acts";
+    acts.appendChild(button("Apply", "primary", async (ev) => {
+      ev.stopPropagation();
+      if (await applyPatch({ theme: info.name })) {
+        previewCss("");
+        await loadTheme();
+        renderThemes();
+        toast(shadowed("theme")
+          ? `Saved, but .dreamd.toml pins ${settings.theme} in this repo`
+          : `Theme: ${info.name}`);
+      }
+    }));
+    acts.appendChild(button("Duplicate", "", (ev) => {
+      ev.stopPropagation();
+      draft = { css: paletteBlock(css) };
+      $("st-save-name").value = info.name + "-copy";
+      selectPane("custom");
+    }));
+    if (info.kind === "user") {
+      acts.appendChild(button("Delete", "danger", async (ev) => {
+        ev.stopPropagation();
+        try { await invoke("delete_theme", { name: info.name }); } catch (e) { toast(String(e)); return; }
+        themeCache.delete(info.name);
+        settings = await invoke("get_settings");
+        await loadTheme();
+        renderThemes();
+      }));
+    }
+    card.appendChild(acts);
+    grid.appendChild(card);
+  }
+}
+
+function button(label, cls, onclick) {
+  const b = document.createElement("button");
+  b.textContent = label;
+  if (cls) b.className = cls;
+  b.onclick = onclick;
+  return b;
+}
+
+/// Live preview: an extra stylesheet after `#user-theme`, so nothing about the
+/// saved theme is disturbed and cancelling is a single assignment.
+function previewCss(css) {
+  $("theme-preview").textContent = css || "";
+}
+
+// ---- custom theme tab ----
+async function openCustom() {
+  if (!draft) {
+    const active = settings.theme && (await cacheTheme(settings.theme));
+    draft = { css: paletteBlock(active || "") };
+    if (!$("st-save-name").value) $("st-save-name").value = (settings.theme || "dreamd") + "-copy";
+  }
+  $("st-custom-note").textContent =
+    `Edits preview live. Saving writes ${settings.themes_dir}/<name>.css and switches to it.`;
+  $("st-custom-css").value = draft.css;
+  renderVars();
+  previewCss(draft.css);
+}
+
+/// The `:root` block on its own. A palette is only that block; a full
+/// stylesheet reached through `theme_css` has one buried in it.
+function paletteBlock(css) {
+  const m = stripCssComments(css).match(/:root\s*\{[\s\S]*?\}/);
+  return m ? m[0] + "\n" : ":root {\n}\n";
+}
+
+function paletteVars(css) {
+  const block = stripCssComments(css).match(/:root\s*\{([\s\S]*?)\}/);
+  if (!block) return [];
+  return [...block[1].matchAll(/(--[\w-]+)\s*:\s*([^;]+);/g)]
+    .map((m) => ({ name: m[1], value: m[2].trim() }));
+}
+
+/// Targeted replacement rather than regenerating the block, so comments,
+/// blank lines and any hand-written rules in the file survive editing.
+function setPaletteVar(css, name, value) {
+  const re = new RegExp(`(${name}\\s*:\\s*)([^;]*)(;)`);
+  return re.test(css) ? css.replace(re, `$1${value}$3`) : css;
+}
+
+const HEX = /^#[0-9a-f]{3,8}$/i;
+
+function renderVars() {
+  const box = $("st-vars");
+  box.innerHTML = "";
+  for (const v of paletteVars(draft.css)) {
+    const row = document.createElement("div");
+    row.className = "st-var";
+    row.innerHTML = `<label>${escapeHtml(v.name)}</label>`;
+
+    if (v.name === "--syntax-theme") {
+      const sel = document.createElement("select");
+      const current = v.value.replace(/^["']|["']$/g, "");
+      for (const name of settings.syntax_themes) {
+        const opt = document.createElement("option");
+        opt.value = name;
+        opt.textContent = name;
+        opt.selected = name === current;
+        sel.appendChild(opt);
+      }
+      sel.onchange = () => editVar(v.name, `"${sel.value}"`);
+      row.appendChild(sel);
+    } else {
+      if (HEX.test(v.value)) {
+        const picker = document.createElement("input");
+        picker.type = "color";
+        picker.value = v.value.slice(0, 7);
+        picker.oninput = () => editVar(v.name, picker.value, true);
+        row.appendChild(picker);
+      }
+      const text = document.createElement("input");
+      text.type = "text";
+      text.value = v.value;
+      text.onchange = () => editVar(v.name, text.value, true);
+      row.appendChild(text);
+    }
+    box.appendChild(row);
+  }
+}
+
+/// `quiet` skips the re-render of the var list, so typing in a text field
+/// doesn't yank focus out from under the user.
+function editVar(name, value, quiet) {
+  draft.css = setPaletteVar(draft.css, name, value);
+  $("st-custom-css").value = draft.css;
+  previewCss(draft.css);
+  if (!quiet) renderVars();
+}
+
+async function saveCustomTheme() {
+  const name = $("st-save-name").value.trim();
+  if (!/^[A-Za-z0-9._-]{1,64}$/.test(name)) {
+    toast("Name can only use letters, digits, dot, dash and underscore");
+    return;
+  }
+  try {
+    await invoke("save_theme", { name, css: draft.css });
+  } catch (e) { toast(String(e)); return; }
+  themeCache.delete(name);
+  if (await applyPatch({ theme: name })) {
+    previewCss("");
+    await loadTheme();
+    toast(`Saved ${name}`);
+    selectPane("themes");
+  }
 }
 
 // ---- utils ---------------------------------------------------------------

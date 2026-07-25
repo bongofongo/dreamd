@@ -102,6 +102,7 @@ See `perf/README.md` for what each tier measures and how much to trust it.
 | Toggle stack panel          | `Ctrl+O`                   |
 | Send stack                  | `Ctrl+Enter`               |
 | Copy stack to clipboard     | `Ctrl+C`                   |
+| Open settings               | `Ctrl+,`                   |
 
 Select text (a normal OS selection) and press `h` to turn it into a dreamd
 highlight and add an annotation. The highlighter-icon **mode** is optional: when
@@ -109,7 +110,27 @@ on, simply finishing a selection auto-starts the same flow — no key needed.
 `Ctrl+C` copies the stack only when nothing is selected — with a selection it
 falls back to the normal OS copy.
 
-Override in config.
+Rebind any of these in the settings panel, or in config. The bare `h` is an
+alias kept from before keybinds were configurable; turn it off with
+`quick_highlight = false` if you'd rather have the letter back.
+
+## Settings
+
+`Ctrl+,` (or the gear in the titlebar) opens the settings panel. Three tabs:
+
+- **Keys** — click a shortcut to record a new one. Duplicates are flagged, and a
+  shortcut a repo-local `.dreamd.toml` overrides is marked as such, so the panel
+  never claims a change took effect when it didn't.
+- **Themes** — every bundled and saved theme, with a swatch. Click to preview
+  live, Apply to keep. Code-block colours only change on Apply, since they are
+  produced server-side.
+- **Custom theme** — a colour picker and a text field per palette variable, plus
+  the raw CSS. Edits preview as you make them; Save writes the palette to
+  `~/.config/dreamd/themes/` and switches to it.
+
+Everything the panel writes goes through the same code path as
+`dreamd config set`, so a change made here and one made from the shell produce
+the same file.
 
 ## Config
 

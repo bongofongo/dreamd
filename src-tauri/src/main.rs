@@ -243,6 +243,13 @@ fn set_config(state: State<AppState>, patch: toml::Table) -> Result<Settings, St
     Ok(get_settings(state))
 }
 
+/// The built-in keybinds, so "reset shortcuts" in the panel writes the same
+/// values `Keymap::default()` would rather than a copy that can drift.
+#[tauri::command]
+fn default_keymap() -> Keymap {
+    Keymap::default()
+}
+
 #[tauri::command]
 fn list_themes() -> Vec<theme::ThemeInfo> {
     theme::list()
@@ -453,6 +460,7 @@ fn main() {
             get_theme_css,
             get_settings,
             set_config,
+            default_keymap,
             list_themes,
             theme_css,
             save_theme,
