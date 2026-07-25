@@ -50,23 +50,6 @@ for history).
       or a `[data-mode]` attribute switch within one file) rather than bespoke work per
       theme.
 
-## Startup: optimize for single-file launch
-
-- [ ] `resolve_target` (`src-tauri/src/lib.rs`) already special-cases `dreamd file.md` to
-      resolve `initial_file`, but `AppState.tree` (the full repo walk via `fs_walk`) and
-      the search index still build unconditionally at startup regardless of whether a
-      single file was targeted.
-- [ ] When launched with a file target, skip/defer the full-repo `fs_walk` + `SearchIndex`
-      build and get the target file rendered and on screen first — Preview-style, one
-      document, minimal startup work.
-- [ ] Launch with the file tree panel closed when a target file is given (open repo browsing
-      only kicks in when the user asks for it, or when launched with a directory/no path).
-- [ ] Once the single file is up, build the tree/index in the background and let the
-      sidebar populate lazily rather than blocking first paint on it.
-- [ ] Re-run `--bench-startup` (see `perf/README.md`, `perf-quick`/`perf-pass` skills)
-      before/after to confirm this actually moves cold-start numbers — perf tenet: measured,
-      not guessed.
-
 ## Default "dream" theme
 
 - [ ] Spend real design attention on `ui/theme.css` itself (the bundled default) — currently

@@ -9,13 +9,13 @@
 
 use clap::Parser;
 use dreamd::annotations::{Highlight, Pair, Store};
+use dreamd::catalog::Catalog;
 use dreamd::config::{Config, Keymap};
 use dreamd::fs_walk::FileNode;
-use dreamd::search::SearchIndex;
 use dreamd::send::SendResult;
-use dreamd::{cli, config, fs_walk, home_relative, markdown, perf, read_source, send, theme, watcher};
+use dreamd::{cli, config, home_relative, markdown, perf, read_source, send, theme, watcher};
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tauri::{Manager, State};
 
 struct AppState {
@@ -26,11 +26,13 @@ struct AppState {
     /// only mutable-at-runtime configuration dreamd has.
     config: Mutex<Config>,
     store: Mutex<Store>,
-    index: Mutex<SearchIndex>,
-    /// The file tree, kept alongside the index because both come from the same
-    /// walk. Caching it is what stops a cold start walking the repo twice —
-    /// once here for the index, once for the frontend's first `loadTree`.
-    tree: Mutex<FileNode>,
+    /// The tree and the search index, from one walk behind one readiness gate.
+    /// Caching them is what stops a cold start walking the repo twice — once
+    /// for the index, once for the frontend's first `loadTree`. On a
+    /// single-file launch the walk runs on a background thread and this is
+    /// what the commands wait on. `Arc` because those waits happen off the
+    /// command thread, in `spawn_blocking`.
+    catalog: Arc<Catalog>,
 }
 
 impl AppState {
@@ -58,6 +60,11 @@ struct Cli {
     /// Run the full pre-window startup sequence, then exit without opening a
     /// window. Lets hyperfine measure the Rust half of cold start on its own.
     /// Only emits timings when built with `--features perf`.
+    ///
+    /// On a *file* argument the walk is deferred to a background thread, so
+    /// there is nothing pre-window to measure and this exits without either
+    /// walking or spawning — timing a teardown that races a live thread would
+    /// measure nothing meaningful.
     #[arg(long, hide = true)]
     bench_startup: bool,
 
@@ -69,9 +76,17 @@ struct Cli {
 
 // ---- commands ------------------------------------------------------------
 
+/// The three commands below are `async` and do their waiting inside
+/// `spawn_blocking` because on a single-file launch the catalog may not exist
+/// yet: blocking a synchronous command would block whatever thread Tauri runs
+/// it on, and the frontend can't tell a late-resolving promise from a slow one
+/// anyway.
 #[tauri::command]
-fn list_markdown_files(state: State<AppState>) -> FileNode {
-    state.tree.lock().unwrap().clone()
+async fn list_markdown_files(state: State<'_, AppState>) -> Result<FileNode, String> {
+    let catalog = state.catalog.clone();
+    tauri::async_runtime::spawn_blocking(move || catalog.wait_tree())
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -98,21 +113,24 @@ fn render_markdown(state: State<AppState>, path: String) -> Result<String, Strin
 }
 
 #[tauri::command]
-fn fuzzy_search(state: State<AppState>, query: String) -> Vec<FileNode> {
-    state.index.lock().unwrap().query(&query)
+async fn fuzzy_search(state: State<'_, AppState>, query: String) -> Result<Vec<FileNode>, String> {
+    let catalog = state.catalog.clone();
+    tauri::async_runtime::spawn_blocking(move || catalog.wait_query(&query))
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Re-walk the repo after a file appears or disappears, and hand the fresh tree
 /// straight back. The frontend used to follow this with `list_markdown_files`,
 /// which walked the whole repo a second time for the same answer.
 #[tauri::command]
-fn rebuild_index(state: State<AppState>) -> FileNode {
+async fn rebuild_index(state: State<'_, AppState>) -> Result<FileNode, String> {
+    let catalog = state.catalog.clone();
+    let repo_root = state.repo_root.clone();
     let ignores = state.config.lock().unwrap().extra_ignores.clone();
-    let paths = fs_walk::markdown_paths(&state.repo_root, &ignores);
-    let tree = fs_walk::build_tree(&state.repo_root, &paths);
-    *state.index.lock().unwrap() = SearchIndex::build(&state.repo_root, &paths);
-    *state.tree.lock().unwrap() = tree.clone();
-    tree
+    tauri::async_runtime::spawn_blocking(move || catalog.rebuild(&repo_root, &ignores))
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -385,7 +403,8 @@ fn main() {
 
     // Headless subcommands exit here: after the config read they need, before
     // the repo walk and index build they don't. `--bench-startup` deliberately
-    // sits further down, past the walk, because that is what it measures.
+    // sits further down, past the walk, because that is what it measures
+    // (except on a file argument, where there is no pre-window walk left).
     if let Some(cmd) = cli.command {
         if let Err(e) = cli::run(cmd) {
             eprintln!("dreamd: {e}");
@@ -405,18 +424,29 @@ fn main() {
     }
     perf::mark("config_loaded");
 
-    let paths = fs_walk::markdown_paths(&repo_root, &cfg.extra_ignores);
-    perf::mark("walk_done");
+    // `dreamd file.md` is a Preview-style "open this one document" gesture: the
+    // document is the only thing on screen, the sidebar starts collapsed, and
+    // the repo walk has no business on the critical path. Anything else — a
+    // directory, no argument, or a non-markdown file, all of which leave the
+    // sidebar as the only usable surface — builds synchronously exactly as
+    // before.
+    let deferred = initial.is_some();
+    let catalog = Arc::new(Catalog::pending());
+    if !deferred {
+        catalog.build(&repo_root, &cfg.extra_ignores);
+    }
 
-    let index = SearchIndex::build(&repo_root, &paths);
-    perf::mark("index_built");
-
-    let tree = fs_walk::build_tree(&repo_root, &paths);
-    perf::mark("tree_built");
-
+    // Above the spawn deliberately: on the deferred path there is no pre-window
+    // work left to measure, and exiting into a live walk thread would time the
+    // teardown racing it.
     if cli.bench_startup {
         perf::mark("bench_startup_exit");
         return;
+    }
+
+    if deferred {
+        let (c, root, ignores) = (catalog.clone(), repo_root.clone(), cfg.extra_ignores.clone());
+        std::thread::spawn(move || c.build(&root, &ignores));
     }
 
     let theme_path = cfg.theme_css.clone();
@@ -433,8 +463,7 @@ fn main() {
         initial_file: initial,
         config: Mutex::new(cfg),
         store: Mutex::new(store),
-        index: Mutex::new(index),
-        tree: Mutex::new(tree),
+        catalog,
     };
 
     tauri::Builder::default()

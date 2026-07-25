@@ -68,7 +68,14 @@ async function init() {
   perf.at("js_start");
   if (/Macintosh/.test(navigator.userAgent)) document.body.classList.add("mac");
 
-  // Theme first: index.html only carries fallback colours, so every IPC we do
+  // First, because it decides whether the sidebar stays collapsed. The markup
+  // ships collapsed and we *remove* the class here, so the single-file case is
+  // deterministically flash-free; a directory launch gets its sidebar a few ms
+  // into JS boot, which is invisible against the time the window took to exist.
+  const initial = await invoke("initial_file").catch(() => null);
+  if (!initial) document.body.classList.remove("nav-collapsed");
+
+  // Theme next: index.html only carries fallback colours, so every IPC we do
   // ahead of this is time the window spends in the default theme rather than
   // the user's.
   await loadTheme();
@@ -87,19 +94,21 @@ async function init() {
   $("search-hint").textContent = `Press ${keymap.palette} to search`;
   perf.at("ipc_keymap");
 
-  await loadTree();
-  perf.at("ipc_tree");
   wireEvents();
   wireKeys();
   wireUi();
   wireTooltips();
   perf.at("wired");
 
+  // The tree is off the critical path when a document is opening: Rust blocks
+  // until the background walk lands, so this simply resolves late and
+  // `paintTree` marks the open file active whenever it does. `.catch` is
+  // load-bearing — left unawaited, a rejection here is an unhandled one.
+  const tree = loadTree().catch((e) => console.error(e));
+
   // nvim-style: `dreamd file.md` opens the file on load.
-  try {
-    const f = await invoke("initial_file");
-    if (f) await openFile(f);
-  } catch (e) { console.error(e); }
+  if (initial) await openFile(initial).catch((e) => console.error(e));
+  else await tree;
   perf.at("first_paint");
 }
 
@@ -137,8 +146,13 @@ function readCssVar(css, name) {
 }
 
 // ---- file tree -----------------------------------------------------------
+// `ipc_tree` is marked here rather than on the boot path because the tree no
+// longer sits on it: on a single-file launch this resolves after `first_paint`.
+// The mark has changed meaning — it is "when the sidebar painted", not a
+// cumulative boot timestamp — so it is not comparable to the old baseline.
 async function loadTree() {
   paintTree(await invoke("list_markdown_files"));
+  perf.at("ipc_tree");
 }
 
 // Split out so callers that already hold a fresh tree — `rebuild_index`

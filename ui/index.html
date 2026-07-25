@@ -292,7 +292,10 @@
          wins, and is emptied the moment the settings panel stops previewing. -->
     <style id="theme-preview"></style>
   </head>
-  <body>
+  <!-- Collapsed by default; `init()` removes the class unless there is a file
+       to open. This direction round means `dreamd file.md` never flashes a
+       sidebar it is about to hide. -->
+  <body class="nav-collapsed">
     <div id="titlebar" data-tauri-drag-region>
       <div id="tb-actions">
         <button id="btn-settings" class="icon" data-tip="Settings" data-tip-key="settings">

@@ -9,7 +9,9 @@
 #   1. `--bench-startup` — the pre-window Rust sequence (resolve target, load
 #      config, walk the repo, build the search index) then exit. Measured with
 #      hyperfine, so it includes process spawn and dyld. This is the half we
-#      control directly.
+#      control directly. Run once per repo size, plus once on a *file*
+#      argument, where the walk is deferred to a background thread and so
+#      should not appear in the number at all.
 #
 #   2. Full launch to `first_paint` — the real app, real WKWebView, parsed out
 #      of the NDJSON perf stream. This is what the user actually waits for.
@@ -50,6 +52,15 @@ if [[ ! -d "$LARGE" ]]; then
   exit 1
 fi
 
+# Any document inside the large repo, picked deterministically. `dreamd
+# file.md` defers the walk entirely, so this case measures the pre-window path
+# that a single-file launch actually pays for — without it the hyperfine sweep
+# only ever sees the directory path and the win is invisible here.
+# No `| head -1`: it closes the pipe early, `sort` dies on SIGPIPE, and under
+# `set -o pipefail` that takes the whole script with it.
+LARGE_DOC="$(find "$LARGE" -name '*.md' | sort)"
+LARGE_DOC="${LARGE_DOC%%$'\n'*}"
+
 echo "building (--features perf ${PROFILE_ARGS[*]:-})..." >&2
 cargo build --features perf "${PROFILE_ARGS[@]}" >&2
 
@@ -64,6 +75,7 @@ if command -v hyperfine >/dev/null 2>&1; then
     --export-json "$hyperfine_json" \
     --command-name "prewindow/repo-10" "$BIN --bench-startup $SMALL" \
     --command-name "prewindow/repo-5000" "$BIN --bench-startup $LARGE" \
+    --command-name "prewindow/single-file" "cd $LARGE && $BIN --bench-startup $LARGE_DOC" \
     >&2
   prewindow="$(jq '[.results[] | {name: .command, mean_ms: (.mean*1000), stddev_ms: (.stddev*1000), min_ms: (.min*1000)}]' "$hyperfine_json")"
 else

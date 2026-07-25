@@ -122,6 +122,15 @@ await page.waitForTimeout(300);
 const varOf = (name) =>
   page.evaluate((n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim(), name);
 
+// --- sidebar default, directory branch ---
+// The markup ships `nav-collapsed` and `init()` removes it when `initial_file`
+// is null — which is what this page's stub returns. The single-file branch,
+// where the class survives, is checked on a second page at the end.
+check(
+  "no initial file leaves the sidebar open",
+  !(await page.evaluate(() => document.body.classList.contains("nav-collapsed"))),
+);
+
 // --- the theme actually applies (this is the CSS split working) ---
 check("base+palette applied on boot", (await varOf("--bg")) === "#1b1f27", await varOf("--bg"));
 check(
@@ -241,6 +250,63 @@ check(
 // --- closing ---
 await page.keyboard.press("Escape");
 check("Esc closes the panel", !(await page.locator("#settings-overlay.open").isVisible()));
+
+// --- sidebar default, single-file branch ---
+// A second page, because the boot decision is made once per load. The tree
+// resolves late on purpose: that is the deferred walk, and the point is that
+// the document is on screen before it lands.
+const solo = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+solo.on("pageerror", (e) => results.push("FAIL pageerror (single-file): " + e.message));
+solo.on("console", (m) => {
+  if (m.type() === "error") results.push("FAIL console.error (single-file): " + m.text());
+});
+await solo.addInitScript(({ base }) => {
+  const tree = {
+    name: "repo", is_dir: true, path: "/repo", rel: "",
+    children: [{ name: "doc.md", is_dir: false, path: "/repo/doc.md", rel: "doc.md", children: [] }],
+  };
+  window.__TAURI__ = {
+    core: {
+      async invoke(cmd) {
+        switch (cmd) {
+          case "perf_enabled": return false;
+          case "repo_info": return { root: "/repo", name: "repo", display: "~/repo" };
+          case "get_keymap": return {
+            palette: "Ctrl+F", palette_prev: "Ctrl+P", palette_next: "Ctrl+N",
+            highlight: "Ctrl+H", send_stack: "Ctrl+Enter", toggle_stack: "Ctrl+O",
+            copy_stack: "Ctrl+C", settings: "Ctrl+,", save_annotation: "Ctrl+Y",
+            quick_highlight: true,
+          };
+          case "get_theme_css": return base;
+          case "initial_file": return "/repo/doc.md";
+          case "render_markdown": return "<h1>doc</h1>";
+          // The deferred walk: resolves well after the document renders.
+          case "list_markdown_files":
+            return new Promise((r) => setTimeout(() => r(tree), 400));
+          case "get_highlights": case "reanchor": case "get_stack": return [];
+          default: return null;
+        }
+      },
+    },
+    event: { async listen() { return () => {}; } },
+  };
+}, { base });
+await solo.goto(pathToFileURL(join(UI, "index.html")).href);
+await solo.waitForFunction(() => document.getElementById("content").innerHTML.includes("doc"));
+check(
+  "an initial file keeps the sidebar collapsed",
+  await solo.evaluate(() => document.body.classList.contains("nav-collapsed")),
+);
+check(
+  "the document paints before the tree lands",
+  (await solo.locator("#tree .tree-item").count()) === 0,
+);
+await solo.waitForSelector("#tree .tree-item", { timeout: 5000 });
+check("the tree populates when the walk finishes", (await solo.locator("#tree .tree-item").count()) === 1);
+check(
+  "and the open file is marked active in it",
+  (await solo.locator("#tree .tree-item.active").count()) === 1,
+);
 
 await browser.close();
 console.log(results.join("\n"));

@@ -7,6 +7,7 @@
 //! target cannot be imported.
 
 pub mod annotations;
+pub mod catalog;
 pub mod cli;
 pub mod config;
 pub mod fs_walk;
