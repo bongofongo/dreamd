@@ -2,6 +2,8 @@ export const APP_NAME = "dreamd";
 export const EMAIL = "fongo02@proton.me";
 export const PERSONAL_SITE = "https://fongo.uk";
 export const REPO_URL = "https://github.com/bongofongo/dreamd";
+export const LICENSE_NAME = "Apache 2.0";
+export const LICENSE_URL = "https://github.com/bongofongo/dreamd/blob/main/LICENSE";
 export const VERSION = "0.1.0";
 
 export const TAGLINE = "Read your repo like a book. Then ask it questions.";

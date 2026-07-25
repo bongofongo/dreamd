@@ -70,9 +70,10 @@ Break these only on an explicit decision.
    moment it becomes decoration it stops meaning anything.
 5. **No images.** The landing earns its identity from type, colour, and CSS. If a
    gallery arrives later it goes on its own page, not here.
-6. **Never claim a licence.** The repo has no `LICENSE` file and no `license` field in
-   either `Cargo.toml`, so it is legally all-rights-reserved. Copy says "Source on
-   GitHub" and must never say "open source", "MIT", or similar until a licence lands.
+6. **The licence is Apache 2.0, and copy must match the repo.** `LICENSE` at the repo
+   root plus `license = "Apache-2.0"` in `src-tauri/Cargo.toml` are the source of
+   truth; the site names it via `LICENSE_NAME` / `LICENSE_URL` in `src/consts.ts` and
+   nowhere else. Never name a licence the repo does not actually carry.
 
 ## The landing, and why it works
 

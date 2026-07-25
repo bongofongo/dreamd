@@ -1,5 +1,11 @@
 ---
-import { EMAIL, PERSONAL_SITE, REPO_URL } from "../consts";
+import {
+  EMAIL,
+  LICENSE_NAME,
+  LICENSE_URL,
+  PERSONAL_SITE,
+  REPO_URL,
+} from "../consts";
 const year = new Date().getFullYear();
 ---
 
@@ -7,6 +13,7 @@ const year = new Date().getFullYear();
   <div class="wrap cols">
     <nav aria-label="Footer">
       <a href={REPO_URL} rel="noopener noreferrer">Source</a>
+      <a href={LICENSE_URL} rel="noopener noreferrer">{LICENSE_NAME}</a>
       <a href={`mailto:${EMAIL}`}>{EMAIL}</a>
     </nav>
     <p>© {year} · Made by Oliver — <a href={PERSONAL_SITE}>fongo.uk</a></p>

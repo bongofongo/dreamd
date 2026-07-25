@@ -2,6 +2,7 @@
 name = "dreamd"
 version = "0.1.0"
 description = "Lightweight GUI markdown reader with a highlight/annotation -> agent loop"
+license = "Apache-2.0"
 edition = "2021"
 rust-version = "1.77"
 # Only the explicitly declared [[bench]] targets below are built, so

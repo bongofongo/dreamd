@@ -223,6 +223,17 @@ causes were wrong.
 
 ## Recent updates
 
+- **2026-07-25** — dreamd has a licence: **Apache 2.0**. Until now the project had
+  no licence file at all, which in law means all rights reserved — anyone reading
+  the code on GitHub was technically not allowed to use it. Apache 2.0 is the
+  permissive, business-safe choice: use it, change it, ship it, keep the copyright
+  notice, and it grants patent rights alongside the copyright ones. The licence text
+  now sits at the root of the repository, the program declares it, and the public
+  page says so and links to it — that page had been carefully avoiding the word
+  "licence" precisely because there wasn't one. The app also stopped wearing a
+  placeholder: its icon is now the site's mark — a dark rounded square with the
+  yellow highlight bar over two lines of text, the same image the browser tab shows.
+
 - **2026-07-25** — Opening a single file got out of its own way. Running
   `dreamd notes.md` is meant to be the same gesture as double-clicking a document:
   you asked for one file, you should get one file. What actually happened was that
@@ -323,8 +334,9 @@ causes were wrong.
   send loop, and lists what it's built from. The page lives in a new `website/`
   folder inside this repo but is entirely separate from the app — it ships on its
   own, and nothing about it can affect or slow down the program. Two things it
-  deliberately does not say: it makes no licence claim, because the project still
-  has no licence file, and it never explains what "dreamd" means. Pictures, video,
+  deliberately did not say at the time: it made no licence claim, because there was
+  no licence file yet (there is now — see the entry above), and it never explains
+  what "dreamd" means. Pictures, video,
   or a gallery tab can be added later without rearranging anything.
 
 - **2026-07-24** — A cleanup pass over the Rust code: about thirty lines removed by

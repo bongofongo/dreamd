@@ -1,5 +1,65 @@
 # Session log
 
+## 2026-07-25 — Apache 2.0, and an app icon that isn't a blue square
+
+Short session: give the project a real licence, say so on the public page, and
+replace the placeholder Tauri icon with the site's mark. Both landed; the site
+was rebuilt, driven in Chromium, and deployed.
+
+### What happened
+
+1. **The licence.** The repo had no `LICENSE` and no `license` field, which is
+   legally all-rights-reserved — `website/CLAUDE.md` invariant 6 existed precisely
+   to stop the site claiming otherwise. Now: `LICENSE` at the repo root (Apache
+   2.0 text, `Copyright 2026 Oliver Fong`), `license = "Apache-2.0"` in
+   `src-tauri/Cargo.toml`, a Licence section in `README.md`.
+
+2. **The site.** `LICENSE_NAME` / `LICENSE_URL` in `website/src/consts.ts` are the
+   single place the licence is named — same rule as `REPO_URL`. Footer nav gets an
+   "Apache 2.0" link; the "get it" section gets one line under *Source on GitHub →*
+   reading "Open source under the Apache 2.0 licence". Invariant 6 in
+   `website/CLAUDE.md` was rewritten from "never claim a licence" to "the licence is
+   Apache 2.0, and copy must match the repo" — the point of the rule was never
+   silence, it was not outrunning the repo.
+
+3. **The icon.** `src-tauri/icons/icon.png` was a Tauri placeholder — a blue square
+   on dark grey. It is now a 1024×1024 rasterization of `website/public/favicon.svg`
+   (dark squircle, `--hl` yellow bar, grey and blue lines), transparent corners. One
+   mark for the app and the browser tab.
+
+   No `rsvg-convert` or ImageMagick on this machine, so the render went through the
+   Playwright Chromium already installed for the perf harness — the SVG is vector, so
+   the output is exact, not a proxy. `src-tauri/icons/README.md` records that the SVG
+   is the source of truth and how to re-render.
+
+4. **Deployed.** `npm run deploy` from `website/`, publishing to the live zone at
+   the user's request.
+
+### Mistakes & deviations
+
+- First render attempt ran the script from the scratchpad with `cwd` set to
+  `perf/harness` — Node resolves `playwright` from the *script's* location, not the
+  cwd, so it failed `ERR_MODULE_NOT_FOUND`. Copied the script into `perf/harness/`,
+  ran it, deleted it.
+- The Apache text was taken from a vendored `LICENSE-APACHE` in the cargo registry
+  (`memmap2`) rather than fetched; its appendix copyright line was replaced.
+- `README.md` also carries another session's in-flight theme-family rewrite. Only
+  the Licence hunk was staged, via a filtered patch — nothing of theirs was
+  committed.
+
+### State
+
+`cargo build` passes. No perf tier run and none warranted: the only `src-tauri/`
+changes are a Cargo manifest key and a PNG, no code. Site verified in Chromium
+against the built output — both licence links resolve to the repo `LICENSE`, no
+console errors, `.landing` still sticky at `top: 0`, no horizontal overflow at 375
+or 1440, HTML 4.43 KB gzip against a 15 KB budget, still zero JS.
+
+Open: `bundle.active` is `false`, so `icon.png` is the entire icon set — packaging
+later needs `.icns`/`.ico` from `cargo tauri icon`, and `tauri-cli` is not installed
+here. The dock icon could not be eyeballed; the GUI can't be driven in this
+environment.
+
 ## 2026-07-25 — deferring the repo walk on a single-file launch
 
 Executed `perf-plan.md`, a handoff plan written in a Linux container that could

@@ -3,7 +3,15 @@ import SiteLayout from "../layouts/SiteLayout.astro";
 import Landing from "../components/Landing.astro";
 import LoopSteps from "../components/LoopSteps.astro";
 import SpecStrip from "../components/SpecStrip.astro";
-import { APP_NAME, REPO_URL, SUBLINE, TAGLINE, VERSION } from "../consts";
+import {
+  APP_NAME,
+  LICENSE_NAME,
+  LICENSE_URL,
+  REPO_URL,
+  SUBLINE,
+  TAGLINE,
+  VERSION,
+} from "../consts";
 ---
 
 <SiteLayout title={`${APP_NAME} — ${TAGLINE}`} description={SUBLINE} landing>
@@ -49,6 +57,11 @@ cargo tauri dev</code></pre>
       </p>
       <p class="src">
         <a href={REPO_URL} rel="noopener noreferrer">Source on GitHub →</a>
+      </p>
+      <p class="note">
+        Open source under the <a href={LICENSE_URL} rel="noopener noreferrer"
+          >{LICENSE_NAME} licence</a
+        >.
       </p>
     </div>
   </section>

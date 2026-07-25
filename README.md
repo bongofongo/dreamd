@@ -217,3 +217,7 @@ dismiss.
 - Highlight anchoring matches on the selected text (whitespace-normalized);
   heavily formatted inline selections may not re-locate and will read as stale.
 - No persistence by design.
+
+## Licence
+
+Apache License 2.0 — see [LICENSE](LICENSE).
