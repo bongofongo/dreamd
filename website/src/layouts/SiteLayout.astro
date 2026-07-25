@@ -90,6 +90,16 @@ const canonical = new URL(
           { passive: true }
         );
         sync();
+
+        // #top is .landing, which is `position: sticky` — already pinned at
+        // the viewport top, so the browser's native anchor-scroll only applies
+        // scroll-padding-top and barely moves. Scroll the real page instead.
+        for (const a of document.querySelectorAll('a[href="#top"]')) {
+          a.addEventListener("click", (e) => {
+            e.preventDefault();
+            scrollTo(0, 0);
+          });
+        }
       })();
     </script>
     <style>

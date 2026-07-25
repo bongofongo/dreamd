@@ -158,11 +158,12 @@ Worth asserting, in roughly this order:
    `window.scrollTo({top, behavior: "instant"})` too — `html` has
    `scroll-behavior: smooth`, and a plain `scrollTo` animates, so an immediate read
    sees the old offset.
-   **Known bug:** clicking `.brand` does *not* return `scrollY` to 0. It links to
-   `#top`, which is `.landing` — a `position: sticky` element whose rect is already
-   pinned at the viewport top, so anchor-scrolling to it only applies
-   `scroll-padding-top` and moves up exactly 74 px, from any offset. Measured 900→826,
-   1800→1726, 2600→2526.
+   `.brand` links to `#top`, which is `.landing` — a `position: sticky` element whose
+   rect is already pinned at the viewport top, so a native anchor-scroll to it only
+   applies `scroll-padding-top` and moves up ~74 px rather than reaching `scrollY: 0`.
+   `SiteLayout.astro`'s scroll script intercepts clicks on `a[href="#top"]` and calls
+   `scrollTo(0, 0)` directly instead. It inherits `scroll-behavior` from `html`, so the
+   settle takes the usual smooth-scroll duration — sample after it, not immediately.
 3. Landing text fits inside one screen — it is `overflow: hidden`, so check
    `.inner`'s top/bottom against `innerHeight` at 1440×900, 1280×700, 375×812, 375×667.
 4. `document.documentElement.scrollWidth > innerWidth` is false at 375 and 1440.
