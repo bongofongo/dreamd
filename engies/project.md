@@ -72,7 +72,12 @@ The Rust side is seven small modules, each with one job:
   Neovim in another pane) and tells the UI to refresh. Also hot-reloads the theme
   CSS when you save it.
 - **`config`** — reads a global `~/.config/dreamd/config.toml`, overridden by a
-  repo-local `.dreamd.toml`.
+  repo-local `.dreamd.toml`, and now writes it too when you change something in the
+  settings panel.
+- **`theme`** — the catalogue of colour schemes: the ten that ship inside the app,
+  plus any you have saved yourself.
+- **`cli`** — the `dreamd theme …` and `dreamd config …` commands you can run from
+  a terminal without opening the window.
 
 Two ideas that come up constantly:
 
@@ -82,9 +87,13 @@ Two ideas that come up constantly:
   the highlight is marked **stale**, turns red, and moves to the margin with a `?`
   asking whether it's still relevant. Better to ask than to silently point at the
   wrong text.
-- **The whole app is themeable.** `ui/theme.css` is a normal stylesheet. Point the
-  config at your own copy, edit it, save — the window reloads instantly. Reading
-  comfort is the product, so the paint job is a first-class knob.
+- **The whole app is themeable.** A theme is split in two: one stylesheet holds the
+  *rules* (how big a heading is, how much space between paragraphs), and a **palette**
+  is just a short list of colours and font settings. Ten palettes ship with the app —
+  Gruvbox, Catppuccin, Tokyo Night, Nord, Solarized and a high-contrast pair — and you
+  can write or edit your own from the settings panel or a text editor. Save the file
+  and the window restyles instantly. Reading comfort is the product, so the paint job
+  is a first-class knob.
 
 ## Where things stand right now
 
@@ -96,8 +105,9 @@ Claude Code pane as a formatted query.
 What exists: the file tree, the fuzzy palette, the reading view, highlight mode,
 the annotation modal, the stack panel with cherry-picking, the stale-highlight
 margin rail, live reload that preserves your scroll position, an nvim-style CLI
-(`dreamd file.md`), a per-file `⋯` menu (copy path / delete to Trash), and
-vim-flavored keybinds throughout.
+(`dreamd file.md`), a per-file `⋯` menu (copy path / delete to Trash),
+vim-flavored keybinds throughout, and a settings panel for changing those keybinds
+and the colour scheme without leaving the app.
 
 Known limits, all deliberate for v1:
 
@@ -106,7 +116,11 @@ Known limits, all deliberate for v1:
 - Highlight anchoring matches on the selected text with whitespace normalized,
   plus the text either side of it. Heavily formatted inline selections may still
   fail to re-locate and will read as stale.
-- Nothing persists, by design.
+- Nothing from your *reading session* persists — highlights, annotations and the
+  stack are gone when you close the window, by design. Your *preferences* do
+  persist, and are the only thing the app ever writes.
+- The settings panel rewrites the config file when you change something. The values
+  you set by hand are kept; comments in the file are not.
 
 ## Measuring speed
 
@@ -199,8 +213,49 @@ causes were wrong.
 - **Profiling** — recording where a program actually spends its time, function by
   function, instead of reasoning about where it probably does.
 - **Regression** — something that used to be fast and now isn't.
+- **Palette (theming)** — the short list of colours and font settings that make up
+  one theme, kept separate from the rules that say how the page is laid out.
+- **TOML** — the plain-text format the settings file is written in. Designed to be
+  readable and editable by hand, unlike JSON or XML.
+- **XDG** — the convention that says a program's settings belong in `~/.config`.
+  macOS has its own idea about this; dreamd follows the convention instead, because
+  that is where its users look.
 
 ## Recent updates
+
+- **2026-07-25** — Settings and themes. Until now, changing a keybinding or a colour
+  meant editing a configuration file by hand and restarting; there was exactly one
+  colour scheme, and it was the one baked into the app. Now `Ctrl+,` opens a settings
+  panel with three tabs: click a shortcut and press the new keys you want; browse ten
+  colour schemes that ship with the app — Gruvbox, Catppuccin, Tokyo Night, Nord,
+  Solarized and a high-contrast light/dark pair — clicking to preview and applying to
+  keep; or build your own with a colour picker per setting and save it under a name.
+  Everything the panel does is also a terminal command (`dreamd theme set nord`,
+  `dreamd config set keymap.palette Ctrl+Space`), because the person this is for
+  lives in a terminal.
+
+  Three things worth calling out. First, a deliberate rule change: the app used to
+  write **nothing** to disk. It now writes your preferences, and only those, to a
+  folder of its own — never to your files and never inside your project. Second, a
+  bug that had been sitting there: dropping a small settings file into a project to
+  change one thing silently reset *all* your keyboard shortcuts while you were in
+  that project, because the code could not tell "this file says use the default"
+  apart from "this file didn't mention it". Settings are now merged setting by
+  setting, and that is checked automatically. Third, a security tightening — a
+  settings file that comes with a project you cloned can now choose a colour scheme
+  by name but can no longer point the app at an arbitrary file on your disk, which
+  it could previously read and, through a stylesheet trick, send somewhere.
+
+  Code blocks now recolour with the theme too. Their colours are worked out in
+  advance rather than by the stylesheet, so a light theme used to leave you with
+  dark code blocks; each palette now names the code colouring it wants.
+
+  Three new automated checks came with it: one over the settings merging and saving,
+  one that every shipped colour scheme is complete and valid, and one that drives the
+  settings panel in a real browser engine and checks it behaves. The last one earned
+  its keep immediately — it caught the theme editor coming up empty, because the code
+  reading the colours out of a stylesheet was accidentally reading an *example* in
+  that file's own comment.
 
 - **2026-07-25** — Fixed the white flash on startup. Opening the app showed a blank
   white page for as long as the start-up took, then snapped to the proper dark
