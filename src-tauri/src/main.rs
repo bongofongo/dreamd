@@ -15,12 +15,24 @@ use dreamd::fs_walk::FileNode;
 use dreamd::send::SendResult;
 use dreamd::{cli, config, home_relative, markdown, perf, read_source, send, theme, watcher};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU8, Ordering};
-use std::sync::{Arc, Mutex};
-use tauri::{Manager, State};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::{Arc, Mutex, RwLock};
+use tauri::{Emitter, Manager, State};
 
 struct AppState {
-    repo_root: PathBuf,
+    /// Behind a lock because File -> Open can move it: a `.app` launched from
+    /// Finder starts with no repo at all, and picking one is how it gets one.
+    /// `RwLock` rather than `Mutex` because every command reads it and only the
+    /// menu handler writes.
+    repo_root: RwLock<PathBuf>,
+    /// Whether `repo_root` means anything yet. False only when dreamd was
+    /// launched with no path and the walk-up found no `.git` — the Finder
+    /// double-click case, where the resolved "root" would be `/`. While false
+    /// nothing walks and the window stays hidden; File -> Open flips it.
+    has_repo: AtomicBool,
+    /// Retires the watcher thread for the previous root when File -> Open moves
+    /// it. `None` until something is being watched.
+    watcher_cancel: Mutex<Option<Arc<AtomicBool>>>,
     /// A file to open on load (nvim-style `dreamd file.md`), if any.
     initial_file: Option<String>,
     /// Behind a lock because the settings panel rewrites it at runtime — the
@@ -44,6 +56,12 @@ struct AppState {
 }
 
 impl AppState {
+    /// The current tree root. Cloned out rather than handed a guard, so no
+    /// command holds the lock across a walk or a render.
+    fn root(&self) -> PathBuf {
+        self.repo_root.read().unwrap().clone()
+    }
+
     fn scheme(&self) -> theme::Scheme {
         match self.appearance.load(Ordering::Relaxed) {
             0 => theme::Scheme::Light,
@@ -129,10 +147,14 @@ async fn list_markdown_files(state: State<'_, AppState>) -> Result<FileNode, Str
 
 #[tauri::command]
 fn repo_info(state: State<AppState>) -> serde_json::Value {
+    let root = state.root();
     serde_json::json!({
-        "root": state.repo_root.to_string_lossy(),
-        "name": state.repo_root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
-        "display": home_relative(&state.repo_root),
+        "root": root.to_string_lossy(),
+        "name": root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+        "display": home_relative(&root),
+        // False means "nothing opened yet" — the frontend shows the empty state
+        // rather than a tree it is about to find empty.
+        "hasRepo": state.has_repo.load(Ordering::Relaxed),
     })
 }
 
@@ -164,7 +186,7 @@ async fn fuzzy_search(state: State<'_, AppState>, query: String) -> Result<Vec<F
 #[tauri::command]
 async fn rebuild_index(state: State<'_, AppState>) -> Result<FileNode, String> {
     let catalog = state.catalog.clone();
-    let repo_root = state.repo_root.clone();
+    let repo_root = state.root();
     let ignores = state.config.lock().unwrap().extra_ignores.clone();
     tauri::async_runtime::spawn_blocking(move || catalog.rebuild(&repo_root, &ignores))
         .await
@@ -239,7 +261,7 @@ fn send_stack(state: State<AppState>, ids: Vec<u64>) -> Result<SendResult, Strin
         }
     };
     let config = state.config.lock().unwrap().clone();
-    send::send(&config, &state.repo_root, &pairs)
+    send::send(&config, &state.root(), &pairs)
 }
 
 #[tauri::command]
@@ -251,7 +273,7 @@ fn get_keymap(state: State<AppState>) -> Keymap {
 #[tauri::command]
 fn stack_query_text(state: State<AppState>) -> String {
     let pairs = state.store.lock().unwrap().stack_pairs();
-    send::assemble_query(&state.repo_root, &pairs)
+    send::assemble_query(&state.root(), &pairs)
 }
 
 /// The stylesheet plus the appearance to render it in.
@@ -341,7 +363,7 @@ fn get_settings(state: State<AppState>) -> Settings {
         syntax_themes: markdown::syntax_theme_names(),
         config_path: config::global_path().to_string_lossy().into_owned(),
         themes_dir: theme::user_dir().to_string_lossy().into_owned(),
-        local_overrides: config::local_override_keys(&state.repo_root),
+        local_overrides: config::local_override_keys(&state.root()),
     }
 }
 
@@ -355,7 +377,7 @@ fn set_config(
     patch: toml::Table,
 ) -> Result<Settings, String> {
     config::patch_global(patch)?;
-    let cfg = Config::load(&state.repo_root);
+    let cfg = Config::load(&state.root());
     // What the OS says, as far as we still know it: the scheme in hand is the
     // last one the frontend pushed, which under `system` *is* the OS's answer.
     let system = state.scheme();
@@ -449,14 +471,122 @@ fn delete_file(state: State<AppState>, path: String) -> Result<(), String> {
     let target = std::path::Path::new(&path)
         .canonicalize()
         .map_err(|e| format!("cannot resolve {path}: {e}"))?;
-    let root = state
-        .repo_root
-        .canonicalize()
-        .unwrap_or_else(|_| state.repo_root.clone());
+    let root = state.root();
+    let root = root.canonicalize().unwrap_or(root);
     if !target.starts_with(&root) {
         return Err("refusing to delete outside the repo root".into());
     }
-    trash::delete(&target).map_err(|e| e.to_string())
+    trash_context().delete(&target).map_err(|e| e.to_string())
+}
+
+/// A trash handle that does not need permission to automate Finder.
+///
+/// `trash`'s macOS default is `DeleteMethod::Finder`, which `osascript`s a
+/// `tell application "Finder" to delete`. Under the hardened runtime a notarized
+/// build would then need `NSAppleEventsUsageDescription` plus the
+/// `com.apple.security.automation.apple-events` entitlement, and the user would
+/// get a "dreamd wants to control Finder" prompt the first time they deleted
+/// anything. `NsFileManager` calls `trashItemAtURL` directly: no entitlement, no
+/// prompt, no Finder sound, and faster. The cost is that Trash's "Put Back" does
+/// not appear (a macOS bug, not the crate's) — recovery is dragging the file out
+/// of the Trash instead of one click, which is why `delete_file` is behind a
+/// confirm in the UI.
+fn trash_context() -> trash::TrashContext {
+    #[allow(unused_mut)]
+    let mut ctx = trash::TrashContext::default();
+    #[cfg(target_os = "macos")]
+    {
+        use trash::macos::{DeleteMethod, TrashContextExtMacos};
+        ctx.set_delete_method(DeleteMethod::NsFileManager);
+    }
+    ctx
+}
+
+/// File -> Open. Picks a folder (or a markdown file), makes it the tree root,
+/// and shows the window if it was still hidden.
+///
+/// The picker is `rfd` called straight from Rust rather than
+/// `tauri-plugin-dialog`: the trigger is a native menu event that is already on
+/// the Rust side, so routing it through IPC would mean a plugin registration and
+/// an ACL entry to reach the same NSOpenPanel.
+#[cfg(target_os = "macos")]
+fn open_target(app: &tauri::AppHandle, want_file: bool) {
+    let app = app.clone();
+    // NSOpenPanel must run its modal loop on the main thread. Menu events
+    // already arrive there, but going through `run_on_main_thread` says so.
+    let handle = app.clone();
+    let _ = handle.run_on_main_thread(move || {
+        let dialog = rfd::FileDialog::new().set_title(if want_file {
+            "Open a markdown file"
+        } else {
+            "Open a repository"
+        });
+        let picked = if want_file {
+            dialog
+                .add_filter("Markdown", &["md", "markdown", "mdown", "mkd"])
+                .pick_file()
+        } else {
+            dialog.pick_folder()
+        };
+        if let Some(path) = picked {
+            adopt_root(&app, path);
+        }
+    });
+}
+
+/// Point the whole app at `path`: swap the root, re-read config for the new
+/// repo, re-walk, re-arm the watcher, and tell the frontend to reload.
+#[cfg(target_os = "macos")]
+fn adopt_root(app: &tauri::AppHandle, path: PathBuf) {
+    // A picked *file* roots the tree at its own repo, not at the process cwd
+    // the way the CLI does. The cwd is meaningless here — for a Finder launch
+    // it is `/` — and the containing directory is what the user pointed at.
+    let (root, initial) = if path.is_file() {
+        let parent = path.parent().map(|p| p.to_path_buf());
+        let root = dreamd::resolve_repo_root(parent);
+        let file = dreamd::is_markdown(&path).then(|| path.to_string_lossy().into_owned());
+        (root, file)
+    } else {
+        (dreamd::resolve_repo_root(Some(path)), None)
+    };
+
+    let state = app.state::<AppState>();
+
+    // Re-read config: the new repo may carry its own `.dreamd.toml`, and the
+    // settings panel reports which keys it overrides. A `--theme`/`--mode` given
+    // on the command line for this run is dropped here, which is the right
+    // trade — those are a one-run convenience and this is a deliberate move to
+    // a different repo.
+    let cfg = Config::load(&root);
+    let ignores = cfg.extra_ignores.clone();
+    let theme_path = cfg.theme_css.clone();
+    *state.config.lock().unwrap() = cfg;
+    *state.repo_root.write().unwrap() = root.clone();
+    state.has_repo.store(true, Ordering::Relaxed);
+
+    // Retire the watcher on the old root before arming one on the new.
+    {
+        let mut slot = state.watcher_cancel.lock().unwrap();
+        if let Some(old) = slot.take() {
+            old.store(true, Ordering::Relaxed);
+        }
+        let cancel = Arc::new(AtomicBool::new(false));
+        watcher::spawn(app.clone(), root.clone(), theme_path, cancel.clone());
+        *slot = Some(cancel);
+    }
+
+    // Off the main thread: this walks the repo, and the menu event is holding
+    // the event loop.
+    let catalog = state.catalog.clone();
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        catalog.rebuild(&root, &ignores);
+        let _ = handle.emit("repo-changed", initial);
+        if let Some(win) = handle.get_webview_window("main") {
+            let _ = win.show();
+            let _ = win.set_focus();
+        }
+    });
 }
 
 #[tauri::command]
@@ -561,7 +691,7 @@ fn main() {
         return;
     }
 
-    let (repo_root, initial) = dreamd::resolve_target(cli.path);
+    let (repo_root, initial, has_repo) = dreamd::resolve_target(cli.path);
     perf::mark("target_resolved");
 
     let mut cfg = Config::load(&repo_root);
@@ -582,9 +712,17 @@ fn main() {
     // directory, no argument, or a non-markdown file, all of which leave the
     // sidebar as the only usable surface — builds synchronously exactly as
     // before.
+    //
+    // `has_repo` is the other guard, and it is the one that matters for a
+    // packaged `.app`: LaunchServices gives a Finder launch cwd `/`, the
+    // walk-up finds no `.git`, and `repo_root` would be `/`. Walking that is
+    // unbounded — `WalkBuilder` here has `hidden(false)` and no depth limit —
+    // and it happens *before* the Tauri builder exists, so the window never
+    // appears. With no repo, nothing walks and nothing is shown until
+    // File -> Open says where to look.
     let deferred = initial.is_some();
     let catalog = Arc::new(Catalog::pending());
-    if !deferred {
+    if !deferred && has_repo {
         catalog.build(&repo_root, &cfg.extra_ignores);
     }
 
@@ -596,9 +734,14 @@ fn main() {
         return;
     }
 
-    if deferred {
+    if deferred && has_repo {
         let (c, root, ignores) = (catalog.clone(), repo_root.clone(), cfg.extra_ignores.clone());
         std::thread::spawn(move || c.build(&root, &ignores));
+    } else if !has_repo {
+        // Nothing to walk, so nothing will ever resolve the catalog's readiness
+        // gate — and `list_markdown_files` waits on it. Settle it empty so the
+        // frontend's boot completes and shows the empty state.
+        catalog.settle_empty(&repo_root);
     }
 
     let theme_path = cfg.theme_css.clone();
@@ -609,8 +752,11 @@ fn main() {
     #[cfg(feature = "perf")]
     seed_highlights(&mut store, &initial);
 
+    let watcher_cancel = has_repo.then(|| Arc::new(AtomicBool::new(false)));
     let state = AppState {
-        repo_root: repo_root.clone(),
+        repo_root: RwLock::new(repo_root.clone()),
+        has_repo: AtomicBool::new(has_repo),
+        watcher_cancel: Mutex::new(watcher_cancel.clone()),
         initial_file: initial,
         config: Mutex::new(cfg),
         store: Mutex::new(store),
@@ -690,9 +836,34 @@ fn main() {
                 if let Some((r, g, b)) = theme::background(&css, state.scheme()) {
                     let _ = win.set_background_color(Some(tauri::window::Color(r, g, b, 255)));
                 }
+
+                // The window is declared `visible: false` so a launch with
+                // nothing to show shows nothing: a `.app` double-clicked from
+                // Finder sits in the Dock with its menubar until File -> Open
+                // gives it a repo. Showing it here, after the background colour
+                // is set, also closes the white-flash gap the comment above
+                // describes for every other launch.
+                if state.has_repo.load(Ordering::Relaxed) || state.initial_file.is_some() {
+                    let _ = win.show();
+                }
             }
-            watcher::spawn(app.handle().clone(), repo_root.clone(), theme_path.clone());
+            // Not armed when there is no repo: `watch` is recursive, and the
+            // root would be `/`.
+            if let Some(cancel) = watcher_cancel.clone() {
+                watcher::spawn(
+                    app.handle().clone(),
+                    repo_root.clone(),
+                    theme_path.clone(),
+                    cancel,
+                );
+            }
             Ok(())
+        })
+        .menu(dreamd::menu::build)
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            dreamd::menu::OPEN_FOLDER => open_target(app, false),
+            dreamd::menu::OPEN_FILE => open_target(app, true),
+            _ => {}
         })
         .run(tauri::generate_context!())
         .expect("error while running dreamd");

@@ -1,5 +1,143 @@
 # Session log
 
+## 2026-07-25 — a shippable macOS app: silent launch, half the binary, a release pipeline
+
+Set out to make dreamd installable on macOS — a downloadable `.app`, the CLI on
+`PATH`, a minimal binary, and CI that a Linux target could later join. Got there, with
+one correctness bug found on the way that would have made the first download unusable.
+
+### What happened
+
+Two Explore agents mapped the build surface and a Plan agent verified the design
+against the actual crate sources (tauri 2.11.5, tauri-codegen 2.6.3, tao 0.35.3,
+syntect 5.3.0). That verification pass corrected the plan three times before any code
+was written — see *Mistakes*.
+
+1. **A double-clicked `.app` would have hung the machine.** LaunchServices gives a
+   Finder launch cwd `/`. `resolve_repo_root` walked up looking for `.git`, found
+   none, and returned `/` — which `main.rs` then handed to `Catalog::build`
+   *synchronously, before the Tauri builder exists*, as an `ignore::WalkBuilder` with
+   `hidden(false)` and no depth limit. The window could not appear until the whole
+   filesystem had been walked. This is a packaging blocker, not a polish item, so it
+   was fixed first.
+2. **Silent launch.** `resolve_repo_root_found` reports whether a `.git` was actually
+   found, and `resolve_target` returns it as a third `has_repo` field — an explicit
+   path is still always honoured, because someone who types `dreamd ~/notes` means it.
+   With no repo: nothing walks, the watcher is not armed (it would `watch("/")`
+   recursively), and the window — now `visible: false` in `tauri.conf.json` — is never
+   shown. `AppState` gained `has_repo: AtomicBool` beside the existing `appearance`
+   atomic; `repo_root` became an `RwLock<PathBuf>` because File ▸ Open moves it.
+   Showing the window from `.setup()` *after* `set_background_color` also closes the
+   white-flash gap for every normal launch.
+3. **A native menubar, the first `.menu()` call in the codebase.** Tauri's default
+   macOS File menu is only "Close Window", and there is no way to add one item —
+   supplying a menu replaces the whole bar, so `src-tauri/src/menu.rs` rebuilds it
+   from `PredefinedMenuItem`s with Open Folder… (`⌘O`) and Open File… (`⌘⇧O`).
+   **`Ctrl+O` was left alone as `toggle_stack`**: `matchCombo` in `ui/app.js` requires
+   exact modifier equality including `metaKey`, so a `⌘` chord can never reach a
+   `Ctrl` binding. No keymap change, no migration, no README churn.
+4. **`rfd` called straight from Rust** rather than `tauri-plugin-dialog` — the trigger
+   is a menu event already on the Rust side, so the plugin would have cost a
+   registration and an ACL entry to reach the same NSOpenPanel. `Catalog::settle_empty`
+   opens the readiness gate without walking, because `wait_tree` would otherwise block
+   forever and the frontend's boot would hang instead of reaching its empty state.
+   `paintTree` previously rendered an empty sidebar as *literally nothing*; it now says
+   which kind of empty it is.
+5. **`watcher::spawn` gained a cancel flag.** The thread owns its watcher for its
+   lifetime, so a second File ▸ Open would have left one watching the old root and
+   emitting `file-changed` for files the window no longer shows. The pump's outer
+   `recv` became `recv_timeout(500ms)` so an idle watcher still notices retirement.
+6. **43% of the binary was the app icon.** tauri-codegen decodes the first `.png` in
+   `bundle.icon` to raw RGBA and `include_bytes!`s it — `icon.png` at 1024² is exactly
+   4,194,304 bytes. On macOS it is never read at all: `set_window_icon` is a documented
+   no-op in `tao/src/platform_impl/macos/window.rs`. Reordering the array so
+   `128x128.png` comes first (65,536 bytes — 32² would save another 61 KB but the
+   Linux WM genuinely uses this icon) plus `arboard` without `image-data`, explicit
+   syntect features, and `tauri` without `dynamic-acl`/`common-controls-v6` took the
+   release binary **9,782,112 → 5,571,648 bytes**. `__const` went 5,411,972 → 1,298,860.
+7. **The release pipeline is `packaging/build.sh`; the workflow only wraps it.** Every
+   platform-specific decision is derived from the target triple *inside the script*,
+   never encoded in the CI matrix, so a Linux target is one matrix entry plus one
+   `case` arm. Tag `v*` → both arches → draft release; **publishing** is what bumps the
+   Homebrew cask, so nothing reaches users until a human has double-clicked the build.
+8. **`ditto`, not `tar`.** Part of a `.app`'s signature lives in extended attributes;
+   tar drops them and the extract fails Gatekeeper in a way that looks exactly like a
+   notarization problem. Artifacts are `.zip`, and `install.sh` unpacks with `ditto -x`.
+9. **`trash` pinned to `DeleteMethod::NsFileManager`.** Its macOS default `osascript`s
+   Finder, which under the hardened runtime would need `NSAppleEventsUsageDescription`
+   plus an Apple Events entitlement and a permission prompt on first delete. Switching
+   backends meant the app ships with **no entitlements file at all**. Cost, accepted
+   deliberately: Trash's "Put Back" no longer appears.
+
+### Mistakes & deviations
+
+1. **The plan had `dump-create` down as droppable from syntect.** It is not:
+   `html → parsing → dump-create`. Only `plist-load` and `yaml-load` can go. Caught by
+   the Plan agent reading syntect's own manifest rather than trusting the feature names.
+2. **The plan said `tar` with `COPYFILE_DISABLE`.** Wrong for a signed bundle; see 8.
+3. **The plan proposed version-pinned download URLs on the website.** The site deploys
+   by a manual `npm run deploy` that is independent of the release workflow, so a pinned
+   href would 404 for everyone between "tag pushed" and "site deployed". Changed to
+   `/releases/latest`, which needs no redeploy ever.
+4. **A `"//visible"` comment key in `tauri.conf.json` was a hard build error** — the
+   window config is `deny_unknown_fields`. The explanation moved into the Rust.
+5. **The dmg could not be built and was dropped.** Tauri's dmg bundler `osascript`s
+   Finder to pose the window and dies with `AppleEvent timed out (-1712)`; it produces
+   a valid image with `--skip-jenkins`, but that flag is not reachable through the
+   bundler and the failure is a known coin-flip on CI runners. Since the cask and the
+   installer both consume the `.zip`, shipping only the `.zip` was the user's call.
+6. **The first perf pass reported `bench.render/code/128k` +33.6% and I nearly
+   believed it.** `spread_ms` had gone 261 → 6448 — the machine was not quiet. A direct
+   A/B put the same bench at +2.8%, and Criterion's own delta against the contaminated
+   run read −14.9%. The clean re-run dropped `bench.render/*` out of the moved list
+   entirely. **Diffing against the stale baseline was equally misleading in the other
+   direction** — it shows a wall of phantom improvements from an earlier session.
+7. **The website's own verification script was wrong before the site was.** Two
+   `.brand` assertions failed; both were my test — `html` has `scroll-behavior: smooth`
+   so `scrollTo` animates, and `.brand` has a 0.35 s opacity transition that a 200 ms
+   wait samples mid-way.
+8. **Backgrounding the deep run through `tail -70` lost the summary's flagged row.**
+   Reconstructed by diffing the results file against the baseline in git rather than
+   guessing at it.
+
+### State
+
+`cargo build` green. `config_check` 34/34, `theme_check` 20/20 (10 families × 2 modes),
+`locate_check` 0 failures over 611 fixtures, `ui-check` 41/41. A purpose-written
+Chromium script checked the site at four viewports: sticky landing, no overflow, no
+console errors, 0 JS files, reduced-motion clean.
+
+The launch fix is verified by measurement, not inspection: from `/`, startup now exits
+at 3.9 ms emitting only `process_start → target_resolved → config_loaded`, with no
+`walk_done`/`index_built`/`tree_built`. From inside a repo all three still fire at ~43 ms.
+
+**`perf/baseline.json` was updated by a deliberate `perf-deep --update-baseline`**, at
+the user's request, in this commit because this is the change that justifies it:
+`release_binary_bytes` 6,396,272 → 5,571,648, and `real.loop.release-h100.events_per_save`
+1.583 → 1.083 (that one is an earlier session's debounce fix finally being captured, not
+this session's work). No regression: the 5 rows still reading slower are a *pixel height*
+(`documentPx`, identical to the pre-change run) and sub-millisecond metrics that jittered
+±40% between two runs of my own.
+
+From the release profile, for whoever optimises next: pre-window startup is **97% the
+repo walk** (57.7 ms of 59.7 ms on a 5000-file repo), and the save loop is dominated by
+**reanchoring, not rendering** (`ipc_reanchor` 904 ms p50 vs `ipc_render_markdown` 160 ms
+p50, with 100 highlights).
+
+Open, and deliberately not fixed here:
+
+- **The site's wordmark does not return you to the top.** `.brand` links to `#top` =
+  `.landing`, which is `position: sticky`, so anchor-scrolling to it only applies
+  `scroll-padding-top` and moves up exactly 74 px from any offset (measured 900→826,
+  1800→1726, 2600→2526). `website/CLAUDE.md` claimed this worked; the doc is corrected,
+  the bug is not.
+- Nothing has been built with a **Developer ID Application** cert yet — the local
+  signed build used an Apple Development cert, which cannot be notarized and is not
+  distributable. The first real artifact needs that cert plus a run of
+  `packaging/build.sh`.
+- `packaging/install.sh` and the Homebrew tap are untested end-to-end, because neither
+  can be until a release exists.
+
 ## 2026-07-25 — ten theme families, two appearances each, a literary default
 
 Executed `docs/todo.md` sections 2–4 in one pass: a reading/literary theme pack, a

@@ -58,6 +58,10 @@ const perf = {
 // ---- app state -----------------------------------------------------------
 let currentFile = null;
 let repoRoot = "";
+// False until something has been opened. Only ever false on a launch with no
+// path and no `.git` above the cwd — a .app double-clicked from Finder, where
+// the window is hidden and the menubar is the whole UI until File → Open.
+let hasRepo = true;
 // Overwritten wholesale from Rust at startup, and again whenever the settings
 // panel saves — rebinding a key takes effect without a restart.
 let keymap = {
@@ -100,11 +104,7 @@ async function init() {
   perf.at("ipc_theme");
 
   try {
-    const info = await invoke("repo_info");
-    repoRoot = info.root || "";
-    const nameEl = $("repo-name");
-    nameEl.textContent = info.display || info.name || info.root;
-    nameEl.title = info.root || "";
+    await adoptRepoInfo();
   } catch (e) { console.error(e); }
   perf.at("ipc_repo_info");
 
@@ -272,6 +272,18 @@ async function loadTree() {
   perf.at("ipc_tree");
 }
 
+// The header's idea of which repo is open. Split out of `init` because
+// File → Open moves the root at runtime and the same three fields have to
+// follow it.
+async function adoptRepoInfo() {
+  const info = await invoke("repo_info");
+  repoRoot = info.root || "";
+  hasRepo = info.hasRepo !== false;
+  const nameEl = $("repo-name");
+  nameEl.textContent = hasRepo ? info.display || info.name || info.root : "no repo";
+  nameEl.title = hasRepo ? info.root || "" : "";
+}
+
 // Split out so callers that already hold a fresh tree — `rebuild_index`
 // returns one — don't have to ask Rust to walk the repo again for it.
 function paintTree(root) {
@@ -279,6 +291,18 @@ function paintTree(root) {
   tree.innerHTML = "";
   // Render the root's children directly (skip the root dir node itself).
   for (const child of root.children) tree.appendChild(renderNode(child));
+  // An empty sidebar used to render as literally nothing, which reads as a bug
+  // rather than an answer. Two ways to get here: a repo with no markdown in it,
+  // and a launch with no repo at all (a .app double-clicked from Finder), where
+  // the menubar is the only way forward — so say which one it is.
+  if (!root.children.length) {
+    const empty = document.createElement("div");
+    empty.className = "tree-empty";
+    empty.textContent = hasRepo
+      ? "No markdown files here."
+      : "Nothing open yet — File ▸ Open Folder…";
+    tree.appendChild(empty);
+  }
   activeTreeItem = null;
   markActiveInTree(currentFile);
 }
@@ -884,6 +908,26 @@ function wireEvents() {
     }
   });
   listen("theme-reloaded", () => loadTheme());
+
+  // File → Open moved the tree root. Rust has already re-walked and re-read
+  // config for the new repo by the time this fires, so this is the boot
+  // sequence's data half over again — theme included, since a `.dreamd.toml`
+  // in the new repo may name a different one. The payload is a file to open,
+  // when the user picked a file rather than a folder.
+  listen("repo-changed", async (e) => {
+    try {
+      await loadTheme();
+      await adoptRepoInfo();
+      await loadTree();
+      const file = e.payload;
+      if (file) await openFile(file);
+      else {
+        currentFile = null;
+        contentEl.innerHTML = `<div class="empty">Select a markdown file from the tree, or open the search palette.</div>`;
+        staleRail.innerHTML = "";
+      }
+    } catch (err) { console.error(err); }
+  });
 
   // Two sources for the same signal, on purpose. `matchMedia` is synchronous
   // and needs no IPC; `tauri://theme-changed` is the runtime-guaranteed one.

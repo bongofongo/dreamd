@@ -44,6 +44,18 @@ impl Catalog {
         self.replace(walk(repo_root, extra_ignores));
     }
 
+    /// Settle the gate with an empty tree, without walking anything.
+    ///
+    /// For the launch that has no repo to walk at all: `wait_tree` blocks
+    /// forever on a gate nothing will ever open, so the frontend's boot would
+    /// hang on `list_markdown_files` rather than reaching its empty state.
+    pub fn settle_empty(&self, repo_root: &Path) {
+        self.replace(Built {
+            tree: fs_walk::build_tree(repo_root, &[]),
+            index: SearchIndex::build(repo_root, &[]),
+        });
+    }
+
     /// Re-walk and replace, handing back the fresh tree — the watcher path.
     ///
     /// Racing an in-flight initial build is last-writer-wins. That is

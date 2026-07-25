@@ -12,7 +12,31 @@ highlights, annotations, and the stack live in memory and are gone when the
 process exits. Your preferences do persist — config and themes under
 `~/.config/dreamd/` — and that is the only thing dreamd ever writes.
 
-## Requirements
+## Install (macOS)
+
+```sh
+brew install --cask bongofongo/tap/dreamd
+```
+
+or, without Homebrew:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/bongofongo/dreamd/main/packaging/install.sh | sh
+```
+
+Either way you get `dreamd.app` in `/Applications` **and** `dreamd` on your
+`PATH` — they are the same executable, so the window and the command line can
+never be different versions of each other. Builds are signed and notarized;
+`.zip`s per architecture are attached to each
+[release](https://github.com/bongofongo/dreamd/releases).
+
+Double-clicking the app opens no window: with no repo to show there is nothing
+to show, so it waits in the Dock with its menubar. **File ▸ Open Folder…**
+(`⌘O`) picks one. From a terminal, `dreamd` in a repo behaves as it always has.
+
+Linux: build from source for now.
+
+## Requirements (building from source)
 
 - Rust (stable) + the Tauri CLI: `cargo install tauri-cli --version "^2"`
 - **Linux only:** WebKitGTK runtime — e.g. `webkit2gtk-4.1` (Debian/Ubuntu:
@@ -40,8 +64,12 @@ Once installed as a binary: `dreamd [path]`. Like nvim:
 Build a release binary (small — no bundled Chromium):
 
 ```sh
-cargo tauri build
+cargo tauri build                        # bare binary + dreamd.app
+NO_SIGN=1 packaging/build.sh aarch64-apple-darwin   # the full release artifact
 ```
+
+`packaging/build.sh` is the entire release pipeline and runs the same locally as
+in CI — see **Releasing** below.
 
 ## Performance
 
@@ -94,6 +122,8 @@ See `perf/README.md` for what each tier measures and how much to trust it.
 
 | Action                      | Key                        |
 |-----------------------------|----------------------------|
+| Open a folder *(macOS menu)*| `⌘O`                       |
+| Open a file *(macOS menu)*  | `⌘⇧O`                      |
 | Open file palette           | `Ctrl+F`                   |
 | Palette previous / next     | `Ctrl+P` / `Ctrl+N`        |
 | Highlight selection         | `h` (or `Ctrl+H`)          |
@@ -109,6 +139,10 @@ highlight and add an annotation. The highlighter-icon **mode** is optional: when
 on, simply finishing a selection auto-starts the same flow — no key needed.
 `Ctrl+C` copies the stack only when nothing is selected — with a selection it
 falls back to the normal OS copy.
+
+The first two are native menu items, not dreamd keybinds, and they are not
+rebindable. They do not collide with `Ctrl+O`: modifier matching is exact, so a
+`⌘` chord never reaches a `Ctrl` binding.
 
 Rebind any of these in the settings panel, or in config. The bare `h` is an
 alias kept from before keybinds were configurable; turn it off with
@@ -253,6 +287,49 @@ dismiss.
 - Highlight anchoring matches on the selected text (whitespace-normalized);
   heavily formatted inline selections may not re-locate and will read as stale.
 - No persistence by design.
+
+## Releasing
+
+`packaging/build.sh` is the whole pipeline; `.github/workflows/release.yml` is a
+thin wrapper around it, so a release can be reproduced locally without pushing a
+tag.
+
+```sh
+packaging/set-version.sh 0.2.0     # src-tauri/Cargo.toml + website/src/consts.ts + Cargo.lock
+cargo build
+git commit -am "release: 0.2.0" && git tag v0.2.0 && git push && git push --tags
+```
+
+The tag builds both architectures, signs and notarizes them, and opens a
+**draft** release. Verify the app on a clean machine, then publish it by hand —
+publishing is what bumps the Homebrew cask, so nothing reaches users until
+someone has actually double-clicked the thing.
+
+Secrets the workflow needs: `APPLE_CERTIFICATE` (base64 of the Developer ID
+**Application** `.p12`), `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`,
+`APPLE_ID`, `APPLE_PASSWORD` (an *app-specific* password), `APPLE_TEAM_ID`, and
+`TAP_GITHUB_TOKEN` (fine-grained, `contents: write` on the tap repo only).
+
+### macOS permissions, and why they are the way they are
+
+dreamd is not sandboxed — App Sandbox is a Mac App Store requirement, not a
+notarization one — and ships with **no entitlements file**. Two deliberate
+choices keep it that way:
+
+- `delete_file` uses `trash`'s `NsFileManager` backend rather than its default
+  of asking Finder over Apple Events, so no automation permission is needed. The
+  cost is that Trash's "Put Back" doesn't appear; recovery is dragging the file
+  out of the Trash.
+- The dmg is not built. Tauri's dmg bundler runs an AppleScript to pose the
+  Finder window and dies with `AppleEvent timed out (-1712)` without
+  Automation → Finder permission. The `.zip` is what the cask and the installer
+  consume anyway.
+
+`Info.plist` carries folder-usage strings for Documents/Desktop/Downloads
+because a repo in one of those is normal and the walk will trip TCC. Note the
+asymmetry: launched from Finder, TCC attributes the request to `dreamd.app` and
+shows those strings; launched through the `PATH` symlink from a terminal, it
+generally attributes to the terminal and inherits whatever that already has.
 
 ## Licence
 

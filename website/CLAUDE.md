@@ -128,8 +128,9 @@ Not enforced by a harness here — there is no test suite and no perf gate in th
 directory. They are design rules, because paper_web's `perf/budgets.json` is what
 "in line with the family" means: HTML ≤ 15 KB gzip, CSS ≤ 5 KB, JS ≤ 5 KB.
 
-Current, measured: HTML **4.47 KB** gzip, CSS **1.86 KB**, JS **0**, fonts 2 woff2
-(32 KB). Plenty of headroom; don't spend it on a framework.
+Current, measured: HTML **4.68 KB** gzip, CSS **2.07 KB** (index; the 404's own chunk is
+1.86 KB), JS **0**, fonts 2 woff2 (32 KB). Plenty of headroom; don't spend it on a
+framework.
 
 Accessibility floor: WCAG AA (`--text` on `--bg` ≈ 10:1, `--muted` ≈ 5.2:1 — both
 pass), a visible focus ring on every interactive element, `aria-hidden` on decorative
@@ -150,8 +151,18 @@ cd ../perf/harness && node /path/to/script.mjs
 Worth asserting, in roughly this order:
 
 1. `.landing` `getBoundingClientRect().top === 0` at several scroll offsets (sticky).
-2. `.brand` computed opacity: `0` at scroll 0, `1` past 70% of a viewport; clicking it
-   returns `scrollY` to 0.
+2. `.brand` computed opacity: `0` at scroll 0, `1` past 70% of a viewport. Note the
+   class flips at `y > 0.7h` but `.brand` has a **0.35 s opacity transition**, so a
+   check that samples sooner than ~400 ms after the scroll reads a fraction and looks
+   like a regression when it isn't. Drive scrolls with
+   `window.scrollTo({top, behavior: "instant"})` too — `html` has
+   `scroll-behavior: smooth`, and a plain `scrollTo` animates, so an immediate read
+   sees the old offset.
+   **Known bug:** clicking `.brand` does *not* return `scrollY` to 0. It links to
+   `#top`, which is `.landing` — a `position: sticky` element whose rect is already
+   pinned at the viewport top, so anchor-scrolling to it only applies
+   `scroll-padding-top` and moves up exactly 74 px, from any offset. Measured 900→826,
+   1800→1726, 2600→2526.
 3. Landing text fits inside one screen — it is `overflow: hidden`, so check
    `.inner`'s top/bottom against `innerHeight` at 1440×900, 1280×700, 375×812, 375×667.
 4. `document.documentElement.scrollWidth > innerWidth` is false at 375 and 1440.
@@ -167,7 +178,21 @@ so unlike the app's perf numbers these results are the real thing, not a proxy.
 
 - **The repo root ignores `*.svg` wholesale.** `public/favicon.svg` is re-included by a
   negation in `website/.gitignore`. Any new SVG needs the same, or it silently never
-  gets committed and a fresh clone cannot rebuild the site.
+  gets committed and a fresh clone cannot rebuild the site. It is also the source of
+  truth for the *app's* icon set (`cargo tauri icon` reads it), so that negation is
+  load-bearing well outside this directory.
+- **The download button points at `/releases/latest`, deliberately, not at a
+  version-pinned asset URL.** This site deploys by a manual `npm run deploy` that is
+  completely independent of the app's release workflow, so a pinned href would 404 for
+  every visitor between "tag pushed" and "someone remembered to deploy the site".
+  `VERSION` still appears as prose, where being stale is harmless.
+- **`install.sh` is deliberately *not* served from `public/`,** even though it would
+  work (`html_handling: drop-trailing-slash` only affects HTML, and curl ignores
+  content-type) and `fongo.uk/dreamd/install.sh` would be the nicer URL. It would
+  duplicate a file that has to stay in lockstep with the release artifact format, and
+  a fix to it would sit unpublished until someone ran a deploy. Canonical copy lives at
+  `packaging/install.sh` in the repo root and is served from raw.githubusercontent.
+  `INSTALL_URL` in `src/consts.ts` is the only place that URL is written.
 - `wrangler.jsonc` and `astro.config.mjs` both carry comments explaining the route and
   the `outDir` nesting. Keep them accurate — autorota's equivalent comment went stale
   (it still claims Cloudflare Pages) and is the single most likely source of confusion

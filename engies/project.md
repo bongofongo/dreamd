@@ -227,6 +227,25 @@ causes were wrong.
 
 ## Recent updates
 
+- **2026-07-25** — dreamd became something you can install rather than something you
+  have to build. Until now, using it meant cloning the repository and compiling it
+  yourself, which rules out anyone who doesn't already have a Rust toolchain. There is
+  now a proper Mac app: one command in Homebrew — or a single line pasted into a
+  terminal — puts **dreamd in your Applications folder and the `dreamd` command on your
+  path at the same time**. They're the same program, so the window and the command line
+  can never end up as different versions of each other. Releases are built, signed and
+  stamped by Apple automatically whenever a version is tagged, and the whole pipeline is
+  written so that adding Linux later is a one-line change rather than a rewrite.
+  Two things came out of this worth knowing. First, **the app was 43% app icon** — a
+  quirk of the build tooling meant a 4 MB uncompressed picture was baked into the
+  program, on a platform that never displays it. Removing that and trimming some unused
+  libraries took the app from 9.8 MB to 5.6 MB, a little under half. Second, and more
+  seriously: **double-clicking the app would have hung the machine.** Launched from the
+  Finder rather than a terminal, dreamd had no idea which project you meant, and its
+  answer was to start reading *every file on the disk* — before it had even drawn a
+  window. It now opens quietly instead, waiting in the dock with a **File ▸ Open
+  Folder** menu until you tell it what to read. That bug was invisible from the
+  terminal, and would have been the first thing every new user hit.
 - **2026-07-25** — dreamd learned to look like a book, and to follow your Mac's
   light/dark setting. Until now it shipped one dark, programmer-toned look plus nine
   colour swaps of it, and every one of them used the same sans-serif font — fine for

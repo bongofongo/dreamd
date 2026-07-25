@@ -38,6 +38,13 @@ test dependency and never enters the binary.
 | `real.*` | the actual binary, WKWebView, NDJSON timing marks | Real. The numbers that matter. |
 | `chromium.*` | Playwright Chromium + stubbed `window.__TAURI__` | **Relative only.** Chromium is not WKWebView. |
 
+One measurement sits outside that table. `release_binary_bytes` (deep tier,
+`scripts/profile.sh`) measures `cargo build --release`, which is **not** the
+binary that ships: `cargo tauri build` adds `--features tauri/custom-protocol`,
+which flips tauri's `dev` flag and changes what gets embedded. Treat it as a
+relative signal for "did the binary grow"; measure the shipped size with
+`packaging/build.sh` when the actual number matters.
+
 The Chromium layer exists because driving a real WKWebView is slow and flaky, and
 because the quick tier has to finish in ninety seconds. It reliably tells you *that*
 the frontend got slower. It does not tell you what the app's frame time is. Every

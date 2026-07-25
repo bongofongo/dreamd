@@ -5,6 +5,9 @@ export const REPO_URL = "https://github.com/bongofongo/dreamd";
 export const LICENSE_NAME = "Apache 2.0";
 export const LICENSE_URL = "https://github.com/bongofongo/dreamd/blob/main/LICENSE";
 export const VERSION = "0.1.0";
+export const RELEASES_URL = `${REPO_URL}/releases/latest`;
+export const INSTALL_URL =
+  "https://raw.githubusercontent.com/bongofongo/dreamd/main/packaging/install.sh";
 
 export const TAGLINE = "Read your repo like a book. Then ask it questions.";
 export const SUBLINE =

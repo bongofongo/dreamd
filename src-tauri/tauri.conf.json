@@ -1,7 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "dreamd",
-  "version": "0.1.0",
   "identifier": "com.toadmountain.dreamd",
   "build": {
     "frontendDist": "../ui"
@@ -11,6 +10,7 @@
     "windows": [
       {
         "title": "dreamd",
+        "visible": false,
         "width": 1200,
         "height": 850,
         "minWidth": 700,
@@ -25,8 +25,23 @@
     }
   },
   "bundle": {
-    "active": false,
-    "targets": "all",
-    "icon": ["icons/icon.png"]
+    "active": true,
+    "targets": ["app"],
+    "icon": [
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/32x32.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "category": "DeveloperTool",
+    "copyright": "Copyright © 2026 Oliver Fong",
+    "licenseFile": "../LICENSE",
+    "shortDescription": "GUI markdown reader with a highlight-to-agent loop",
+    "longDescription": "dreamd renders the markdown in your repository with real typography in its own window. Highlight passages, attach questions, and send the stack to your agent in one action. Read-only: it never writes to your markdown.",
+    "macOS": {
+      "minimumSystemVersion": "10.15",
+      "hardenedRuntime": true
+    }
   }
 }

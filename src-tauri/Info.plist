@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Merged into the generated bundle plist by Tauri, which looks for an
+  Info.plist next to tauri.conf.json.
+
+  dreamd is not sandboxed — App Sandbox is a Mac App Store requirement, not a
+  notarization one — so file access is unrestricted except in TCC-protected
+  locations. A notes repo under ~/Documents or ~/Desktop is entirely normal, and
+  the repo walk will trip TCC there. Without a usage string the prompt is
+  generic at best and denied outright at worst.
+
+  There is deliberately no NSAppleEventsUsageDescription: `delete_file` uses
+  trash's NsFileManager backend rather than its default of telling Finder to
+  delete over Apple Events, precisely so that no automation permission is needed.
+  See `trash_context` in src/main.rs.
+-->
+<plist version="1.0">
+<dict>
+  <key>NSDocumentsFolderUsageDescription</key>
+  <string>dreamd reads the markdown files in the repository you open.</string>
+  <key>NSDesktopFolderUsageDescription</key>
+  <string>dreamd reads the markdown files in the repository you open.</string>
+  <key>NSDownloadsFolderUsageDescription</key>
+  <string>dreamd reads the markdown files in the repository you open.</string>
+  <key>NSRemovableVolumesUsageDescription</key>
+  <string>dreamd reads the markdown files in the repository you open.</string>
+</dict>
+</plist>

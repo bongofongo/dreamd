@@ -29,20 +29,54 @@ perf = []
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+# `features = []` does NOT disable defaults, which are
+# ["wry", "compression", "common-controls-v6", "dynamic-acl", "x11", "dbus"].
+# `compression` is what brotli-compresses the embedded `ui/`. `x11`/`dbus` are
+# kept because the crates behind them are cfg(linux)-gated — zero bytes on
+# macOS, and they keep a Linux build a one-line change. Dropped:
+# `common-controls-v6` (Windows), and `dynamic-acl`, which embeds
+# gen/schemas/acl-manifests.json to support `Manager::add_capability` — an API
+# dreamd never calls. Without it `runtime_authority!` discards the manifest at
+# macro expansion; the static `capabilities/default.json` goes through a
+# separate always-emitted path and is unaffected.
+tauri = { version = "2", default-features = false, features = [
+  "wry",
+  "compression",
+  "x11",
+  "dbus",
+] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 pulldown-cmark = { version = "0.12", default-features = false, features = ["html"] }
-syntect = { version = "5", default-features = false, features = ["default-fancy"] }
+# `default-fancy` minus `plist-load` and `yaml-load` — the loaders for syntax and
+# theme definitions in their *source* form, which dreamd never reads: it only
+# ever loads the baked dumps (`SyntaxSet::load_defaults_newlines`,
+# `ThemeSet::load_defaults`). Dropping them drops `plist` and `yaml-rust`.
+# `dump-create` looks equally unused but cannot go: `html` -> `parsing` ->
+# `dump-create`.
+syntect = { version = "5", default-features = false, features = [
+  "default-syntaxes",
+  "default-themes",
+  "html",
+  "regex-fancy",
+] }
 ignore = "0.4"
 notify = "6"
 nucleo = "0.5"
 toml = "0.8"
 dirs = "5"
 clap = { version = "4", features = ["derive"] }
-arboard = "3"
+# Default features include `image-data`, which pulls the whole `image` codec
+# stack (and `moxcms`) for clipboard images. dreamd copies text and nothing else.
+arboard = { version = "3", default-features = false }
 open = "5"
 trash = "5"
+
+# The File -> Open picker, driven straight from the native menu handler. The
+# Tauri dialog plugin wraps this same crate; going direct avoids a plugin
+# registration and an ACL entry to reach the same NSOpenPanel.
+[target.'cfg(target_os = "macos")'.dependencies]
+rfd = "0.17"
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }

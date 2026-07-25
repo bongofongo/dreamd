@@ -45,6 +45,38 @@ Correctness is checked by running the app, by the benches, and by the two exampl
 harnesses above (each exits non-zero on failure); don't claim coverage beyond those.
 `perf/run.sh` takes an exclusive lock: one tier at a time, no `cargo` alongside it.
 
+```sh
+packaging/set-version.sh 0.2.0       # Cargo.toml + website/src/consts.ts + Cargo.lock
+packaging/check-version.sh 0.2.0     # CI assertion; tag must match the tree
+NO_SIGN=1 packaging/build.sh aarch64-apple-darwin   # full release artifact, local
+```
+
+## Packaging
+
+`packaging/build.sh <triple>` is the entire pipeline — build, sign, notarize,
+staple, zip, checksum. `.github/workflows/release.yml` only wraps it, so a release
+is reproducible locally. Everything platform-specific is derived from the triple
+inside the script, never from the CI matrix: a Linux target is one matrix entry
+plus one `case` arm. Tag `v*` → draft release; **publishing** it bumps the
+Homebrew cask from `packaging/cask.rb.tmpl`.
+
+Four things that will bite:
+
+- **`bundle.icon` array order is load-bearing.** The first `.png` is baked into
+  the binary as raw RGBA (`w × h × 4`). It was `icon.png` at 1024² = 4.19 MB,
+  43% of the binary, for an image macOS never reads (`set_window_icon` is a
+  no-op there). `128x128.png` is first on purpose; see `src-tauri/icons/README.md`.
+- **Archive with `ditto`, never `tar`.** Part of a `.app`'s signature lives in
+  xattrs; tar drops them and Gatekeeper rejects the extract. Artifacts are `.zip`.
+- **No dmg.** Tauri's dmg bundler AppleScripts Finder and times out (-1712)
+  without Automation permission — a coin flip in CI.
+- **No entitlements, deliberately.** `trash` is pinned to `NsFileManager` so
+  nothing needs Apple Events. Adding an Apple-Events caller re-opens that.
+
+Version lives in `src-tauri/Cargo.toml` (source of truth), `website/src/consts.ts`,
+and `Cargo.lock`. `tauri.conf.json` has **no** `version` key — Tauri falls back
+to the crate version, verified.
+
 ## Tenets
 
 1. **Read-only.** dreamd never writes to the user's markdown, and never writes anything

@@ -7,7 +7,9 @@ use notify::{EventKind, RecursiveMode, Watcher};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
+use std::sync::Arc;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 
@@ -35,8 +37,21 @@ struct Acc {
     removed: bool,
 }
 
+/// How long the pump waits before rechecking `cancel` while nothing is
+/// happening. Only reached on an idle repo, and only costs an atomic load.
+const CANCEL_POLL: Duration = Duration::from_millis(500);
+
 /// Start watching in a background thread that owns the watcher for its lifetime.
-pub fn spawn(app: AppHandle, repo_root: PathBuf, theme_path: Option<PathBuf>) {
+///
+/// Setting `cancel` retires the thread: File -> Open moves the tree root, and a
+/// watcher left running on the previous root would keep emitting `file-changed`
+/// for files the window is no longer showing.
+pub fn spawn(
+    app: AppHandle,
+    repo_root: PathBuf,
+    theme_path: Option<PathBuf>,
+    cancel: Arc<AtomicBool>,
+) {
     std::thread::spawn(move || {
         let (tx, rx) = std::sync::mpsc::channel();
         let mut watcher = match notify::recommended_watcher(move |res| {
@@ -61,7 +76,7 @@ pub fn spawn(app: AppHandle, repo_root: PathBuf, theme_path: Option<PathBuf>) {
         // all — editing `ui/themes/*.css` needs a rebuild.
         let _ = watcher.watch(&themes.dir, RecursiveMode::NonRecursive);
 
-        pump(&app, &rx, &themes);
+        pump(&app, &rx, &themes, &cancel);
     });
 }
 
@@ -96,11 +111,27 @@ impl ThemeWatch {
     }
 }
 
-/// Drain the watcher channel, coalescing bursts, until the channel closes.
-fn pump(app: &AppHandle, rx: &Receiver<notify::Result<notify::Event>>, themes: &ThemeWatch) {
+/// Drain the watcher channel, coalescing bursts, until the channel closes or
+/// this watcher is retired.
+fn pump(
+    app: &AppHandle,
+    rx: &Receiver<notify::Result<notify::Event>>,
+    themes: &ThemeWatch,
+    cancel: &AtomicBool,
+) {
     let mut pending: HashMap<PathBuf, Acc> = HashMap::new();
 
-    while let Ok(first) = rx.recv() {
+    loop {
+        if cancel.load(Ordering::Relaxed) {
+            return;
+        }
+        // A timeout rather than a bare `recv` so an idle watcher still notices
+        // it has been retired.
+        let first = match rx.recv_timeout(CANCEL_POLL) {
+            Ok(ev) => ev,
+            Err(RecvTimeoutError::Timeout) => continue,
+            Err(RecvTimeoutError::Disconnected) => return,
+        };
         let mut theme_touched = false;
         absorb(first, themes, &mut pending, &mut theme_touched);
 

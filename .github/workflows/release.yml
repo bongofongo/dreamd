@@ -1,0 +1,177 @@
+# dreamd release pipeline.
+#
+# This file is deliberately thin: every step that does real work shells out to
+# `packaging/build.sh`, which runs identically on a laptop. A release can be
+# reproduced and debugged locally without pushing a tag.
+#
+#   git tag v0.2.0 && git push --tags   ->  builds both arches, creates a DRAFT
+#   (verify the app on a clean machine) ->  publish the release by hand
+#   publishing                          ->  bumps the Homebrew cask
+#
+# The draft step is the point: a release is public the instant it exists and
+# Homebrew users pull it within minutes, so nothing reaches them until a human
+# has double-clicked the thing.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  release:
+    types: [published]
+  workflow_dispatch: # rehearse the matrix without cutting a tag
+
+permissions:
+  contents: write
+
+jobs:
+  # ~15 seconds, and it gates a ~20-minute matrix. CI asserts the version rather
+  # than rewriting it: a tag should describe a commit, not change it.
+  verify:
+    if: github.event_name != 'release'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag must match the tree
+        if: github.event_name == 'push'
+        env:
+          TAG: ${{ github.ref_name }}
+        run: packaging/check-version.sh "${TAG#v}"
+
+  build:
+    if: github.event_name != 'release'
+    needs: verify
+    strategy:
+      # One arch failing must not bin the other's artifacts.
+      fail-fast: false
+      matrix:
+        include:
+          # Native runners per arch rather than cross-compiling: it sidesteps
+          # cross-linking under codesign entirely, and both are free on a public
+          # repo. Adding Linux later is one more entry here plus one `case` arm
+          # in packaging/build.sh — everything platform-specific is derived from
+          # the triple, never encoded in this matrix.
+          - { target: aarch64-apple-darwin, runner: macos-14 }
+          - { target: x86_64-apple-darwin, runner: macos-13 }
+          # - { target: x86_64-unknown-linux-gnu, runner: ubuntu-22.04 }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+          # The cargo workspace root is the repo root, not src-tauri/.
+          workspaces: ". -> target"
+
+      # Pinned. An unpinned tauri-cli means a bundler change can break a release
+      # with no commit in this repo. Bump it deliberately.
+      - name: Install tauri-cli
+        run: cargo install tauri-cli --version "2.11.4" --locked
+
+      # The Tauri bundler imports APPLE_CERTIFICATE into a keychain itself, then
+      # signs, notarizes and staples — one fewer moving part than a hand-rolled
+      # `security create-keychain` sequence, and it is the path upstream tests.
+      # packaging/build.sh then asserts the result with spctl and stapler, because
+      # notarization silently no-ops if one of these names is misspelled and the
+      # failure would otherwise surface on a user's machine as "dreamd is damaged".
+      - name: Build, sign, notarize, package
+        run: packaging/build.sh ${{ matrix.target }}
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    if: github.event_name == 'push'
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          draft: true
+          generate_release_notes: true
+
+  # Runs on publish, not on the draft, so the cask can only ever point at a
+  # release a human has looked at.
+  #
+  # `brew bump-cask-pr` is the wrong tool for a personal tap: it wants a full
+  # Homebrew checkout and a fork, and opens a PR to yourself that will stop being
+  # reviewed by the third release. Commit directly.
+  tap:
+    if: github.event_name == 'release' && !github.event.release.prerelease
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: dreamd
+
+      - uses: actions/checkout@v4
+        with:
+          repository: bongofongo/homebrew-tap
+          token: ${{ secrets.TAP_GITHUB_TOKEN }}
+          path: tap
+
+      - name: Render the cask
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # Via env rather than inline ${{ }} so the value is never spliced into
+          # the shell as source text.
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          V="${TAG#v}"
+          # Read the checksums the build already computed rather than
+          # re-downloading and re-hashing 5 MB: these files are the artifacts of
+          # record, so the cask's shas are provably the bytes that were signed.
+          for a in aarch64-apple-darwin x86_64-apple-darwin; do
+            gh release download "$TAG" -R bongofongo/dreamd \
+              -p "dreamd-$V-$a.zip.sha256" -O "$a.sha256"
+          done
+          SHA_ARM="$(tr -d '[:space:]' < aarch64-apple-darwin.sha256)"
+          SHA_INTEL="$(tr -d '[:space:]' < x86_64-apple-darwin.sha256)"
+          mkdir -p tap/Casks
+          sed -e "s|@@VERSION@@|$V|" \
+              -e "s|@@SHA_ARM@@|$SHA_ARM|" \
+              -e "s|@@SHA_INTEL@@|$SHA_INTEL|" \
+              dreamd/packaging/cask.rb.tmpl > tap/Casks/dreamd.rb
+          grep -q '@@' tap/Casks/dreamd.rb && { echo "unsubstituted token left in cask" >&2; exit 1; }
+          cat tap/Casks/dreamd.rb
+
+      - name: Audit
+        run: |
+          cd tap
+          brew style --fix Casks/dreamd.rb
+          # --online is the one that catches a dead download URL, which is the
+          # failure mode that actually reaches users.
+          brew audit --cask --online Casks/dreamd.rb
+
+      - name: Commit
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Casks/dreamd.rb
+          git diff --staged --quiet && { echo "cask unchanged"; exit 0; }
+          git commit -m "dreamd ${TAG#v}"
+          git push
