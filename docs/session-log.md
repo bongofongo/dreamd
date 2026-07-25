@@ -1,5 +1,210 @@
 # Session log
 
+## 2026-07-25 — settings panel, ten themes, a writable config
+
+Asked for a settings/preferences panel: interactive keybinds, interactive colour
+and font settings, a set of popular themes shipped with the app, a savable custom
+theme, and all of it reachable from the command line through TOML pointing at a
+theme CSS file. Landed in two commits plus a docs refresh.
+
+### What happened
+
+**Shape of the design, settled in plan mode.**
+
+- *Persistence.* The panel has to save, and tenet 2 said nothing persists. Rather
+  than smuggle it in, tenet 2 was rescoped: session state (highlights, annotations,
+  the stack) still dies with the process; *preferences* persist to
+  `~/.config/dreamd/`. Tenet 1 gained the matching qualifier — never the user's
+  markdown, never anything inside the repo.
+- *Theme format.* Pure CSS, not a TOML palette that generates CSS. A second source
+  of truth for colours alongside `theme.css` would have fought tenet 5. So
+  `ui/theme.css` was split: it keeps the **rules**, and a **palette** is a bare
+  `:root` block appended after it. `theme = "nord"` picks a palette;
+  `theme_css = "/path"` still replaces the whole stylesheet with no palette
+  appended, which is what a hand-written file wants.
+- *Two commits*, Rust first so the whole feature was exercisable from a shell
+  before any UI existed.
+
+**Commit 1 — `d41b10e`, the Rust half.**
+
+1. Ten palettes in `ui/themes/`, `include_str!`'d: dreamd, gruvbox-dark/light,
+   catppuccin-mocha/latte, tokyo-night, nord, solarized-light, and a
+   high-contrast dark/light pair. Each carries colour, typography
+   (`--font-size`, `--line-height`, `--content-width`) and `--syntax-theme`.
+2. `--syntax-theme` is the fix for a bug nobody had filed: code-block colours are
+   inline styles produced by syntect in Rust, not CSS, so every light theme kept
+   dark code blocks. `markdown::render_with` takes the theme name;
+   `render(source)` delegates, so `benches/render.rs` and `examples/render_doc.rs`
+   were untouched.
+3. `config.rs` rewritten. Layering moved from struct merging to raw `toml::Table`
+   merging — see *Mistakes* below for why that was not cosmetic. Writes patch the
+   global table and rename over the file, so unknown keys and hand-set values
+   survive; comments do not, which Oliver chose explicitly over taking a
+   `toml_edit` dependency.
+4. `theme.rs` grew into the palette registry: `BUNDLED`, the user themes
+   directory, `resolve`, `save_user`/`delete_user` with name validation, and
+   `syntax_theme` parsed out of the CSS the same way `background` already was.
+5. New `cli.rs`: `dreamd theme list|set|show|new`, `dreamd config
+   path|edit|get|set`, and `--theme` for one run. They branch out of `main()`
+   after the config read and before the walk, so `dreamd theme list` costs a file
+   read rather than a repo scan. `args_conflicts_with_subcommands` keeps the
+   optional positional working — `dreamd ./theme` still opens a directory of that
+   name.
+6. `AppState.config` became `Mutex<Config>`, the first configuration in the app
+   that changes after startup.
+7. `config_dir()` now prefers `$XDG_CONFIG_HOME`, then `~/.config`, and only then
+   `dirs::config_dir()`. On macOS `dirs` resolves to
+   `~/Library/Application Support`, which is neither what the README promised nor
+   where a tmux + Neovim user looks. Nothing existed at either path, so the switch
+   cost nothing.
+8. The watcher now also watches the user themes directory and canonicalizes paths,
+   since FSEvents reports resolved ones and a theme under `/tmp` would never have
+   compared equal.
+
+**Commit 2 — `e0751e6`, the panel.** `#settings-overlay` on the existing
+`.modal-overlay` / `.open` convention, three tabs. Keys records bindings, flags
+duplicates (the global handler is an if-chain, so a duplicate silently makes the
+later action unreachable), and labels anything a repo-local `.dreamd.toml`
+shadows — the panel writes globally, and without that label it would appear to
+save a value that never takes effect. Themes previews live through a second
+`<style>` after `#user-theme`, so cancelling is one assignment. Custom edits
+variables by targeted string replacement rather than regenerating the block, so
+comments and hand-written rules survive.
+
+Two hardcoded shortcuts moved into the keymap: the bare `h` highlight alias
+(`quick_highlight`) and `Ctrl+Y` to save an annotation. `--content-width` and
+`--ui-font-size` were declared by every palette but never consumed — `#content`
+had a hardcoded `820px`. The boot fallback colours in `index.html` had drifted
+from the default palette (`--accent` `#4c8bf5` vs `#6ea8fe`, plus four others)
+and were realigned; they are what paints the window before the theme arrives.
+
+**Three correctness harnesses**, in the `locate_check.rs` style — this repo has no
+`#[cfg(test)]` blocks and that convention was kept rather than contradicted:
+`examples/config_check.rs` (25 assertions over layering, the merge bug and
+write-back), `examples/theme_check.rs` (every palette declares every variable and
+names a real syntect theme), and `perf/harness/ui-check.mjs` (28 assertions
+driving the panel in Chromium behind a stub that behaves like the Rust commands).
+
+### Mistakes & deviations
+
+1. **A latent config bug, found while rewriting the merge.** `Config::merge`
+   assigned `self.tmux_autodetect = local.tmux_autodetect` and
+   `self.keymap = local.keymap` unconditionally. Because `read_file` deserializes
+   with `#[serde(default)]`, a `.dreamd.toml` containing only `tmux_target = "%3"`
+   produced a fully-defaulted `keymap`, which then overwrote the user's global
+   bindings — in that repo only. Not a hypothetical: it would have silently reset
+   every shortcut. There is no cheap patch, because the information needed is
+   destroyed at deserialization; merging raw tables is what fixes it, and
+   `config_check` now pins the behaviour.
+
+2. **A security hole I was about to widen.** `.dreamd.toml` is repo content —
+   you get it by cloning — and the plan had it able to set `theme_css`, which
+   reads an arbitrary file and injects it into the webview as a `<style>` tag.
+   The CSP still permits `https:` in `img-src`, so a `background-image: url(…)`
+   turns that into read-and-exfiltrate. Repo-local config may now name a `theme`
+   but not set `theme_css`. Flagged by the planning agent, not by me.
+
+3. **The panel's theme editor came up empty**, caught by `ui-check.mjs` on its
+   first run. The JS palette parsers matched the `:root { --bg: … }` *example*
+   inside `ui/theme.css`'s own header comment, so `paletteBlock` returned the
+   documentation instead of the palette. The Rust side already had
+   `strip_comments` for exactly this; the JS side now mirrors it. This is the one
+   bug that a build, a diff read, and both Rust harnesses would all have missed.
+
+4. **I could not look at the app.** `cargo tauri` is not installed on this
+   machine and `screencapture` is blocked, so the plan's "run it and click
+   through" verification was not available. Substituted `ui-check.mjs`, which
+   turned out to be the better instrument — but nobody has yet seen the panel
+   rendered in WKWebView, only in Chromium.
+
+5. **Nearly reported someone else's perf wins as mine.** The first `perf-quick`
+   showed `render/code/512k` down 78% and `reanchor_today/10` down 85% on a change
+   that touched neither. `perf/baseline.json` is from `cdf24d2`, before the
+   optimization pass in `56143c6`, and has not moved since.
+
+### State
+
+`cargo build` clean. `config_check` 25/25, `theme_check` 10/10, `ui-check` 28/28,
+`locate_check` unchanged (0 wrong with context). CLI verified by hand against an
+isolated `XDG_CONFIG_HOME`: a hand-written config with comments round-trips with
+only the intended key changed, no defaults spelled out, and a repo-local file that
+omits `[keymap]` no longer resets it.
+
+`perf-pass` at the panel commit: 195 metrics compared, **0 regressed**, 1 slower
+(`chromium.palette.repo5000.keystroke_ms.p95`, 0.4 → 0.5 ms — sub-millisecond, and
+Chromium-relative rather than WKWebView). The save-to-paint loop is unmoved:
+`events_per_save` 1.125 and p95 ~2060 ms match the run at `4138e62`. The 52
+improved rows are the earlier optimization pass showing against a stale baseline,
+not this work.
+
+Open:
+
+- Nothing has been seen in WKWebView. Worth one look at the panel and at a light
+  theme, particularly the high-contrast pair.
+- `perf/baseline.json` is stale by two sessions and makes every tier run noisy.
+  Fixing it needs a deliberate `perf-deep --update-baseline`.
+- Bundled palettes are `include_str!`'d, so editing `ui/themes/*.css` needs a
+  rebuild in a release build; debug builds read them off disk to compensate.
+- Changing `theme_css` at runtime does not re-arm the watcher — it still watches
+  the path resolved at startup. A restart picks it up.
+- `code-block-highlights-never-paint` is untouched by this work, but the Custom
+  tab's `--hl` swatch will look inert inside fenced code for the same reason.
+
+## 2026-07-25 — chromeless top bar (attempted, reverted)
+
+Tried removing the `#titlebar` row entirely so the document reaches the top edge
+of the window, with the three actions (highlight mode, stack, send) becoming
+floating buttons over the content. Built, then **reverted before commit** —
+Oliver wants the top bar for now. Recorded here so the next attempt starts from
+what was already worked out rather than from scratch.
+
+### What the change was
+
+All in `ui/index.html`; no Rust, no `app.js` — the buttons kept their ids, so
+every handler and keybind carried over untouched.
+
+- `#titlebar` deleted from both the stylesheet and the markup. `<body>` becomes
+  just `#workspace`, so `#content-scroll` starts at window y=0.
+- The three buttons moved into `#float-actions`: `position: fixed; top: 8px;
+  right: 12px; z-index: 30`, each given `box-shadow: 0 2px 8px rgba(0,0,0,0.4)`
+  so they stay legible over text scrolling beneath them.
+- `#stale-rail` moved from `top: 8px` to `top: 46px`, otherwise stale chips land
+  underneath the floating cluster.
+
+### The three things that made it non-trivial
+
+1. **Window dragging.** `data-tauri-drag-region` lived on `#titlebar`; deleting
+   it leaves no way to move the window. Putting a drag strip across the top of
+   the document is wrong — it would eat text selection in a reader. The fix was
+   to move the drag region onto `#sidebar-header`, which is chrome rather than
+   content.
+
+2. **The macOS traffic lights.** `titleBarStyle: "Overlay"` means they float over
+   whatever is at the top-left. With the titlebar gone that is `#sidebar-header`,
+   so it needed `body.mac #sidebar-header { padding: 10px 8px 10px 82px;
+   min-height: 38px }` to clear them and stay tall enough to contain them. With
+   the tree collapsed the sidebar is 0px wide and neither problem has a host at
+   all — that needed a separate 78×38 invisible `#drag-patch` pinned to the
+   top-left corner, which restores dragging and costs no readable text because
+   the lights were already covering that corner.
+
+3. **Collision with the stack panel.** `#stack-panel` is pinned top-right and the
+   floating cluster would sit on top of its close button.
+   `body:has(#stack-panel.open) #float-actions { transform: translateX(-348px) }`
+   slid it clear. Fine in WKWebView on this machine, but `:has()` is the kind of
+   thing to re-check if the webview floor ever moves.
+
+### Known rough edges if this is picked up again
+
+- Text scrolls *under* the floating buttons. Inherent to the approach; the
+  shadow and opaque button background make it legible rather than clipped, but
+  it is a real change to how the top of the page reads.
+- Tree collapsed on a narrow window puts the traffic lights over the first line
+  of the document.
+- Never run against the app — no `cargo tauri dev` pass, no `/perf-quick`. The
+  change is CSS-and-markup only, but "it looked right in the file" is all the
+  verification it ever got.
+
 ## 2026-07-25 — kill the white flash on boot
 
 Single-bug thread. The reading pane painted white from window creation until the
