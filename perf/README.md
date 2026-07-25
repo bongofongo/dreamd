@@ -4,9 +4,9 @@ Local performance measurement. No CI, no GitHub Actions — this exists to be ru
 hand and by Claude, on this machine, during a session.
 
 ```sh
-./perf/run.sh quick     # ~60s    after an edit
-./perf/run.sh pass      # ~5min   after a thread pass
-./perf/run.sh deep      # ~20min  before a commit, or when investigating
+./perf/run.sh quick     # ~60s    
+./perf/run.sh pass      # ~5min   
+./perf/run.sh deep      # ~20min  
 ```
 
 Results go to `perf/results/` (gitignored). Each run prints a diff against
