@@ -13,10 +13,10 @@ use dreamd::config::{Config, Keymap};
 use dreamd::fs_walk::FileNode;
 use dreamd::search::SearchIndex;
 use dreamd::send::SendResult;
-use dreamd::{fs_walk, home_relative, markdown, perf, read_source, send, watcher, DEFAULT_THEME};
+use dreamd::{fs_walk, home_relative, markdown, perf, read_source, send, theme, watcher};
 use std::path::PathBuf;
 use std::sync::Mutex;
-use tauri::State;
+use tauri::{Manager, State};
 
 struct AppState {
     repo_root: PathBuf,
@@ -174,12 +174,7 @@ fn stack_query_text(state: State<AppState>) -> String {
 
 #[tauri::command]
 fn get_theme_css(state: State<AppState>) -> String {
-    state
-        .config
-        .theme_css
-        .as_ref()
-        .and_then(|p| std::fs::read_to_string(p).ok())
-        .unwrap_or_else(|| DEFAULT_THEME.to_string())
+    theme::resolve(state.config.theme_css.as_deref())
 }
 
 #[tauri::command]
@@ -313,6 +308,7 @@ fn main() {
     }
 
     let theme_path = cfg.theme_css.clone();
+    let theme_bg = theme::background(&theme::resolve(theme_path.as_deref()));
 
     // `mut` is only needed by the seeding call below, which compiles out.
     #[allow(unused_mut)]
@@ -358,6 +354,13 @@ fn main() {
         ])
         .setup(move |app| {
             perf::mark("setup");
+            // Paint the window with the theme's own `--bg` before the frontend
+            // has injected theme.css; without this the reading pane is white
+            // for as long as boot takes. `backgroundColor` in tauri.conf.json
+            // covers the frame before this runs.
+            if let (Some(win), Some((r, g, b))) = (app.get_webview_window("main"), theme_bg) {
+                let _ = win.set_background_color(Some(tauri::window::Color(r, g, b, 255)));
+            }
             watcher::spawn(app.handle().clone(), repo_root.clone(), theme_path.clone());
             Ok(())
         })

@@ -202,6 +202,14 @@ causes were wrong.
 
 ## Recent updates
 
+- **2026-07-25** — Fixed the white flash on startup. Opening the app showed a blank
+  white page for as long as the start-up took, then snapped to the proper dark
+  background. The colours live in a stylesheet the app loads a moment *after* the
+  window appears, so until it arrived there was no background to paint. The window
+  is now given its colour up front, read from whichever theme file you actually
+  use — so if you have written yourself a light theme, it starts light rather than
+  flashing dark at you.
+
 - **2026-07-25** — Fixed the highlight-in-the-wrong-place bug found the same day, and
   found it was much bigger than reported. A highlight remembers the words you selected;
   when the file is saved, the app looks those words up again to find out which lines

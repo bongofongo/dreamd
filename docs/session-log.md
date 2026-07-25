@@ -1,5 +1,67 @@
 # Session log
 
+## 2026-07-25 — kill the white flash on boot
+
+Single-bug thread. The reading pane painted white from window creation until the
+frontend finished booting — longer on a slower start, which is exactly backwards.
+Fixed in four layers, outermost first.
+
+### What happened
+
+1. **The cause is where `--bg` lives.** `body { background: var(--bg) }` is in
+   `ui/theme.css`, and theme.css is injected into `#user-theme` from JS. So for
+   the first stretch of boot the variable is simply unset and the webview paints
+   its own default white. Nothing was "flashing" — the app had no background yet.
+
+2. **`src-tauri/src/theme.rs` (new).** `resolve()` (user's theme file, else the
+   bundled `DEFAULT_THEME`) and `background()`, which parses `--bg` out of the CSS
+   as `(r, g, b)`. Hex only — `#rgb`, `#rrggbb`, and the 4/8-digit alpha forms, with
+   `/* … */` blocks stripped first so a commented-out declaration cannot win.
+   Anything else returns `None` and the caller keeps its default.
+
+3. **The native window is painted from the *user's* theme, not a constant.**
+   `main.rs` computes the colour before the builder and `setup` calls
+   `set_background_color`. Hardcoding the default dark would have made a custom
+   light theme flash dark — a worse bug for the person who bothered to write one
+   (tenet 5). `backgroundColor` in `tauri.conf.json` is the static default covering
+   the frame before `setup` runs; `get_theme_css` now just calls `theme::resolve`.
+
+4. **`ui/index.html` carries fallbacks.** `html`/`body` get
+   `var(--bg, #1b1f27)` / `var(--text, #c7cedb)`, matching the `var(--x, fallback)`
+   idiom the rest of the structural CSS already uses. This is what covers webview
+   first paint onward.
+
+5. **`loadTheme()` moved to the front of `init()`** in `ui/app.js`, ahead of
+   `repo_info` and `get_keymap`. Every IPC before it was time a user with a custom
+   theme spent looking at the default one. Consequence for perf: the `ipc_theme`,
+   `ipc_repo_info` and `ipc_keymap` marks are cumulative timestamps, so their order
+   in the baseline changed — a future diff on those three rows is the reorder, not
+   a cost.
+
+### Mistakes & deviations
+
+Ran clean. The one judgement call worth recording is that `#1b1f27` now appears in
+three places (theme.css, the index.html fallback, tauri.conf.json); only theme.css
+is authoritative at runtime, the other two are pre-boot defaults, and both say so
+in a comment.
+
+### State
+
+`cargo build` clean. `theme::background` verified differentially through a throwaway
+example — default theme, `#fff`, 8-digit hex, a commented-out decoy, `rgb()`, and a
+`--sidebar-bg` near-miss all parse as expected; example deleted after.
+
+`perf/run.sh pass` — the run the previous session deferred — **195 metrics compared:
+0 regressed, 1 slower, 54 improved**. The single slower row is
+`chromium.palette.repo5000.keystroke_ms.p95` at 0.4 → 0.5ms, sub-millisecond and
+Chromium-relative, not a real signal. The 54 improvements are almost all
+`chromium.highlight.*.apply_ms` (up to −92%) and belong to the anchoring commit
+below, not to this change; boot ordering cannot move highlight apply. Full table:
+`perf/results/pass-4138e62-20260725-012944.json`.
+
+Not verified visually — the fix was reasoned from where `--bg` is defined and the
+build, not from watching a boot. Worth one look on the next real launch.
+
 ## 2026-07-25 — highlight anchoring: 31.6% of selections landed on the wrong copy
 
 Bug-hunting thread. The brief was a suspected off-by-one plus a "quote appears

@@ -62,6 +62,13 @@ async function init() {
   await perf.probe();
   perf.at("js_start");
   if (/Macintosh/.test(navigator.userAgent)) document.body.classList.add("mac");
+
+  // Theme first: index.html only carries fallback colours, so every IPC we do
+  // ahead of this is time the window spends in the default theme rather than
+  // the user's.
+  await loadTheme();
+  perf.at("ipc_theme");
+
   try {
     const info = await invoke("repo_info");
     repoRoot = info.root || "";
@@ -75,8 +82,6 @@ async function init() {
   $("search-hint").textContent = `Press ${keymap.palette} to search`;
   perf.at("ipc_keymap");
 
-  await loadTheme();
-  perf.at("ipc_theme");
   await loadTree();
   perf.at("ipc_tree");
   wireEvents();

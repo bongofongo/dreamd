@@ -9,12 +9,18 @@
     <style>
       * { box-sizing: border-box; }
       html, body { height: 100%; margin: 0; }
+      /* The fallbacks matter on boot: theme.css is injected into #user-theme
+         from JS, so until that lands `--bg` is unset and the webview would
+         otherwise paint its default white. Keep these in step with theme.css. */
+      html { background: var(--bg, #1b1f27); }
       body {
         display: flex;
         flex-direction: column;
         height: 100vh;
         font: 14px/1.5 system-ui, sans-serif;
         overflow: hidden;
+        background: var(--bg, #1b1f27);
+        color: var(--text, #c7cedb);
       }
 
       button {
