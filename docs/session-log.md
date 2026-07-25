@@ -42,7 +42,13 @@ was rebuilt, driven in Chromium, and deployed.
   cwd, so it failed `ERR_MODULE_NOT_FOUND`. Copied the script into `perf/harness/`,
   ran it, deleted it.
 - The Apache text was taken from a vendored `LICENSE-APACHE` in the cargo registry
-  (`memmap2`) rather than fetched; its appendix copyright line was replaced.
+  (`memmap2`) rather than fetched; its appendix copyright line was replaced. That
+  copy did not survive — see the push below.
+- The push was rejected: PR #2 ("Create LICENSE") had landed the same licence
+  upstream while this session ran. Merged rather than rebased — the worktree is dirty
+  with another session's work and rebase refuses that — and resolved the add/add
+  conflict in favour of GitHub's canonical (indented) Apache text, with the appendix
+  copyright filled in as `Copyright 2026 Oliver Fong`.
 - `README.md` also carries another session's in-flight theme-family rewrite. Only
   the Licence hunk was staged, via a filtered patch — nothing of theirs was
   committed.
