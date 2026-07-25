@@ -1,0 +1,55 @@
+/* Catppuccin — Latte by day, Mocha by night. Colours unchanged from the two
+ * palettes this file replaces; both old names still resolve. */
+
+:root {
+  --font-body: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --font-size: 16px;
+  --line-height: 1.7;
+  --content-width: 820px;
+  --ui-font-size: 14px;
+}
+
+:root[data-mode="light"] {
+  --bg: #eff1f5;
+  --sidebar-bg: #e6e9ef;
+  --btn-bg: #ccd0da;
+  --hover: #bcc0cc;
+  --border: #bcc0cc;
+
+  --text: #4c4f69;
+  --muted: #6c6f85;
+  --link: #1e66f5;
+
+  --accent: #1e66f5;
+  --accent-dim: #d5dcfb;
+
+  --hl: #df8e1d;
+  --stale: #d20f39;
+  --stale-bg: #f7d8dd;
+  --stale-text: #ffffff;
+
+  --syntax-theme: "InspiredGitHub";
+}
+
+:root[data-mode="dark"] {
+  --bg: #1e1e2e;
+  --sidebar-bg: #181825;
+  --btn-bg: #313244;
+  --hover: #45475a;
+  --border: #45475a;
+
+  --text: #cdd6f4;
+  --muted: #a6adc8;
+  --link: #89dceb;
+
+  --accent: #89b4fa;
+  --accent-dim: #2c3450;
+
+  --hl: #f9e2af;
+  --stale: #f38ba8;
+  --stale-bg: #3a2029;
+  --stale-text: #1a1a1a;
+
+  --syntax-theme: "base16-ocean.dark";
+}

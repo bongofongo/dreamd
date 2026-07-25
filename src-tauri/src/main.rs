@@ -15,6 +15,7 @@ use dreamd::fs_walk::FileNode;
 use dreamd::send::SendResult;
 use dreamd::{cli, config, home_relative, markdown, perf, read_source, send, theme, watcher};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{Manager, State};
 
@@ -33,12 +34,35 @@ struct AppState {
     /// what the commands wait on. `Arc` because those waits happen off the
     /// command thread, in `spawn_blocking`.
     catalog: Arc<Catalog>,
+    /// The appearance currently on screen, with `system` already resolved.
+    ///
+    /// An atomic rather than another `Mutex` so `syntax_theme` — which runs on
+    /// every render, holding the config lock — never has to reason about lock
+    /// order. Written by `.setup()` at startup and by `set_appearance` when the
+    /// frontend notices the OS change.
+    appearance: AtomicU8,
 }
 
 impl AppState {
+    fn scheme(&self) -> theme::Scheme {
+        match self.appearance.load(Ordering::Relaxed) {
+            0 => theme::Scheme::Light,
+            _ => theme::Scheme::Dark,
+        }
+    }
+
+    fn set_scheme(&self, scheme: theme::Scheme) {
+        let v = match scheme {
+            theme::Scheme::Light => 0,
+            theme::Scheme::Dark => 1,
+        };
+        self.appearance.store(v, Ordering::Relaxed);
+    }
+
     /// The syntect theme the active palette asks for, or syntect's default.
     fn syntax_theme(&self) -> String {
-        theme::resolve(&self.config.lock().unwrap())
+        let scheme = self.scheme();
+        theme::resolve(&self.config.lock().unwrap(), scheme)
             .syntax_theme
             .unwrap_or_else(|| markdown::CODE_THEME.to_string())
     }
@@ -57,6 +81,10 @@ struct Cli {
     #[arg(long)]
     theme: Option<String>,
 
+    /// Use this appearance for one run, without saving it.
+    #[arg(long, value_parser = parse_mode)]
+    mode: Option<config::Mode>,
+
     /// Run the full pre-window startup sequence, then exit without opening a
     /// window. Lets hyperfine measure the Rust half of cold start on its own.
     /// Only emits timings when built with `--features perf`.
@@ -72,6 +100,16 @@ struct Cli {
     /// pass it as `./theme` to open it instead.
     #[command(subcommand)]
     command: Option<cli::Cmd>,
+}
+
+/// `--mode` values, spelled the same way `config.toml` spells them.
+fn parse_mode(raw: &str) -> Result<config::Mode, String> {
+    match raw {
+        "system" => Ok(config::Mode::System),
+        "light" => Ok(config::Mode::Light),
+        "dark" => Ok(config::Mode::Dark),
+        other => Err(format!("expected system, light or dark, got {other:?}")),
+    }
 }
 
 // ---- commands ------------------------------------------------------------
@@ -216,9 +254,60 @@ fn stack_query_text(state: State<AppState>) -> String {
     send::assemble_query(&state.repo_root, &pairs)
 }
 
+/// The stylesheet plus the appearance to render it in.
+///
+/// One command rather than a stylesheet call and a mode call: this runs on the
+/// boot path, where every extra round trip is time the window spends in the
+/// fallback colours rather than the user's theme.
+#[derive(serde::Serialize)]
+struct ThemeView {
+    css: String,
+    /// The *preference*, not the resolved scheme. The OS appearance can change
+    /// while the app runs and only the frontend is placed to notice, so it gets
+    /// told what to watch for rather than a single already-collapsed answer.
+    mode: config::Mode,
+    /// What `system` currently resolves to, so the panel can label the toggle.
+    scheme: theme::Scheme,
+    syntax_theme: Option<String>,
+}
+
+fn theme_view(state: &AppState) -> ThemeView {
+    let cfg = state.config.lock().unwrap();
+    let scheme = state.scheme();
+    let resolved = theme::resolve(&cfg, scheme);
+    ThemeView {
+        css: resolved.css,
+        mode: cfg.mode(),
+        scheme,
+        syntax_theme: resolved.syntax_theme,
+    }
+}
+
 #[tauri::command]
-fn get_theme_css(state: State<AppState>) -> String {
-    theme::resolve(&state.config.lock().unwrap()).css
+fn get_theme(state: State<AppState>) -> ThemeView {
+    theme_view(&state)
+}
+
+/// Adopt a new appearance, pushed by the frontend when the OS switches under a
+/// `system` preference.
+///
+/// Returns the new view rather than being fire-and-forget: `render_markdown`
+/// reads the scheme to pick the syntect theme, so a caller that re-rendered
+/// before this landed would bake the old code colours into the new palette.
+/// Awaiting the return value is what closes that window.
+#[tauri::command]
+fn set_appearance(app: tauri::AppHandle, state: State<AppState>, scheme: theme::Scheme) -> ThemeView {
+    state.set_scheme(scheme);
+    let view = theme_view(&state);
+    // The native window background follows too, so an auto-switch doesn't leave
+    // the frame in the old appearance.
+    if let (Some(win), Some((r, g, b))) = (
+        app.get_webview_window("main"),
+        theme::background(&view.css, scheme),
+    ) {
+        let _ = win.set_background_color(Some(tauri::window::Color(r, g, b, 255)));
+    }
+    view
 }
 
 // ---- settings ------------------------------------------------------------
@@ -230,6 +319,9 @@ fn get_theme_css(state: State<AppState>) -> String {
 struct Settings {
     config: Config,
     theme: Option<String>,
+    /// What `config.mode` resolves to right now, so the toggle can say
+    /// "System (dark)" instead of just "System".
+    scheme: theme::Scheme,
     themes: Vec<theme::ThemeInfo>,
     syntax_themes: Vec<String>,
     config_path: String,
@@ -240,8 +332,10 @@ struct Settings {
 #[tauri::command]
 fn get_settings(state: State<AppState>) -> Settings {
     let config = state.config.lock().unwrap().clone();
+    let scheme = state.scheme();
     Settings {
-        theme: theme::resolve(&config).name,
+        theme: theme::resolve(&config, scheme).name,
+        scheme,
         config,
         themes: theme::list(),
         syntax_themes: markdown::syntax_theme_names(),
@@ -255,10 +349,52 @@ fn get_settings(state: State<AppState>) -> Settings {
 /// is a TOML table in the shape of the config, e.g. `{keymap: {palette: "…"}}`;
 /// anything that fails to deserialize is rejected before the file is written.
 #[tauri::command]
-fn set_config(state: State<AppState>, patch: toml::Table) -> Result<Settings, String> {
+fn set_config(
+    app: tauri::AppHandle,
+    state: State<AppState>,
+    patch: toml::Table,
+) -> Result<Settings, String> {
     config::patch_global(patch)?;
-    *state.config.lock().unwrap() = Config::load(&state.repo_root);
+    let cfg = Config::load(&state.repo_root);
+    // What the OS says, as far as we still know it: the scheme in hand is the
+    // last one the frontend pushed, which under `system` *is* the OS's answer.
+    let system = state.scheme();
+    let (mode, scheme) = (cfg.mode(), theme::scheme_for(&cfg, system));
+    *state.config.lock().unwrap() = cfg;
+    state.set_scheme(scheme);
+    if let Some(win) = app.get_webview_window("main") {
+        pin_native_theme(&win, native_pin(mode, scheme, system));
+    }
     Ok(get_settings(state))
+}
+
+/// Pin the *native* appearance, so the traffic lights, scrollbars and the
+/// webview's own `prefers-color-scheme` agree with the palette. `None` hands
+/// control back to the OS.
+///
+/// On macOS tao implements this as `NSApplication.appearance` — it is app-wide
+/// rather than per-window, and while it is pinned `Window::theme()` reports the
+/// pin rather than the system value. Never read the OS appearance back through
+/// it without un-pinning first.
+/// Whether the native appearance needs pinning, and to what.
+///
+/// `None` — let the OS drive — is right only when we are actually showing what
+/// the OS asked for. A legacy theme name pins a scheme while `mode` is still
+/// `System` (see `theme::scheme_for`), and that case has to pin natively too or
+/// the scrollbars disagree with the palette.
+fn native_pin(
+    mode: config::Mode,
+    scheme: theme::Scheme,
+    system: theme::Scheme,
+) -> Option<theme::Scheme> {
+    (mode != config::Mode::System || scheme != system).then_some(scheme)
+}
+
+fn pin_native_theme(win: &tauri::WebviewWindow, pinned: Option<theme::Scheme>) {
+    let _ = win.set_theme(pinned.map(|s| match s {
+        theme::Scheme::Light => tauri::Theme::Light,
+        theme::Scheme::Dark => tauri::Theme::Dark,
+    }));
 }
 
 /// The built-in keybinds, so "reset shortcuts" in the panel writes the same
@@ -278,6 +414,18 @@ fn list_themes() -> Vec<theme::ThemeInfo> {
 #[tauri::command]
 fn theme_css(name: String) -> Result<String, String> {
     theme::css_for(&name).ok_or_else(|| format!("no theme named {name:?}"))
+}
+
+/// A palette's own file, without the base rules — what the Custom tab edits.
+///
+/// The panel used to recover this by regexing the first `:root` block back out
+/// of `theme_css`, which finds the shared block of a family and silently drops
+/// its mode blocks. It also had to dodge the `:root { --bg: … }` example inside
+/// `ui/theme.css`'s own header comment. Asking for the file is both correct and
+/// less code.
+#[tauri::command]
+fn palette_css(name: String) -> Result<String, String> {
+    theme::palette(&name).ok_or_else(|| format!("no theme named {name:?}"))
 }
 
 #[tauri::command]
@@ -417,10 +565,14 @@ fn main() {
     perf::mark("target_resolved");
 
     let mut cfg = Config::load(&repo_root);
-    // `--theme` overrides for this run only, and never reaches the config file.
+    // `--theme` / `--mode` override for this run only, and never reach the
+    // config file.
     if let Some(name) = cli.theme {
         cfg.theme_css = None;
         cfg.theme = Some(name);
+    }
+    if let Some(mode) = cli.mode {
+        cfg.mode = Some(mode);
     }
     perf::mark("config_loaded");
 
@@ -450,7 +602,6 @@ fn main() {
     }
 
     let theme_path = cfg.theme_css.clone();
-    let theme_bg = theme::background(&theme::resolve(&cfg).css);
 
     // `mut` is only needed by the seeding call below, which compiles out.
     #[allow(unused_mut)]
@@ -464,6 +615,11 @@ fn main() {
         config: Mutex::new(cfg),
         store: Mutex::new(store),
         catalog,
+        // Corrected in `.setup()`, which is the first place a window exists to
+        // ask the OS. Dark is what dreamd has always painted before the theme
+        // lands, so this is the status quo for the handful of statements in
+        // between.
+        appearance: AtomicU8::new(1),
     };
 
     tauri::Builder::default()
@@ -486,12 +642,14 @@ fn main() {
             send_stack,
             get_keymap,
             stack_query_text,
-            get_theme_css,
+            get_theme,
+            set_appearance,
             get_settings,
             set_config,
             default_keymap,
             list_themes,
             theme_css,
+            palette_css,
             save_theme,
             delete_theme,
             copy_to_clipboard,
@@ -502,12 +660,36 @@ fn main() {
         ])
         .setup(move |app| {
             perf::mark("setup");
-            // Paint the window with the theme's own `--bg` before the frontend
-            // has injected theme.css; without this the reading pane is white
-            // for as long as boot takes. `backgroundColor` in tauri.conf.json
-            // covers the frame before this runs.
-            if let (Some(win), Some((r, g, b))) = (app.get_webview_window("main"), theme_bg) {
-                let _ = win.set_background_color(Some(tauri::window::Color(r, g, b, 255)));
+            // The window declared in tauri.conf.json is created inside Tauri's
+            // own setup, which runs before this hook — so there is one to ask
+            // here, and `Window::theme()` is the only way to learn the OS
+            // appearance at all: Tauri 2 has no pre-window getter. It resolves
+            // inline when called from the main thread, which this is.
+            if let Some(win) = app.get_webview_window("main") {
+                let state = app.state::<AppState>();
+                let system = match win.theme() {
+                    Ok(tauri::Theme::Light) => theme::Scheme::Light,
+                    // An unknown or errored theme keeps dreamd's historical
+                    // dark default rather than guessing light.
+                    _ => theme::Scheme::Dark,
+                };
+                let (mode, scheme) = {
+                    let cfg = state.config.lock().unwrap();
+                    (cfg.mode(), theme::scheme_for(&cfg, system))
+                };
+                state.set_scheme(scheme);
+                pin_native_theme(&win, native_pin(mode, scheme, system));
+
+                // Paint the window with the theme's own `--bg` before the
+                // frontend has injected theme.css; without this the reading
+                // pane is white for as long as boot takes. `backgroundColor` in
+                // tauri.conf.json covers the frame before this runs — it is a
+                // static dark value and cannot follow the mode, which is why it
+                // is only ever on screen for this gap.
+                let css = theme::resolve(&state.config.lock().unwrap(), state.scheme()).css;
+                if let Some((r, g, b)) = theme::background(&css, state.scheme()) {
+                    let _ = win.set_background_color(Some(tauri::window::Color(r, g, b, 255)));
+                }
             }
             watcher::spawn(app.handle().clone(), repo_root.clone(), theme_path.clone());
             Ok(())

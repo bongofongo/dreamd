@@ -1,6 +1,43 @@
-/* Nord — Arctic Ice Studio's cool north-bluish palette. */
+/* Nord — Arctic Ice Studio's cool north-bluish palette.
+ *
+ * Dark is Polar Night, unchanged. Light is new here, built from Snow Storm
+ * (nord4–nord6) over the same Frost accents. Nord's frost blues are gentle by
+ * design: `--link` lands near 3.5:1 on Snow Storm rather than the 4.5:1 the
+ * themes dreamd authors itself hold to. Left as published — quietly darkening
+ * Nord would make it not-Nord. */
 
 :root {
+  --font-body: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --font-size: 16px;
+  --line-height: 1.7;
+  --content-width: 820px;
+  --ui-font-size: 14px;
+}
+
+:root[data-mode="light"] {
+  --bg: #eceff4;
+  --sidebar-bg: #e5e9f0;
+  --btn-bg: #d8dee9;
+  --hover: #ccd4e0;
+  --border: #c2cbd9;
+
+  --text: #2e3440;
+  --muted: #4c566a;
+  --link: #5e81ac;
+
+  --accent: #5e81ac;
+  --accent-dim: #d5e0ec;
+
+  --hl: #ebcb8b;
+  --stale: #bf616a;
+  --stale-bg: #f2dcde;
+  --stale-text: #1a1a1a;
+
+  --syntax-theme: "InspiredGitHub";
+}
+
+:root[data-mode="dark"] {
   --bg: #2e3440;
   --sidebar-bg: #292e39;
   --btn-bg: #3b4252;
@@ -17,13 +54,7 @@
   --hl: #ebcb8b;
   --stale: #bf616a;
   --stale-bg: #3b2b2e;
-
-  --font-body: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
-  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  --font-size: 16px;
-  --line-height: 1.7;
-  --content-width: 820px;
-  --ui-font-size: 14px;
+  --stale-text: #1a1a1a;
 
   --syntax-theme: "base16-ocean.dark";
 }

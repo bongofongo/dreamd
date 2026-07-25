@@ -1,45 +1,83 @@
-/* dreamd — the default palette. Dark, tuned for long-form markdown.
+/* dreamd — the default. Paper by day, indigo by night.
  *
- * A palette is a single `:root` block. It is appended after `ui/theme.css`
- * (the base rules), so every variable below wins. Copy this file to
- * `~/.config/dreamd/themes/<name>.css` to start your own — or use the Custom
- * tab in the settings panel, which writes exactly that.
+ * A palette is a *family*: a bare `:root` block of shared type metrics, plus a
+ * `:root[data-mode="light"]` and a `:root[data-mode="dark"]` block carrying the
+ * colours. It is appended after `ui/theme.css` (the base rules), so every
+ * variable below wins. Copy this file to `~/.config/dreamd/themes/<name>.css`
+ * to start your own — or use the Custom tab in the settings panel, which writes
+ * exactly that. A palette with no mode blocks at all still works, and reads the
+ * same in both appearances.
  *
  * `--syntax-theme` is not CSS: the Rust side parses it to pick the syntect
  * theme for fenced code blocks. It must name one of syntect's bundled themes
  * (base16-ocean.dark, base16-ocean.light, base16-eighties.dark,
  * base16-mocha.dark, InspiredGitHub, "Solarized (dark)", "Solarized (light)").
- * An unrecognised name falls back to base16-ocean.dark. */
+ * An unrecognised name falls back to base16-ocean.dark. Declare it per mode:
+ * one theme for both is how a light palette ends up with dark code blocks.
+ *
+ * Serif, because this is a reader. Not sepia, because that is `manuscript` —
+ * the paper here has a lilac cast and the night is indigo rather than slate. */
 
 :root {
-  /* surfaces */
-  --bg: #1b1f27;
-  --sidebar-bg: #171b22;
-  --btn-bg: #232a35;
-  --hover: #262f3d;
-  --border: #2c3542;
-
-  /* text */
-  --text: #c7cedb;
-  --muted: #8a93a3;
-  --link: #74b0ff;
-
-  /* accents */
-  --accent: #6ea8fe;
-  --accent-dim: #26374d;
-
-  /* annotation states */
-  --hl: #f6d365;        /* highlight */
-  --stale: #e05561;     /* stale highlight */
-  --stale-bg: #35181c;
-
-  /* reading typography */
-  --font-body: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  /* Shared: type metrics. `ui-serif` resolves to New York in WebKit; the rest
+   * of the stack is what macOS ships, ending in a generic so a machine with
+   * none of them still gets a serif rather than a fallback sans. */
+  --font-body: ui-serif, "New York", "Iowan Old Style", Charter, Palatino, Georgia, serif;
   --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  --font-size: 16px;
-  --line-height: 1.7;
-  --content-width: 820px;
+  --font-size: 17px;
+  --line-height: 1.75;
+  /* ~68 characters at 17px on this face. The old 820px measure was set for a
+   * 16px sans and runs long for a serif. */
+  --content-width: 700px;
   --ui-font-size: 14px;
+
+  /* Optional, consumed by ui/theme.css with fallbacks. A serif at 1.9em does
+   * not need 650 weight, and rules under every heading make a document look
+   * like documentation. */
+  --heading-weight: 600;
+  --heading-rule: none;
+}
+
+:root[data-mode="light"] {
+  --bg: #f7f5fa;
+  --sidebar-bg: #f0edf6;
+  --btn-bg: #e8e4f0;
+  --hover: #e0dbec;
+  --border: #ddd7e6;
+
+  --text: #2f2b3a;
+  --muted: #6a6379;
+  --link: #6a4fb3;
+
+  --accent: #7c5cd6;
+  --accent-dim: #e6dffa;
+
+  --hl: #f2d16b;
+  --stale: #c2455c;
+  --stale-bg: #fbe3e7;
+  --stale-text: #ffffff;
+
+  --syntax-theme: "InspiredGitHub";
+}
+
+:root[data-mode="dark"] {
+  --bg: #14121c;
+  --sidebar-bg: #100e17;
+  --btn-bg: #1f1c2b;
+  --hover: #292435;
+  --border: #2e2940;
+
+  --text: #d8d3e4;
+  --muted: #8f88a3;
+  --link: #a99bf0;
+
+  --accent: #a48cf5;
+  --accent-dim: #2b2447;
+
+  --hl: #f2d16b;
+  --stale: #ef6a7d;
+  --stale-bg: #3a1a22;
+  --stale-text: #1a1a1a;
 
   --syntax-theme: "base16-ocean.dark";
 }

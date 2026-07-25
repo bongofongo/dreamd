@@ -1,0 +1,58 @@
+/* High Contrast — tuned for readability, not for looks. Pure black or pure
+ * white ground, visible borders, and a larger, looser reading measure than the
+ * other themes. Colours unchanged from the two palettes this file replaces. */
+
+:root {
+  /* The one family that already disagreed with the rest on type metrics, and
+   * the two halves agreed with each other exactly — so the merge is clean. */
+  --font-body: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --font-size: 17px;
+  --line-height: 1.8;
+  --content-width: 760px;
+  --ui-font-size: 15px;
+}
+
+:root[data-mode="light"] {
+  --bg: #ffffff;
+  --sidebar-bg: #f2f2f2;
+  --btn-bg: #e8e8e8;
+  --hover: #d8d8d8;
+  --border: #767676;
+
+  --text: #000000;
+  --muted: #444444;
+  --link: #0b57d0;
+
+  --accent: #0b57d0;
+  --accent-dim: #d3e3fd;
+
+  --hl: #ffe000;
+  --stale: #b3261e;
+  --stale-bg: #ffdad6;
+  --stale-text: #ffffff;
+
+  --syntax-theme: "InspiredGitHub";
+}
+
+:root[data-mode="dark"] {
+  --bg: #000000;
+  --sidebar-bg: #0a0a0a;
+  --btn-bg: #1a1a1a;
+  --hover: #2e2e2e;
+  --border: #6a6a6a;
+
+  --text: #ffffff;
+  --muted: #c0c0c0;
+  --link: #6fd3ff;
+
+  --accent: #4fc3ff;
+  --accent-dim: #00354d;
+
+  --hl: #ffe000;
+  --stale: #ff6b6b;
+  --stale-bg: #4a0000;
+  --stale-text: #1a1a1a;
+
+  --syntax-theme: "base16-eighties.dark";
+}

@@ -1,0 +1,66 @@
+/* Athenaeum — the reading room by day, the library after hours by night.
+ *
+ * Green-black and brass. Hoefler Text is the highest-contrast serif macOS
+ * ships and the most obviously bookish; Baskerville behind it is the same
+ * argument at lower cost. */
+
+:root {
+  --font-body: "Hoefler Text", Baskerville, "Baskerville Old Face", "Times New Roman", serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --font-size: 18px;
+  --line-height: 1.78;
+  --content-width: 690px;
+  --ui-font-size: 14px;
+
+  /* Hoefler Text has real weight at 400; 650 renders as a different, worse
+   * face. */
+  --heading-weight: 600;
+  --heading-rule: none;
+}
+
+:root[data-mode="light"] {
+  --bg: #efe9dc;
+  --sidebar-bg: #e5decd;
+  --btn-bg: #dcd3bf;
+  --hover: #d2c8b1;
+  --border: #cabfa6;
+
+  --text: #2c332c;
+  /* #6e7568 reads as the natural mid-green here but lands at 3.9:1. */
+  --muted: #5f6659;
+  --link: #1f6b52;
+
+  --accent: #8a6a1f;
+  --accent-dim: #ece0c2;
+
+  --hl: #d9b84a;
+  --stale: #a33b2e;
+  --stale-bg: #efd8d1;
+  --stale-text: #ffffff;
+
+  --syntax-theme: "Solarized (light)";
+}
+
+:root[data-mode="dark"] {
+  --bg: #14181a;
+  --sidebar-bg: #101416;
+  --btn-bg: #1e2427;
+  --hover: #283033;
+  --border: #2c3438;
+
+  --text: #d6d3c4;
+  --muted: #8a9187;
+  --link: #6fbfa0;
+
+  --accent: #c9a227;
+  --accent-dim: #33301a;
+
+  --hl: #d9b84a;
+  --stale: #d9705f;
+  --stale-bg: #33201c;
+  --stale-text: #1a1a1a;
+
+  /* Solarized dark's deep teal ground sits closer to this green-black than any
+   * of the base16 browns. */
+  --syntax-theme: "Solarized (dark)";
+}

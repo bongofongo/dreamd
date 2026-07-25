@@ -10,7 +10,8 @@
 //! cargo run --example config_check
 //! ```
 
-use dreamd::config::{self, Config};
+use dreamd::config::{self, Config, Mode};
+use dreamd::theme;
 use std::path::{Path, PathBuf};
 
 fn main() {
@@ -80,6 +81,54 @@ fn main() {
     let cfg = Config::load(&repo);
     checks.eq("repo-local theme_css is refused", cfg.theme_css, None);
 
+    // --- appearance mode --------------------------------------------------
+    // Unlike theme_css, `mode` reads no files and injects nothing, so a
+    // repo-local file is allowed to set it.
+    write_global("");
+    write_local(&repo, None);
+    checks.eq("default mode is system", Config::load(&repo).mode(), Mode::System);
+
+    write_global("mode = \"light\"\n");
+    checks.eq("global mode", Config::load(&repo).mode(), Mode::Light);
+
+    write_local(&repo, Some("mode = \"dark\"\n"));
+    checks.eq("repo-local mode wins", Config::load(&repo).mode(), Mode::Dark);
+    checks.ok(
+        "and is reported as an override",
+        config::local_override_keys(&repo).contains(&"mode".to_string()),
+    );
+
+    write_local(&repo, None);
+    write_global("");
+    config::set_global_key("mode", "dark".into()).expect("set mode");
+    checks.eq("written mode reloads", Config::load(&repo).mode(), Mode::Dark);
+
+    let before = std::fs::read_to_string(config::global_path()).expect("read");
+    checks.ok(
+        "an unknown mode is rejected",
+        config::set_global_key("mode", "sepia".into()).is_err(),
+    );
+    checks.ok(
+        "and the file is untouched",
+        before == std::fs::read_to_string(config::global_path()).expect("read"),
+    );
+
+    // A legacy palette name implies an appearance, but only while `mode` is
+    // still the default — an explicit `mode` is the user saying otherwise.
+    write_global("theme = \"gruvbox-dark\"\n");
+    write_local(&repo, None);
+    checks.eq(
+        "a legacy theme name pins its appearance",
+        theme::scheme_for(&Config::load(&repo), theme::Scheme::Light),
+        theme::Scheme::Dark,
+    );
+    write_global("theme = \"gruvbox-dark\"\nmode = \"system\"\n");
+    checks.eq(
+        "an explicit mode beats the implied one",
+        theme::scheme_for(&Config::load(&repo), theme::Scheme::Light),
+        theme::Scheme::Light,
+    );
+
     // --- write-back -------------------------------------------------------
     write_global("# hand-written\ntmux_target = \"work:0.1\"\n\n[keymap]\npalette = \"Ctrl+Space\"\n");
     write_local(&repo, None);
@@ -91,7 +140,13 @@ fn main() {
     checks.ok("write applies the new key", text.contains("Ctrl+B"));
     checks.ok(
         "write does not spell out defaults",
-        !text.contains("send_stack") && !text.contains("tmux_autodetect"),
+        !text.contains("send_stack")
+            && !text.contains("tmux_autodetect")
+            // `patch_global` writes the raw table, not a serialized `Config`, so a
+            // defaulted key that was never patched is never emitted. Pinned here
+            // because it is the reason adding `mode` did not start rewriting
+            // everyone's config file.
+            && !text.contains("mode"),
     );
     let cfg = Config::load(&repo);
     checks.eq("written config reloads", cfg.theme, Some("nord".into()));

@@ -40,6 +40,20 @@ pub struct Config {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub theme_css: Option<PathBuf>,
 
+    /// Which of a theme's two appearances to show. `System` follows the OS.
+    ///
+    /// `Option` rather than a plain field with a `System` default, because the
+    /// two are not the same thing: a legacy palette name like `gruvbox-dark`
+    /// implies an appearance, and that implication has to lose to the user
+    /// explicitly choosing *system*. Collapsing "never set" into
+    /// `Some(System)` would make the panel's System button do nothing for
+    /// anyone still on an old theme name. Read it through [`Config::mode`].
+    ///
+    /// Unlike `theme_css` this is safe for a repo-local `.dreamd.toml` to set:
+    /// it reads no files and injects nothing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mode: Option<Mode>,
+
     /// Extra glob-ish ignore patterns beyond `.gitignore`/`.ignore`.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub extra_ignores: Vec<String>,
@@ -55,6 +69,33 @@ pub struct Config {
     /// Frontend keybinds, surfaced to JS at startup. Values are KeyboardEvent
     /// `key` combos like "Ctrl+P". Unknown actions are ignored by the frontend.
     pub keymap: Keymap,
+}
+
+/// The user's appearance preference. [`Mode::System`] is not a thing CSS can be
+/// sliced for, which is why resolving it produces a [`theme::Scheme`] rather
+/// than staying in this type.
+///
+/// [`theme::Scheme`]: crate::theme::Scheme
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Mode {
+    /// Follow the OS appearance, and keep following it while the app runs.
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
+impl Mode {
+    /// The appearance to render in. `system` needs the OS's answer, which only
+    /// a window can give — see the `.setup()` hook in `main.rs`.
+    pub fn resolve(self, system: crate::theme::Scheme) -> crate::theme::Scheme {
+        match self {
+            Mode::System => system,
+            Mode::Light => crate::theme::Scheme::Light,
+            Mode::Dark => crate::theme::Scheme::Dark,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -104,6 +145,7 @@ impl Default for Config {
         Self {
             theme: None,
             theme_css: None,
+            mode: None,
             extra_ignores: Vec::new(),
             tmux_target: None,
             tmux_autodetect: true,
@@ -113,6 +155,11 @@ impl Default for Config {
 }
 
 impl Config {
+    /// The effective appearance preference, defaulting to following the OS.
+    pub fn mode(&self) -> Mode {
+        self.mode.unwrap_or_default()
+    }
+
     /// Load the global config, then overlay a repo-local `.dreamd.toml` if present.
     pub fn load(repo_root: &Path) -> Self {
         let mut merged = global_table();

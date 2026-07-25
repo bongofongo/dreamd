@@ -30,7 +30,14 @@ const check = (what, cond, extra = "") =>
   results.push(`${cond ? "ok  " : "FAIL"} ${what}${cond ? "" : "  " + extra}`);
 
 const browser = await chromium.launch();
-const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+// Chromium defaults to `prefers-color-scheme: light`, and app.js reads that
+// before anything paints — so without pinning it here every hardcoded hex below
+// would be asserting against a palette's *light* block. Pinned rather than
+// merely accounted for: the appearance the assertions run in should be a
+// decision, not a browser default that can change.
+const newPage = () =>
+  browser.newPage({ viewport: { width: 1280, height: 900 }, colorScheme: "dark" });
+const page = await newPage();
 page.on("pageerror", (e) => results.push("FAIL pageerror: " + e.message));
 page.on("console", (m) => {
   if (m.type() === "error") results.push("FAIL console.error: " + m.text());
@@ -44,7 +51,13 @@ await page.addInitScript(({ base, palettes }) => {
     quick_highlight: true,
   };
   const state = {
-    config: { theme: "dreamd", tmux_autodetect: true, extra_ignores: [], keymap: { ...KEYMAP } },
+    config: {
+      theme: "dreamd", mode: "system",
+      tmux_autodetect: true, extra_ignores: [], keymap: { ...KEYMAP },
+    },
+    // What `mode: "system"` resolves to. The page is opened with
+    // `colorScheme: "dark"`, so this is what Rust would have answered.
+    scheme: "dark",
     userThemes: {},
   };
   window.__STATE__ = state;
@@ -61,9 +74,17 @@ await page.addInitScript(({ base, palettes }) => {
       : name in palettes ? base + "\n" + palettes[name]
       : null;
 
+  const themeView = () => ({
+    css: cssFor(state.config.theme),
+    mode: state.config.mode,
+    scheme: state.config.mode === "system" ? state.scheme : state.config.mode,
+    syntax_theme: null,
+  });
+
   const settings = () => ({
     config: JSON.parse(JSON.stringify(state.config)),
     theme: state.config.theme,
+    scheme: themeView().scheme,
     themes: themeList(),
     syntax_themes: ["base16-ocean.dark", "InspiredGitHub", "Solarized (light)"],
     config_path: "/tmp/xdg/dreamd/config.toml",
@@ -85,7 +106,10 @@ await page.addInitScript(({ base, palettes }) => {
           case "perf_enabled": return false;
           case "repo_info": return { root: "/repo", name: "repo", display: "~/repo" };
           case "get_keymap": return state.config.keymap;
-          case "get_theme_css": return cssFor(state.config.theme);
+          case "get_theme": return themeView();
+          case "set_appearance":
+            state.scheme = args.scheme;
+            return themeView();
           case "list_markdown_files": return { name: "repo", is_dir: true, path: "/repo", children: [] };
           case "initial_file": return null;
           case "get_highlights": case "reanchor": case "get_stack": return [];
@@ -97,6 +121,12 @@ await page.addInitScript(({ base, palettes }) => {
           case "list_themes": return themeList();
           case "theme_css": {
             const css = cssFor(args.name);
+            if (!css) throw new Error("no theme named " + args.name);
+            return css;
+          }
+          case "palette_css": {
+            const css = args.name in state.userThemes
+              ? state.userThemes[args.name] : palettes[args.name];
             if (!css) throw new Error("no theme named " + args.name);
             return css;
           }
@@ -132,10 +162,10 @@ check(
 );
 
 // --- the theme actually applies (this is the CSS split working) ---
-check("base+palette applied on boot", (await varOf("--bg")) === "#1b1f27", await varOf("--bg"));
+check("base+palette applied on boot", (await varOf("--bg")) === "#14121c", await varOf("--bg"));
 check(
   "content width comes from the palette",
-  (await page.evaluate(() => getComputedStyle(document.getElementById("content")).maxWidth)) === "820px",
+  (await page.evaluate(() => getComputedStyle(document.getElementById("content")).maxWidth)) === "700px",
 );
 
 // --- open via the keybind ---
@@ -202,12 +232,15 @@ check(
 check("applied theme is still painted", (await varOf("--bg")) === "#2e3440", await varOf("--bg"));
 
 // --- custom tab ---
-await page.locator("#st-theme-grid .th-card", { hasText: "gruvbox-dark" }).first()
+await page.locator("#st-theme-grid .th-card", { hasText: "gruvbox" }).first()
   .locator("button", { hasText: "Duplicate" }).click();
 await page.waitForTimeout(250);
 check("duplicate switches to the custom tab", await page.locator("#st-pane-custom.sel").isVisible());
+// Six shared type metrics plus the fifteen in the appearance being edited
+// (thirteen colours, --syntax-theme, --stale-text). An exact count on purpose:
+// it is what catches the Custom tab silently listing one block instead of two.
 const varRows = await page.locator("#st-vars .st-var").count();
-check("var editor lists the palette", varRows === 20, `got ${varRows}`);
+check("var editor lists shared + one appearance", varRows === 21, `got ${varRows}`);
 check(
   "colour vars get a picker",
   (await page.locator('#st-vars input[type="color"]').count()) >= 13,
@@ -247,6 +280,53 @@ check(
   (await page.locator("#st-theme-grid .th-card", { hasText: "my-theme" }).count()) === 1,
 );
 
+// --- appearance toggle ---
+// Independent of which family is selected, which is the point of it. The theme
+// here is still `my-theme`, a flat single-`:root` copy — so this also pins the
+// backwards-compatibility rule: a palette with no mode blocks paints the same
+// in both appearances rather than falling back to nothing.
+await page.locator('.st-tab[data-pane="themes"]').click();
+await page.waitForTimeout(150);
+const modeBtns = await page.locator("#st-mode .st-mode-btn").count();
+check("appearance offers light, dark and system", modeBtns === 3, `got ${modeBtns}`);
+
+await page.locator("#st-mode .st-mode-btn", { hasText: "light" }).first().click();
+await page.waitForTimeout(250);
+check(
+  "the toggle persists the mode",
+  (await page.evaluate(() => window.__STATE__.config.mode)) === "light",
+);
+check(
+  "and flips data-mode",
+  (await page.evaluate(() => document.documentElement.dataset.mode)) === "light",
+);
+
+// Back to a family, in light, and assert it paints its *light* block — the
+// whole reason mode blocks exist.
+await page.locator("#st-theme-grid .th-card", { hasText: "gruvbox" }).first()
+  .locator("button", { hasText: "Apply" }).click();
+await page.waitForTimeout(250);
+check("a family paints its light block", (await varOf("--bg")) === "#fbf1c7", await varOf("--bg"));
+await page.locator("#st-mode .st-mode-btn", { hasText: "dark" }).first().click();
+await page.waitForTimeout(250);
+check("and its dark block", (await varOf("--bg")) === "#282828", await varOf("--bg"));
+
+// The Custom tab edits one block at a time, so the var list is the shared block
+// plus the appearance being edited — six and fourteen, which is why the count
+// above is still twenty.
+await page.locator("#st-theme-grid .th-card", { hasText: "gruvbox" }).first()
+  .locator("button", { hasText: "Duplicate" }).click();
+await page.waitForTimeout(250);
+const blockBtns = await page.locator("#st-block .st-mode-btn").count();
+check("custom tab offers both blocks", blockBtns === 2, `got ${blockBtns}`);
+const darkRows = await page.locator("#st-vars .st-var").count();
+check("editing dark lists shared + dark", darkRows === 21, `got ${darkRows}`);
+await page.locator("#st-block .st-mode-btn", { hasText: "light" }).first().click();
+await page.waitForTimeout(150);
+const lightVal = await page.locator("#st-vars .st-var", { hasText: "--bg" })
+  .first().locator('input[type="text"]').inputValue();
+check("switching block shows the other appearance", lightVal === "#fbf1c7", lightVal);
+
 // --- closing ---
 await page.keyboard.press("Escape");
 check("Esc closes the panel", !(await page.locator("#settings-overlay.open").isVisible()));
@@ -255,7 +335,7 @@ check("Esc closes the panel", !(await page.locator("#settings-overlay.open").isV
 // A second page, because the boot decision is made once per load. The tree
 // resolves late on purpose: that is the deferred walk, and the point is that
 // the document is on screen before it lands.
-const solo = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+const solo = await newPage();
 solo.on("pageerror", (e) => results.push("FAIL pageerror (single-file): " + e.message));
 solo.on("console", (m) => {
   if (m.type() === "error") results.push("FAIL console.error (single-file): " + m.text());
@@ -277,7 +357,7 @@ await solo.addInitScript(({ base }) => {
             copy_stack: "Ctrl+C", settings: "Ctrl+,", save_annotation: "Ctrl+Y",
             quick_highlight: true,
           };
-          case "get_theme_css": return base;
+          case "get_theme": return { css: base, mode: "system", scheme: "dark", syntax_theme: null };
           case "initial_file": return "/repo/doc.md";
           case "render_markdown": return "<h1>doc</h1>";
           // The deferred walk: resolves well after the document renders.

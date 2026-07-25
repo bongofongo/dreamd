@@ -61,9 +61,12 @@ harnesses above (each exits non-zero on failure); don't claim coverage beyond th
    restricted to `http`/`https`/`mailto`; relative images must resolve inside the repo
    root.
 5. **Themeable to the CSS level.** A theme is `ui/theme.css` (base rules) plus a palette
-   — a bare `:root` block from `ui/themes/*.css` or `~/.config/dreamd/themes/*.css`.
-   Both are user-facing surfaces and hot-reloaded. `theme_css` points at a complete
-   stylesheet instead, replacing the base.
+   from `ui/themes/*.css` or `~/.config/dreamd/themes/*.css`. A palette is a *family*:
+   a bare `:root` of shared type metrics plus `:root[data-mode="light"]` and
+   `:root[data-mode="dark"]` colour blocks. A palette with no mode blocks is passed
+   through untouched and reads the same in both — that is what keeps every pre-family
+   user file working. Both surfaces are user-facing and hot-reloaded. `theme_css`
+   points at a complete stylesheet instead, replacing the base.
 
 ## Architecture
 
@@ -78,7 +81,10 @@ State is one `AppState`: `repo_root`, `Mutex<Config>`, `Mutex<Store>` (highlight
 only configuration that changes after startup.
 
 Data flow: `ui/app.js` (plain JS, no build step; `tauri.conf.json` points `frontendDist` at
-`../ui`) calls commands over IPC and listens for watcher events.
+`../ui`) calls commands over IPC and listens for watcher events. The CSP is
+`script-src 'self'` with no `'unsafe-inline'` — an inline `<script>` in `index.html` is
+blocked silently, which is why the pre-paint `data-mode` bootstrap lives at the top of
+`app.js`. Inline `<style>` is fine (`style-src` carries `'unsafe-inline'`).
 
 - `fs_walk` — `ignore` crate (ripgrep's walker) → nested `FileNode` tree, markdown only.
 - `search` — `nucleo` fuzzy index over **paths only**; content search is v2.
@@ -95,8 +101,15 @@ Data flow: `ui/app.js` (plain JS, no build step; `tauri.conf.json` points `front
   but may not set `theme_css`, which would read an arbitrary file into a `<style>` tag.
 - `theme` — the palette registry: `BUNDLED` (`include_str!`'d), user palettes in
   `~/.config/dreamd/themes/`, and the `--bg` / `--syntax-theme` values parsed back out of
-  the CSS for the native window and syntect. Debug builds read bundled palettes off disk
-  so they hot-reload like user ones.
+  the CSS for the native window and syntect. Those two lookups take a `Scheme`, because
+  a family declares both and `custom_property` is a last-wins textual scan: `mode_slice`
+  drops the other appearance's blocks **and moves yours to the end** (CSS ranks
+  `:root[data-mode=…]` above `:root` regardless of source order, so dropping alone would
+  disagree with the webview). `ALIASES` maps pre-family names onto family + scheme; it is
+  the *last* resort in `palette()`, after a user file, and its implied appearance loses
+  to an explicit `mode` — which is why `Config::mode` is an `Option`. Debug builds read
+  bundled palettes off disk so they hot-reload like user ones.
+  `readCssVar`/`modeSlice` in `ui/app.js` mirror this; change one, change the other.
 - `cli` — the headless `dreamd theme …` / `dreamd config …` subcommands. They run and exit
   before the Tauri builder, sharing the panel's write paths so both produce the same file.
 - `watcher` — `notify` thread emitting `file-changed` / `file-added` / `file-removed` /

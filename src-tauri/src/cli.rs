@@ -65,18 +65,50 @@ pub fn run(cmd: Cmd) -> Result<(), String> {
     }
 }
 
+/// The appearance to resolve a theme for from the shell.
+///
+/// There is no window here, and `Window::theme()` is the only way to read the
+/// OS appearance, so `mode = "system"` cannot be answered honestly. Dark is the
+/// documented fallback everywhere else in the app; `theme show` prints the whole
+/// stylesheet including both mode blocks either way, so the only thing riding on
+/// this is which `--syntax-theme` `theme list` would report.
+fn cli_scheme(cfg: &Config) -> theme::Scheme {
+    theme::scheme_for(cfg, theme::Scheme::Dark)
+}
+
 fn theme_cmd(action: ThemeCmd, cfg: &Config) -> Result<(), String> {
     match action {
         ThemeCmd::List => {
-            let active = theme::resolve(cfg).name;
+            let scheme = cli_scheme(cfg);
+            let active = theme::resolve(cfg, scheme).name;
             for info in theme::list() {
                 let mark = if Some(&info.name) == active.as_ref() {
                     "*"
                 } else {
                     " "
                 };
-                println!("{mark} {:<22} {}", info.name, info.kind);
+                let modes = match theme::palette(&info.name) {
+                    Some(css) if theme::has_mode_blocks(&css) => "dark+light",
+                    _ => "one mode",
+                };
+                println!("{mark} {:<22} {:<9} {}", info.name, info.kind, modes);
             }
+            println!(
+                "\nappearance: {} ({})",
+                match cfg.mode() {
+                    config::Mode::System => "system",
+                    config::Mode::Light => "light",
+                    config::Mode::Dark => "dark",
+                },
+                match scheme {
+                    theme::Scheme::Light => "light",
+                    theme::Scheme::Dark => "dark",
+                },
+            );
+            // Not listed as themes — they resolve, but they are not names
+            // anyone should be typing now.
+            let aliases: Vec<&str> = theme::ALIASES.iter().map(|(a, _, _)| *a).collect();
+            println!("older names still accepted: {}", aliases.join(", "));
             if let Some(path) = &cfg.theme_css {
                 println!("\ntheme_css overrides the palette: {}", path.display());
             }
@@ -86,8 +118,30 @@ fn theme_cmd(action: ThemeCmd, cfg: &Config) -> Result<(), String> {
             if theme::palette(&name).is_none() {
                 return Err(format!("no theme named {name:?} (try `dreamd theme list`)"));
             }
-            config::set_global_key("theme", name.as_str().into())?;
-            println!("theme = {name}");
+            // A legacy name is rewritten into the family plus the mode it used
+            // to mean, in one atomic patch rather than two writes. This is the
+            // self-healing path: a config migrates the first time it is
+            // touched, and the alias table stays a shim rather than a second
+            // naming scheme.
+            let migrate = theme::dealias(&name).filter(|_| theme::BUNDLED.iter().all(|(n, _)| *n != name));
+            match migrate {
+                Some((family, scheme)) => {
+                    let mode = match scheme {
+                        theme::Scheme::Light => "light",
+                        theme::Scheme::Dark => "dark",
+                    };
+                    let mut patch = toml::Table::new();
+                    patch.insert("theme".into(), family.into());
+                    patch.insert("mode".into(), mode.into());
+                    config::patch_global(patch)?;
+                    println!("theme = {family}, mode = {mode}");
+                    eprintln!("dreamd: {name} is now {family} plus mode = {mode}");
+                }
+                None => {
+                    config::set_global_key("theme", name.as_str().into())?;
+                    println!("theme = {name}");
+                }
+            }
             if cfg.theme_css.is_some() {
                 eprintln!(
                     "dreamd: warning — theme_css is set, so the palette is ignored until you clear it"
@@ -100,14 +154,14 @@ fn theme_cmd(action: ThemeCmd, cfg: &Config) -> Result<(), String> {
                 Some(name) => {
                     theme::css_for(&name).ok_or_else(|| format!("no theme named {name:?}"))?
                 }
-                None => theme::resolve(cfg).css,
+                None => theme::resolve(cfg, cli_scheme(cfg)).css,
             };
             print!("{css}");
             Ok(())
         }
         ThemeCmd::New { name, from } => {
             let source = from.unwrap_or_else(|| {
-                theme::resolve(cfg)
+                theme::resolve(cfg, cli_scheme(cfg))
                     .name
                     .unwrap_or_else(|| theme::DEFAULT_THEME.to_string())
             });

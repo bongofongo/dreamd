@@ -1,0 +1,59 @@
+/* Gruvbox — Pavel Pertsev's retro groove palette, both grooves.
+ *
+ * Colours are unchanged from the `gruvbox-dark` and `gruvbox-light` palettes
+ * this file replaces; only the shape moved. Both old names still work — see
+ * `ALIASES` in `src-tauri/src/theme.rs`. */
+
+:root {
+  /* Shared: type metrics, identical in both appearances. */
+  --font-body: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --font-size: 16px;
+  --line-height: 1.7;
+  --content-width: 820px;
+  --ui-font-size: 14px;
+}
+
+:root[data-mode="light"] {
+  --bg: #fbf1c7;
+  --sidebar-bg: #f2e5bc;
+  --btn-bg: #ebdbb2;
+  --hover: #e3d5aa;
+  --border: #d5c4a1;
+
+  --text: #3c3836;
+  --muted: #7c6f64;
+  --link: #076678;
+
+  --accent: #076678;
+  --accent-dim: #cfe0e4;
+
+  --hl: #fabd2f;
+  --stale: #9d0006;
+  --stale-bg: #f6d7d0;
+  --stale-text: #ffffff;
+
+  --syntax-theme: "Solarized (light)";
+}
+
+:root[data-mode="dark"] {
+  --bg: #282828;
+  --sidebar-bg: #1d2021;
+  --btn-bg: #3c3836;
+  --hover: #504945;
+  --border: #504945;
+
+  --text: #ebdbb2;
+  --muted: #928374;
+  --link: #83a598;
+
+  --accent: #83a598;
+  --accent-dim: #35433f;
+
+  --hl: #fabd2f;
+  --stale: #fb4934;
+  --stale-bg: #402525;
+  --stale-text: #1a1a1a;
+
+  --syntax-theme: "base16-mocha.dark";
+}

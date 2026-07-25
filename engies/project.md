@@ -74,8 +74,9 @@ The Rust side is seven small modules, each with one job:
 - **`config`** — reads a global `~/.config/dreamd/config.toml`, overridden by a
   repo-local `.dreamd.toml`, and now writes it too when you change something in the
   settings panel.
-- **`theme`** — the catalogue of colour schemes: the ten that ship inside the app,
-  plus any you have saved yourself.
+- **`theme`** — the catalogue of colour schemes: the ten that ship inside the app
+  (each with a light and a dark half), plus any you have saved yourself, and the
+  logic that picks which half to show.
 - **`cli`** — the `dreamd theme …` and `dreamd config …` commands you can run from
   a terminal without opening the window.
 
@@ -89,11 +90,14 @@ Two ideas that come up constantly:
   wrong text.
 - **The whole app is themeable.** A theme is split in two: one stylesheet holds the
   *rules* (how big a heading is, how much space between paragraphs), and a **palette**
-  is just a short list of colours and font settings. Ten palettes ship with the app —
-  Gruvbox, Catppuccin, Tokyo Night, Nord, Solarized and a high-contrast pair — and you
-  can write or edit your own from the settings panel or a text editor. Save the file
-  and the window restyles instantly. Reading comfort is the product, so the paint job
-  is a first-class knob.
+  is a short list of colours and font settings. Ten palettes ship with the app —
+  the reading-first ones (dreamd, Manuscript, Letterpress, Athenaeum) and the
+  programmer-coded ones (Gruvbox, Catppuccin, Tokyo Night, Nord, Solarized, a
+  high-contrast pair) — and each carries **both a light and a dark half** in one
+  file, so light/dark is a switch of its own rather than a different theme. You can
+  write or edit your own from the settings panel or a text editor; save the file and
+  the window restyles instantly. Reading comfort is the product, so the paint job is
+  a first-class knob.
 
 ## Where things stand right now
 
@@ -222,6 +226,29 @@ causes were wrong.
   that is where its users look.
 
 ## Recent updates
+
+- **2026-07-25** — dreamd learned to look like a book, and to follow your Mac's
+  light/dark setting. Until now it shipped one dark, programmer-toned look plus nine
+  colour swaps of it, and every one of them used the same sans-serif font — fine for
+  a code editor, less good for something whose whole job is reading. There are now
+  **ten themes, each with a matching light and dark half**, and the appearance is a
+  separate switch from the theme: pick the look you like, then pick light, dark, or
+  *system* (the default, which follows macOS and keeps following it if your Mac
+  switches at sunset). Three of the themes are new and deliberately bookish —
+  *Manuscript* (warm sepia paper, or vellum by candlelight), *Letterpress* (crisp
+  black ink on cotton, justified like a printed page), and *Athenaeum* (a library
+  after hours: brass on green-black). The **default theme was redesigned** around
+  reading too: a serif face, a narrower column set to a comfortable line length, and
+  a palette that's paper-with-a-hint-of-lilac by day and deep indigo by night. Every
+  one of the new colour sets was checked against accessibility contrast standards
+  rather than eyeballed; the themes borrowed from elsewhere (Nord, Solarized,
+  Gruvbox…) keep their published colours even where those fall slightly short, since
+  quietly "fixing" someone else's palette would make it no longer theirs. Old theme
+  names still work, and old custom themes people wrote themselves keep working
+  untouched. One caveat worth stating plainly: this was all built and checked in a
+  test browser, because the tool that runs the real app isn't installed on the
+  machine it was written on — **nobody has yet seen these themes in the actual app
+  window**, and that's the first thing to do next.
 
 - **2026-07-25** — dreamd has a licence: **Apache 2.0**. Until now the project had
   no licence file at all, which in law means all rights reserved — anyone reading

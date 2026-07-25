@@ -3,6 +3,24 @@
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 
+// ---- appearance ----------------------------------------------------------
+// Set before anything paints. `mode = "system"` is the default, and matching the
+// OS is the whole of what we can know without an IPC — `loadTheme()` corrects
+// this a few round trips later if the config pins an appearance, and until then
+// the native window background (which Rust already painted from the resolved
+// mode) is what is actually on screen.
+//
+// This lives here rather than in an inline <script> in index.html because the
+// CSP is `script-src 'self'` with no 'unsafe-inline': an inline script is
+// blocked, silently. `<script src="app.js" defer>` runs after parsing and
+// before DOMContentLoaded, which is early enough.
+const prefersDark = window.matchMedia("(prefers-color-scheme: dark)");
+let appearance = prefersDark.matches ? "dark" : "light";
+document.documentElement.dataset.mode = appearance;
+// The user's preference, as opposed to what it resolved to. Only "system"
+// makes the OS listeners live.
+let modePref = "system";
+
 // ---- perf instrumentation ------------------------------------------------
 // Marks are forwarded to Rust and printed as NDJSON on stderr — console.log
 // inside WKWebView never reaches the process's stdout, so this is the only way
@@ -119,13 +137,48 @@ let appliedSyntaxTheme = null;
 
 async function loadTheme() {
   try {
-    const css = await invoke("get_theme_css");
-    $("user-theme").textContent = css;
-    const syntax = readCssVar(css, "--syntax-theme");
-    const changed = appliedSyntaxTheme !== null && syntax !== appliedSyntaxTheme;
-    appliedSyntaxTheme = syntax;
-    if (changed) await renderCurrent(true);
+    await applyTheme(await invoke("get_theme"));
   } catch (e) { console.error(e); }
+}
+
+/// Adopt a `{css, mode, scheme}` view from Rust: appearance first, then the
+/// stylesheet, so there is no frame in between showing one against the other.
+async function applyTheme(view) {
+  modePref = view.mode;
+  appearance = view.scheme;
+  document.documentElement.dataset.mode = appearance;
+  $("user-theme").textContent = view.css;
+  // Read the *applied* value rather than re-parsing the text: the engine has
+  // already done the cascade, the specificity, the quotes and any @media, and a
+  // value it resolved cannot drift from `theme::custom_property` the way a
+  // second implementation would.
+  const syntax = appliedCssVar("--syntax-theme");
+  const changed = appliedSyntaxTheme !== null && syntax !== appliedSyntaxTheme;
+  appliedSyntaxTheme = syntax;
+  // Code colours are inline styles baked in by syntect, so they cannot follow a
+  // CSS attribute swap — only a re-render moves them. Nothing on disk changed,
+  // so this must not drag re-anchoring along with it.
+  if (changed) await renderCurrent({ preserveScroll: true, reanchor: false });
+}
+
+/// Follow the OS appearance. Inert unless the preference is "system", and
+/// guarded there rather than at registration time so flipping the setting back
+/// to "system" starts working without re-wiring anything.
+async function applyAppearance(next) {
+  if (modePref !== "system" || next === appearance) return;
+  try {
+    // Awaited, and it returns the new view: `render_markdown` reads the scheme
+    // on the Rust side to pick the syntect theme, so a re-render that raced
+    // this would bake the old code colours into the new palette.
+    await applyTheme(await invoke("set_appearance", { scheme: next }));
+  } catch (e) { console.error(e); }
+}
+
+/// A custom property as the engine resolved it on the live document. Quotes
+/// stripped, so `--syntax-theme: "Solarized (light)"` comes back bare.
+function appliedCssVar(name) {
+  const raw = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  return raw.replace(/^["']|["']$/g, "") || null;
 }
 
 /// Drop `/* … */` blocks. Every reader below has to do this first: the base
@@ -136,13 +189,77 @@ function stripCssComments(css) {
   return String(css).replace(/\/\*[\s\S]*?(?:\*\/|$)/g, "");
 }
 
-/// The last declaration of a custom property, quotes stripped. Mirrors
-/// `theme::custom_property`.
-function readCssVar(css, name) {
-  const m = stripCssComments(css).match(new RegExp(`(?:^|[^\\w-])${name}\\s*:([^;}]*)`, "g"));
+/// The last declaration of a custom property *in `mode`*, quotes stripped.
+/// Mirrors `theme::custom_property`.
+///
+/// Only for stylesheets that are *not* applied to the document — the theme-card
+/// swatches and the Custom tab. For the live theme use `appliedCssVar`, which
+/// asks the engine instead of re-implementing it.
+function readCssVar(css, name, mode) {
+  const scoped = modeSlice(stripCssComments(css), mode);
+  const m = scoped.match(new RegExp(`(?:^|[^\\w-])${name}\\s*:([^;}]*)`, "g"));
   if (!m || !m.length) return null;
   const last = m[m.length - 1];
   return last.slice(last.indexOf(":") + 1).trim().replace(/^["']|["']$/g, "");
+}
+
+/// The stylesheet as it applies in `mode`: the other appearance's blocks
+/// dropped, this one's moved to the end. Mirrors `theme::mode_slice`, including
+/// the rule that carries backwards compatibility — a stylesheet with no
+/// `[data-mode]` block is returned untouched, so every palette written before
+/// families, and every hand-written `theme_css`, reads exactly as it did.
+///
+/// Moving rather than merely dropping matters for the same reason it does in
+/// Rust: this is a last-wins textual scan, but real CSS ranks
+/// `:root[data-mode="dark"]` above `:root` whatever the source order.
+function modeSlice(css, mode) {
+  if (!mode || !css.includes("data-mode")) return css;
+  let kept = "", mine = "", copied = 0, prelude = 0, i = 0;
+  while (i < css.length) {
+    const c = css[i];
+    if (c === '"' || c === "'") { i = skipString(css, i); continue; }
+    if (c === "{") {
+      const named = modeAttr(css.slice(prelude, i));
+      if (named === undefined) { prelude = ++i; continue; }  // descend
+      const end = blockEnd(css, i);
+      kept += css.slice(copied, prelude);
+      if (named === mode) mine += css.slice(prelude, end);
+      i = copied = prelude = end;
+      continue;
+    }
+    if (c === "}" || c === ";") { prelude = ++i; continue; }
+    i++;
+  }
+  return kept + css.slice(copied) + mine;
+}
+
+/// `undefined` when a selector has no `data-mode`; `null` when it names one we
+/// don't recognise, which belongs to neither appearance.
+function modeAttr(prelude) {
+  const m = /data-mode\s*[~|^$*]?=\s*("([^"]*)"|'([^']*)'|[^\]\s]+)/i.exec(prelude);
+  if (!m) return undefined;
+  const value = (m[2] ?? m[3] ?? m[1]).trim().toLowerCase();
+  return value === "dark" || value === "light" ? value : null;
+}
+
+function blockEnd(css, open) {
+  let depth = 0;
+  for (let i = open; i < css.length; i++) {
+    const c = css[i];
+    if (c === '"' || c === "'") { i = skipString(css, i) - 1; continue; }
+    if (c === "{") depth++;
+    else if (c === "}" && --depth === 0) return i + 1;
+  }
+  return css.length;
+}
+
+function skipString(css, start) {
+  const quote = css[start];
+  for (let i = start + 1; i < css.length; i++) {
+    if (css[i] === "\\") { i++; continue; }
+    if (css[i] === quote) return i + 1;
+  }
+  return css.length;
 }
 
 // ---- file tree -----------------------------------------------------------
@@ -224,10 +341,17 @@ function cssEscape(s) {
 async function openFile(path) {
   currentFile = path;
   markActiveInTree(path);
-  await renderCurrent(false);
+  await renderCurrent({ preserveScroll: false, reanchor: false });
 }
 
-async function renderCurrent(preserveScroll) {
+/// Re-render the open document.
+///
+/// The two flags used to be one. `preserveScroll` also decided whether to
+/// re-anchor, which is right for a file that changed on disk and wrong for a
+/// theme or appearance switch: nothing moved, so re-anchoring every highlight
+/// is work for no result — and on a large document during an OS auto-switch,
+/// a visible one.
+async function renderCurrent({ preserveScroll, reanchor }) {
   if (!currentFile) return;
   const t0 = perf.now();
   const prevScroll = preserveScroll ? scrollEl.scrollTop : 0;
@@ -249,10 +373,10 @@ async function renderCurrent(preserveScroll) {
   perf.span("intercept_links", t);
 
   t = perf.now();
-  const highlights = preserveScroll
+  const highlights = reanchor
     ? await invoke("reanchor", { path: currentFile })
     : await invoke("get_highlights", { path: currentFile });
-  perf.span(preserveScroll ? "ipc_reanchor" : "ipc_get_highlights", t);
+  perf.span(reanchor ? "ipc_reanchor" : "ipc_get_highlights", t);
 
   t = perf.now();
   applyHighlights(highlights);
@@ -735,7 +859,8 @@ function wireEvents() {
     perf.at("watcher_event");
     if (e.payload && e.payload.path === currentFile) {
       const t0 = perf.now();
-      await renderCurrent(true);
+      // The file moved under us, so highlights genuinely have to be re-located.
+      await renderCurrent({ preserveScroll: true, reanchor: true });
       perf.span("save_to_paint", t0);
     }
   });
@@ -759,6 +884,18 @@ function wireEvents() {
     }
   });
   listen("theme-reloaded", () => loadTheme());
+
+  // Two sources for the same signal, on purpose. `matchMedia` is synchronous
+  // and needs no IPC; `tauri://theme-changed` is the runtime-guaranteed one.
+  // Whether WKWebView's prefers-color-scheme tracks the effective NSApp
+  // appearance inside a Tauri window is the assumption the first is riding on —
+  // the second is the belt to that braces. `applyAppearance` early-returns on
+  // no change, so both firing costs nothing.
+  prefersDark.addEventListener("change", (e) => applyAppearance(e.matches ? "dark" : "light"));
+  listen("tauri://theme-changed", (e) => {
+    const t = typeof e.payload === "string" ? e.payload : e.payload && e.payload.theme;
+    if (t === "dark" || t === "light") applyAppearance(t);
+  });
 }
 
 function wireUi() {
@@ -1180,9 +1317,37 @@ async function cacheTheme(name) {
   } catch { return null; }
 }
 
+/// Light / Dark / System, independent of which family is selected.
+async function setMode(mode) {
+  if (!(await applyPatch({ mode }))) return;
+  modePref = mode;
+  await loadTheme();
+  renderMode();
+  renderThemes();
+  toast(shadowed("mode")
+    ? `Saved, but .dreamd.toml pins ${settings.config.mode} in this repo`
+    : `Appearance: ${mode}`);
+}
+
+function renderMode() {
+  const row = $("st-mode");
+  if (!row) return;
+  row.innerHTML = "";
+  const current = settings.config.mode || "system";
+  for (const mode of ["light", "dark", "system"]) {
+    const b = document.createElement("button");
+    // "System" alone doesn't say what you are looking at.
+    b.textContent = mode === "system" ? `System (${settings.scheme})` : mode;
+    b.className = "st-mode-btn" + (mode === current ? " sel" : "");
+    b.onclick = () => setMode(mode);
+    row.appendChild(b);
+  }
+}
+
 async function renderThemes() {
   const grid = $("st-theme-grid");
   await Promise.all(settings.themes.map((t) => cacheTheme(t.name)));
+  renderMode();
   grid.innerHTML = "";
 
   for (const info of settings.themes) {
@@ -1197,9 +1362,12 @@ async function renderThemes() {
     // a CSS file and would otherwise carry arbitrary declarations into the
     // attribute.
     const swatch = card.querySelector(".th-swatch");
+    // Read in the appearance that is actually on screen, so the swatch answers
+    // "what will this look like" rather than "what does the last block in the
+    // file say" — which, for a family, is always the dark one.
     for (const v of ["--bg", "--text", "--accent", "--hl"]) {
       const stripe = document.createElement("i");
-      stripe.style.background = readCssVar(css, v) || "transparent";
+      stripe.style.background = readCssVar(css, v, appearance) || "transparent";
       swatch.appendChild(stripe);
     }
 
@@ -1222,9 +1390,12 @@ async function renderThemes() {
           : `Theme: ${info.name}`);
       }
     }));
-    acts.appendChild(button("Duplicate", "", (ev) => {
+    acts.appendChild(button("Duplicate", "", async (ev) => {
       ev.stopPropagation();
-      draft = { css: paletteBlock(css) };
+      // The palette file itself, not the first `:root` block regexed back out
+      // of base+palette — a copy has to carry both appearances to stay a
+      // family.
+      draft = { css: await paletteOf(info.name), editing: appearance };
       $("st-save-name").value = info.name + "-copy";
       selectPane("custom");
     }));
@@ -1260,36 +1431,119 @@ function previewCss(css) {
 // ---- custom theme tab ----
 async function openCustom() {
   if (!draft) {
-    const active = settings.theme && (await cacheTheme(settings.theme));
-    draft = { css: paletteBlock(active || "") };
+    draft = { css: await paletteOf(settings.theme), editing: appearance };
     if (!$("st-save-name").value) $("st-save-name").value = (settings.theme || "dreamd") + "-copy";
   }
   $("st-custom-note").textContent =
     `Edits preview live. Saving writes ${settings.themes_dir}/<name>.css and switches to it.`;
   $("st-custom-css").value = draft.css;
+  renderBlockPicker();
   renderVars();
   previewCss(draft.css);
 }
 
-/// The `:root` block on its own. A palette is only that block; a full
-/// stylesheet reached through `theme_css` has one buried in it.
-function paletteBlock(css) {
-  const m = stripCssComments(css).match(/:root\s*\{[\s\S]*?\}/);
-  return m ? m[0] + "\n" : ":root {\n}\n";
+/// A palette's own file. Asking Rust beats recovering it from `theme_css`: that
+/// meant regexing the first `:root` block back out of base+palette, which finds
+/// the *shared* block of a family and silently drops both mode blocks — and had
+/// to dodge the `:root { --bg: … }` example inside theme.css's header comment.
+async function paletteOf(name) {
+  if (!name) return ":root {\n}\n";
+  try {
+    return await invoke("palette_css", { name });
+  } catch { return ":root {\n}\n"; }
 }
 
-function paletteVars(css) {
-  const block = stripCssComments(css).match(/:root\s*\{([\s\S]*?)\}/);
-  if (!block) return [];
-  return [...block[1].matchAll(/(--[\w-]+)\s*:\s*([^;]+);/g)]
-    .map((m) => ({ name: m[1], value: m[2].trim() }));
+/// Which appearance the var editor is pointed at. Switching re-renders the list
+/// and nothing else — the draft text is untouched, so no edit is lost.
+function renderBlockPicker() {
+  const row = $("st-block");
+  if (!row) return;
+  row.innerHTML = "";
+  if (!blocksOf(draft.css).light && !blocksOf(draft.css).dark) return;
+  for (const mode of ["light", "dark"]) {
+    const b = document.createElement("button");
+    b.textContent = mode;
+    b.className = "st-mode-btn" + (mode === draft.editing ? " sel" : "");
+    b.onclick = () => { draft.editing = mode; renderBlockPicker(); renderVars(); };
+    row.appendChild(b);
+  }
 }
 
-/// Targeted replacement rather than regenerating the block, so comments,
-/// blank lines and any hand-written rules in the file survive editing.
-function setPaletteVar(css, name, value) {
+/// The character ranges of a palette's three blocks — ranges into the string as
+/// given, not extracted text, because `setPaletteVar` edits in place and needs
+/// real offsets. Comments and strings are skipped where they sit rather than
+/// stripped out, which is where this legitimately diverges from the Rust side.
+function blocksOf(css) {
+  const out = { shared: null, light: null, dark: null };
+  let prelude = 0, i = 0;
+  while (i < css.length) {
+    const c = css[i];
+    if (c === "/" && css[i + 1] === "*") {
+      const close = css.indexOf("*/", i + 2);
+      i = close === -1 ? css.length : close + 2;
+      continue;
+    }
+    if (c === '"' || c === "'") { i = skipString(css, i); continue; }
+    if (c === "{") {
+      const end = blockEnd(css, i);
+      const sel = css.slice(prelude, i);
+      const named = modeAttr(sel);
+      // `undefined` is "no data-mode"; only a bare `:root` is the shared block.
+      const key = named === undefined ? (/(^|[\s,])(:root|html)\s*$/i.test(sel.trim()) ? "shared" : null) : named;
+      if (key && !out[key]) out[key] = { start: i + 1, end: end - 1 };
+      i = prelude = end;
+      continue;
+    }
+    if (c === "}" || c === ";") { prelude = ++i; continue; }
+    i++;
+  }
+  return out;
+}
+
+/// The variables on offer: the shared block plus the appearance being edited.
+///
+/// Each row carries the *key* of the block it came from, not the range. An edit
+/// changes the string's length — `#fff` to `#ffffff`, or an insertion — which
+/// invalidates every range after it, so ranges are resolved at write time
+/// instead of being cached on the row.
+function paletteVars(css, editing) {
+  const b = blocksOf(css);
+  // Mode block first: a variable declared in both is the mode block's, because
+  // that is the one the cascade uses. Attributing it to `shared` would send the
+  // edit somewhere it has no visible effect.
+  const keys = [editing, "shared"].filter((k) => b[k]);
+  // No recognisable blocks: treat the whole file as one. A hand-written palette
+  // that puts its variables somewhere unexpected still edits.
+  if (!keys.length) keys.push(null);
+  const seen = new Set();
+  const out = [];
+  for (const key of keys) {
+    const range = key ? b[key] : { start: 0, end: css.length };
+    const body = css.slice(range.start, range.end);
+    for (const m of body.matchAll(/(--[\w-]+)\s*:\s*([^;]+);/g)) {
+      if (seen.has(m[1])) continue;
+      seen.add(m[1]);
+      out.push({ name: m[1], value: m[2].trim(), block: key });
+    }
+  }
+  return out;
+}
+
+/// Targeted replacement rather than regenerating the block, so comments, blank
+/// lines and any hand-written rules in the file survive editing. Scoped to one
+/// block: with three of them, a document-wide replace edits whichever comes
+/// first, which is rarely the one on screen.
+function setPaletteVar(css, name, value, block) {
+  const r = (block && blocksOf(css)[block]) || { start: 0, end: css.length };
+  const body = css.slice(r.start, r.end);
   const re = new RegExp(`(${name}\\s*:\\s*)([^;]*)(;)`);
-  return re.test(css) ? css.replace(re, `$1${value}$3`) : css;
+  if (re.test(body)) {
+    return css.slice(0, r.start) + body.replace(re, `$1${value}$3`) + css.slice(r.end);
+  }
+  // Not declared in this block yet — insert it. Needed to give one appearance
+  // its own value for something the family had left shared.
+  const insert = `  ${name}: ${value};\n`;
+  return css.slice(0, r.end) + insert + css.slice(r.end);
 }
 
 const HEX = /^#[0-9a-f]{3,8}$/i;
@@ -1297,7 +1551,7 @@ const HEX = /^#[0-9a-f]{3,8}$/i;
 function renderVars() {
   const box = $("st-vars");
   box.innerHTML = "";
-  for (const v of paletteVars(draft.css)) {
+  for (const v of paletteVars(draft.css, draft.editing)) {
     const row = document.createElement("div");
     row.className = "st-var";
     row.innerHTML = `<label>${escapeHtml(v.name)}</label>`;
@@ -1312,20 +1566,20 @@ function renderVars() {
         opt.selected = name === current;
         sel.appendChild(opt);
       }
-      sel.onchange = () => editVar(v.name, `"${sel.value}"`);
+      sel.onchange = () => editVar(v.name, `"${sel.value}"`, false, v.block);
       row.appendChild(sel);
     } else {
       if (HEX.test(v.value)) {
         const picker = document.createElement("input");
         picker.type = "color";
         picker.value = v.value.slice(0, 7);
-        picker.oninput = () => editVar(v.name, picker.value, true);
+        picker.oninput = () => editVar(v.name, picker.value, true, v.block);
         row.appendChild(picker);
       }
       const text = document.createElement("input");
       text.type = "text";
       text.value = v.value;
-      text.onchange = () => editVar(v.name, text.value, true);
+      text.onchange = () => editVar(v.name, text.value, true, v.block);
       row.appendChild(text);
     }
     box.appendChild(row);
@@ -1334,8 +1588,8 @@ function renderVars() {
 
 /// `quiet` skips the re-render of the var list, so typing in a text field
 /// doesn't yank focus out from under the user.
-function editVar(name, value, quiet) {
-  draft.css = setPaletteVar(draft.css, name, value);
+function editVar(name, value, quiet, block) {
+  draft.css = setPaletteVar(draft.css, name, value, block);
   $("st-custom-css").value = draft.css;
   previewCss(draft.css);
   if (!quiet) renderVars();

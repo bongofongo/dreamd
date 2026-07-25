@@ -1,0 +1,62 @@
+/* Manuscript — a warm desk by day, vellum by candle at night.
+ *
+ * The sepia one. Iowan Old Style is the face macOS ships for Books: large
+ * x-height, warm, made to be read at length rather than admired. */
+
+:root {
+  --font-body: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --font-size: 18px;
+  --line-height: 1.8;
+  --content-width: 680px;
+  --ui-font-size: 14px;
+
+  --heading-weight: 600;
+  --heading-rule: none;
+}
+
+:root[data-mode="light"] {
+  --bg: #f7f0e3;
+  --sidebar-bg: #efe6d5;
+  --btn-bg: #e7dcc6;
+  --hover: #ded1b8;
+  --border: #d8cbb2;
+
+  --text: #3b3228;
+  /* Darker than the obvious mid-brown: `--muted` carries blockquotes, and at
+   * #7d7263 those fall to 4.2:1 on this ground. */
+  --muted: #6f6455;
+  --link: #8a5a2b;
+
+  --accent: #a35d28;
+  --accent-dim: #f0dfc7;
+
+  --hl: #e8c14a;
+  --stale: #b0402f;
+  --stale-bg: #f3ddd5;
+  --stale-text: #ffffff;
+
+  --syntax-theme: "Solarized (light)";
+}
+
+:root[data-mode="dark"] {
+  --bg: #211d18;
+  --sidebar-bg: #1b1814;
+  --btn-bg: #2c2721;
+  --hover: #38312a;
+  --border: #3d3630;
+
+  --text: #e0d6c3;
+  --muted: #9b9080;
+  --link: #d9a566;
+
+  --accent: #cf9a5b;
+  --accent-dim: #3a2d1d;
+
+  --hl: #e8c14a;
+  --stale: #d4675a;
+  --stale-bg: #3a201b;
+  --stale-text: #1a1a1a;
+
+  --syntax-theme: "base16-mocha.dark";
+}

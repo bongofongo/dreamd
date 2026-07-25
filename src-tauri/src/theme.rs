@@ -3,12 +3,26 @@
 //! and the syntect theme for code blocks.
 //!
 //! A theme is split in two. `ui/theme.css` holds the *rules* and is embedded as
-//! [`BASE_CSS`]; a *palette* is a bare `:root { --bg: … }` block, either bundled
-//! (`ui/themes/*.css`) or written by the user into `~/.config/dreamd/themes/`.
-//! The palette is appended after the base so its custom properties win. Setting
-//! `theme_css` to a path opts out of the split entirely: that file is used
-//! alone, with nothing appended, which is what a hand-written full stylesheet
-//! wants.
+//! [`BASE_CSS`]; a *palette* lives in `ui/themes/*.css` or in the user's
+//! `~/.config/dreamd/themes/`, and is appended after the base so its custom
+//! properties win. Setting `theme_css` to a path opts out of the split
+//! entirely: that file is used alone, with nothing appended, which is what a
+//! hand-written full stylesheet wants.
+//!
+//! A palette is a *family* — one file carrying both appearances:
+//!
+//! ```css
+//! :root                     { /* shared: type metrics */ }
+//! :root[data-mode="light"]  { /* colours + --syntax-theme */ }
+//! :root[data-mode="dark"]   { /* … */ }
+//! ```
+//!
+//! The frontend switches by setting `data-mode` on `<html>`, so a mode toggle
+//! is one attribute rather than a re-fetch. CSS handles that on its own; the
+//! two values *this* module has to read out by hand do not, which is what
+//! [`mode_slice`] is for. A palette with no `[data-mode]` block at all — every
+//! user file written before families existed, and every `theme_css` stylesheet
+//! — is passed through untouched and reads identically in both schemes.
 //!
 //! The resolved CSS is injected into `#user-theme` from JS, several IPC
 //! round-trips into boot, so `--bg` does not exist while the window is first
@@ -18,45 +32,74 @@
 //! theme flashes light, not dark.
 
 use crate::config::{config_dir, Config};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::path::PathBuf;
+
+/// A resolved appearance — what a stylesheet is actually sliced for.
+///
+/// Deliberately not the same type as [`crate::config::Mode`], which also has
+/// `System`. Keeping them apart makes "system has to be resolved before it
+/// reaches CSS" a compile error rather than a silently wrong block read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Scheme {
+    Light,
+    Dark,
+}
 
 /// The base reading stylesheet, embedded so it works in a packaged binary.
 pub const BASE_CSS: &str = include_str!("../../ui/theme.css");
 
-/// Palettes that ship in the binary. The first entry is the default.
+/// Theme families that ship in the binary, each carrying both appearances. The
+/// first entry is the default; the reading themes lead, the programmer-coded
+/// ones follow.
 pub const BUNDLED: &[(&str, &str)] = &[
     ("dreamd", include_str!("../../ui/themes/dreamd.css")),
-    ("gruvbox-dark", include_str!("../../ui/themes/gruvbox-dark.css")),
+    ("manuscript", include_str!("../../ui/themes/manuscript.css")),
     (
-        "catppuccin-mocha",
-        include_str!("../../ui/themes/catppuccin-mocha.css"),
+        "letterpress",
+        include_str!("../../ui/themes/letterpress.css"),
     ),
+    ("athenaeum", include_str!("../../ui/themes/athenaeum.css")),
+    ("gruvbox", include_str!("../../ui/themes/gruvbox.css")),
+    ("catppuccin", include_str!("../../ui/themes/catppuccin.css")),
     ("tokyo-night", include_str!("../../ui/themes/tokyo-night.css")),
     ("nord", include_str!("../../ui/themes/nord.css")),
+    ("solarized", include_str!("../../ui/themes/solarized.css")),
     (
-        "gruvbox-light",
-        include_str!("../../ui/themes/gruvbox-light.css"),
-    ),
-    (
-        "catppuccin-latte",
-        include_str!("../../ui/themes/catppuccin-latte.css"),
-    ),
-    (
-        "solarized-light",
-        include_str!("../../ui/themes/solarized-light.css"),
-    ),
-    (
-        "high-contrast-dark",
-        include_str!("../../ui/themes/high-contrast-dark.css"),
-    ),
-    (
-        "high-contrast-light",
-        include_str!("../../ui/themes/high-contrast-light.css"),
+        "high-contrast",
+        include_str!("../../ui/themes/high-contrast.css"),
     ),
 ];
 
 pub const DEFAULT_THEME: &str = BUNDLED[0].0;
+
+/// Palette names from before families, each mapping to a family plus the
+/// appearance the old name meant. An existing `config.toml` keeps working, and
+/// `dreamd theme set <old-name>` rewrites itself into the new spelling.
+///
+/// Note what is *absent*: `dreamd`, `nord` and `tokyo-night` are family names
+/// now, not legacy ones. Listing them here would pin dark for every config that
+/// already names them and make `mode = "system"` a no-op for the three
+/// most-used themes — the opposite of the point.
+pub const ALIASES: &[(&str, &str, Scheme)] = &[
+    ("gruvbox-dark", "gruvbox", Scheme::Dark),
+    ("gruvbox-light", "gruvbox", Scheme::Light),
+    ("catppuccin-mocha", "catppuccin", Scheme::Dark),
+    ("catppuccin-latte", "catppuccin", Scheme::Light),
+    ("solarized-light", "solarized", Scheme::Light),
+    ("high-contrast-dark", "high-contrast", Scheme::Dark),
+    ("high-contrast-light", "high-contrast", Scheme::Light),
+];
+
+/// The family and appearance a legacy palette name stands for.
+pub fn dealias(name: &str) -> Option<(&'static str, Scheme)> {
+    ALIASES
+        .iter()
+        .find(|(alias, _, _)| *alias == name)
+        .map(|(_, family, scheme)| (*family, *scheme))
+}
 
 /// Where user palettes live. Saving one here shadows a bundled theme of the
 /// same name.
@@ -79,6 +122,9 @@ pub struct Resolved {
     /// The palette name, or `None` when `theme_css` bypassed the registry.
     pub name: Option<String>,
     pub css: String,
+    /// The appearance this was resolved for. The CSS carries both, but
+    /// `syntax_theme` and [`background`] are single-valued and had to pick.
+    pub scheme: Scheme,
     /// The syntect theme for fenced code blocks, if the CSS named one.
     pub syntax_theme: Option<String>,
 }
@@ -116,8 +162,16 @@ pub fn list() -> Vec<ThemeInfo> {
 }
 
 /// A palette's CSS by name: the user's file if there is one, else the bundled
-/// copy.
+/// copy, else — last of all — the family a legacy name aliases.
+///
+/// The alias step is deliberately last. Someone who ran
+/// `dreamd theme new gruvbox-dark` has a real file of that name, and it must
+/// win over the compatibility shim.
 pub fn palette(name: &str) -> Option<String> {
+    named_palette(name).or_else(|| named_palette(dealias(name)?.0))
+}
+
+fn named_palette(name: &str) -> Option<String> {
     if let Some(path) = user_path(name) {
         if let Ok(css) = std::fs::read_to_string(&path) {
             return Some(css);
@@ -135,6 +189,37 @@ pub fn palette(name: &str) -> Option<String> {
         .iter()
         .find(|(n, _)| *n == name)
         .map(|(_, css)| (*css).to_string())
+}
+
+/// The name a theme appears under in [`list`]. A legacy alias reports the
+/// family it resolves to; anything with a real palette of its own — including a
+/// user file that shadows an alias — reports itself.
+fn canonical(name: &str) -> String {
+    if named_palette(name).is_some() {
+        return name.to_string();
+    }
+    dealias(name).map_or_else(|| name.to_string(), |(family, _)| family.to_string())
+}
+
+/// The appearance to render in, given the config and what the OS says.
+///
+/// A legacy palette name carries an implicit appearance, and it applies only
+/// when `mode` was never set at all: someone who wrote `theme = "gruvbox-dark"`
+/// and nothing else meant dark and gets dark, while someone who has since
+/// written `mode = "system"` meant system and gets it. That distinction is why
+/// `Config::mode` is an `Option`.
+pub fn scheme_for(cfg: &Config, system: Scheme) -> Scheme {
+    if cfg.mode.is_none() {
+        if let Some(name) = &cfg.theme {
+            // Only when the alias isn't shadowed by a real theme of that name.
+            if named_palette(name).is_none() {
+                if let Some((_, scheme)) = dealias(name) {
+                    return scheme;
+                }
+            }
+        }
+    }
+    cfg.mode().resolve(system)
 }
 
 #[cfg(debug_assertions)]
@@ -156,13 +241,14 @@ pub fn css_for(name: &str) -> Option<String> {
 /// Resolve the active theme from config. `theme_css` wins and is used alone;
 /// otherwise the named palette is appended to the base rules, falling back to
 /// the default palette when the name is unknown.
-pub fn resolve(cfg: &Config) -> Resolved {
+pub fn resolve(cfg: &Config, scheme: Scheme) -> Resolved {
     if let Some(path) = &cfg.theme_css {
         if let Ok(css) = std::fs::read_to_string(path) {
-            let syntax_theme = syntax_theme(&css);
+            let syntax_theme = syntax_theme(&css, scheme);
             return Resolved {
                 name: None,
                 css,
+                scheme,
                 syntax_theme,
             };
         }
@@ -170,7 +256,10 @@ pub fn resolve(cfg: &Config) -> Resolved {
     }
     let name = cfg.theme.as_deref().unwrap_or(DEFAULT_THEME);
     let (name, css) = match css_for(name) {
-        Some(css) => (name.to_string(), css),
+        // Reported under the name it is *listed* under, so a config still
+        // saying `gruvbox-dark` marks the `gruvbox` card as active rather than
+        // marking nothing at all.
+        Some(css) => (canonical(name), css),
         None => {
             eprintln!("dreamd: unknown theme {name:?}, using {DEFAULT_THEME}");
             (
@@ -179,10 +268,11 @@ pub fn resolve(cfg: &Config) -> Resolved {
             )
         }
     };
-    let syntax_theme = syntax_theme(&css);
+    let syntax_theme = syntax_theme(&css, scheme);
     Resolved {
         name: Some(name),
         css,
+        scheme,
         syntax_theme,
     }
 }
@@ -223,26 +313,39 @@ pub fn delete_user(name: &str) -> Result<(), String> {
 /// The `--bg` custom property as `(r, g, b)`. Only hex forms (`#rgb`,
 /// `#rrggbb`) are understood; anything else yields `None` and the caller keeps
 /// whatever default it had.
-pub fn background(css: &str) -> Option<(u8, u8, u8)> {
-    parse_hex(&custom_property(css, "--bg")?)
+pub fn background(css: &str, scheme: Scheme) -> Option<(u8, u8, u8)> {
+    parse_hex(&custom_property(css, "--bg", scheme)?)
 }
 
 /// The `--syntax-theme` custom property: the syntect theme for fenced code
 /// blocks. Not used by CSS at all — it rides along in the palette so one file
 /// describes the whole look. Quotes are stripped.
-pub fn syntax_theme(css: &str) -> Option<String> {
-    let raw = custom_property(css, "--syntax-theme")?;
+pub fn syntax_theme(css: &str, scheme: Scheme) -> Option<String> {
+    let raw = custom_property(css, "--syntax-theme", scheme)?;
     let trimmed = raw.trim_matches(|c| c == '"' || c == '\'').trim();
     (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
-/// The last declaration of a custom property, which is the one CSS would use.
+/// Whether a stylesheet declares any `[data-mode]` block — i.e. whether it is a
+/// family or a flat pre-family palette. Public so `theme_check` can insist that
+/// every bundled palette is one.
+pub fn has_mode_blocks(css: &str) -> bool {
+    strip_comments(css).contains("data-mode")
+}
+
+/// The last declaration of a custom property *in `scheme`*, which is the one
+/// CSS would use.
 ///
 /// The match has to start on a property boundary: a bare substring search for
 /// `--bg:` would also find `--panel--bg:`, and `--syntax-theme` is the more
 /// collidable of the two names we look for.
-fn custom_property(css: &str, name: &str) -> Option<String> {
+///
+/// Public because `theme_check` should assert against the parser the app
+/// actually uses rather than its own approximation of it — a `css.contains`
+/// test passes the light pass for a variable only the dark block declares.
+pub fn custom_property(css: &str, name: &str, scheme: Scheme) -> Option<String> {
     let css = strip_comments(css);
+    let css = mode_slice(&css, scheme);
     let needle = format!("{name}:");
     let mut from = css.len();
     while let Some(at) = css[..from].rfind(&needle) {
@@ -252,11 +355,146 @@ fn custom_property(css: &str, name: &str) -> Option<String> {
             .map_or(true, |c| !c.is_ascii_alphanumeric() && c != '_' && c != '-');
         if boundary {
             let start = at + needle.len();
-            return Some(css[start..].split(';').next()?.trim().to_string());
+            // `;` *or* `}`: a final declaration written without its semicolon
+            // would otherwise swallow every block after it — which is only
+            // harmless while a palette is a single block.
+            let value = css[start..].split(|c| c == ';' || c == '}').next()?;
+            return Some(value.trim().to_string());
         }
         from = at;
     }
     None
+}
+
+/// The stylesheet as it applies in `scheme`: the other appearance's blocks
+/// dropped, and this one's moved to the end.
+///
+/// Two rules carry the whole design.
+///
+/// **A stylesheet with no `[data-mode]` block is returned unchanged.** That is
+/// the compatibility guarantee, and it is why the test is "has no mode blocks"
+/// rather than "keep the `:root` blocks": a hand-written `theme_css` may well
+/// declare `--bg` on `body` or `.reader`, and a `:root` filter would throw it
+/// away.
+///
+/// **This scheme's blocks are re-appended, not merely left in place.**
+/// [`custom_property`] is a last-wins *textual* scan, but real CSS gives
+/// `:root[data-mode="dark"]` (0,1,1) a higher specificity than `:root` (0,0,1)
+/// whatever the source order. Without the move, a palette that put its mode
+/// blocks above the shared block would give one answer here and another in the
+/// webview — a disagreement visible only as a window frame in the wrong colour.
+///
+/// A mode block nested inside an `@media` loses its condition when it is moved.
+/// Only the two values parsed here are affected; the CSS handed to the webview
+/// is never rewritten.
+fn mode_slice<'a>(css: &'a str, scheme: Scheme) -> Cow<'a, str> {
+    if !css.contains("data-mode") {
+        return Cow::Borrowed(css);
+    }
+    let b = css.as_bytes();
+    let mut kept = String::with_capacity(css.len());
+    let mut mine = String::new();
+    // Everything before `copied` is already in `kept`; `prelude` is where the
+    // current selector started.
+    let (mut copied, mut prelude, mut i) = (0, 0, 0);
+    while i < b.len() {
+        match b[i] {
+            // A brace inside a string is not a brace. `content: "}"` is legal
+            // in a hand-written stylesheet and would desynchronise the depth
+            // count.
+            b'"' | b'\'' => i = skip_string(b, i),
+            b'{' => match mode_attr(&css[prelude..i]) {
+                // Not a mode block: descend into it, so a mode block nested in
+                // an `@media` is still found. No special case needed.
+                None => {
+                    i += 1;
+                    prelude = i;
+                }
+                Some(named) => {
+                    let end = block_end(b, i);
+                    kept.push_str(&css[copied..prelude]);
+                    if named == Some(scheme) {
+                        mine.push_str(&css[prelude..end]);
+                    }
+                    i = end;
+                    copied = end;
+                    prelude = end;
+                }
+            },
+            b'}' | b';' => {
+                i += 1;
+                prelude = i;
+            }
+            _ => i += 1,
+        }
+    }
+    kept.push_str(&css[copied..]);
+    kept.push_str(&mine);
+    Cow::Owned(kept)
+}
+
+/// The scheme a selector's `[data-mode=…]` names. `None` means the selector has
+/// no `data-mode` at all; `Some(None)` means it has one naming something we
+/// don't recognise, which belongs to neither scheme and is dropped from both.
+///
+/// The `:root` prefix is deliberately not required, so `html[data-mode="dark"]`,
+/// `:root[data-mode='dark']`, `:root[data-mode = "dark"]` and selector lists all
+/// classify correctly.
+fn mode_attr(prelude: &str) -> Option<Option<Scheme>> {
+    let lower = prelude.to_ascii_lowercase();
+    let at = lower.find("data-mode")?;
+    let rest = lower[at + "data-mode".len()..].trim_start();
+    // CSS allows `~=`, `|=`, `^=`, `$=`, `*=` here as well as a bare `=`.
+    let rest = rest.strip_prefix(['~', '|', '^', '$', '*']).unwrap_or(rest);
+    let rest = rest.trim_start().strip_prefix('=')?.trim_start();
+    let value = match rest.chars().next() {
+        Some(q @ ('"' | '\'')) => rest[1..].split(q).next()?,
+        _ => rest.split(|c: char| c == ']' || c.is_whitespace()).next()?,
+    };
+    Some(match value.trim() {
+        "dark" => Some(Scheme::Dark),
+        "light" => Some(Scheme::Light),
+        _ => None,
+    })
+}
+
+/// The index just past the `}` closing the block opened at `open`. An
+/// unterminated block runs to the end of the file.
+fn block_end(b: &[u8], open: usize) -> usize {
+    let mut depth = 0usize;
+    let mut i = open;
+    while i < b.len() {
+        match b[i] {
+            b'"' | b'\'' => {
+                i = skip_string(b, i);
+                continue;
+            }
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return i + 1;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    b.len()
+}
+
+/// The index just past the quote closing the string opened at `start`.
+fn skip_string(b: &[u8], start: usize) -> usize {
+    let quote = b[start];
+    let mut i = start + 1;
+    while i < b.len() {
+        match b[i] {
+            b'\\' => i += 2,
+            c if c == quote => return i + 1,
+            _ => i += 1,
+        }
+    }
+    b.len()
 }
 
 /// Drop `/* ... */` blocks so a commented-out declaration cannot win over the

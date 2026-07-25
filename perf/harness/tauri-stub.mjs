@@ -44,7 +44,7 @@ export async function launch(opts = {}) {
     perf_enabled: false,
     repo_info: { root: fx.CORPUS, name: "corpus", display: "~/corpus" },
     get_keymap: fx.KEYMAP,
-    get_theme_css: fx.themeCss(),
+    get_theme: { css: fx.themeCss(), mode: "dark", scheme: "dark", syntax_theme: null },
     list_markdown_files: tree,
     initial_file: openInitial ? docPath : null,
     render_markdown: fx.renderedHtml(variant, size),
@@ -64,7 +64,14 @@ export async function launch(opts = {}) {
       "--disable-backgrounding-occluded-windows",
     ],
   });
-  const page = await browser.newPage({ viewport: { width: 1200, height: 850 } });
+  // Pinned so scenarios are comparable across runs: app.js reads
+  // prefers-color-scheme before first paint, and Chromium's default is light.
+  // Nothing timed depends on which appearance it is — but it should be a
+  // decision rather than a browser default that can change under a baseline.
+  const page = await browser.newPage({
+    viewport: { width: 1200, height: 850 },
+    colorScheme: "dark",
+  });
 
   await page.addInitScript(
     ({ responses, ipcDelayMs }) => {

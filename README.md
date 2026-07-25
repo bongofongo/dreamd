@@ -121,12 +121,15 @@ alias kept from before keybinds were configurable; turn it off with
 - **Keys** — click a shortcut to record a new one. Duplicates are flagged, and a
   shortcut a repo-local `.dreamd.toml` overrides is marked as such, so the panel
   never claims a change took effect when it didn't.
-- **Themes** — every bundled and saved theme, with a swatch. Click to preview
-  live, Apply to keep. Code-block colours only change on Apply, since they are
-  produced server-side.
+- **Themes** — a Light / Dark / System toggle, then every bundled and saved
+  theme with a swatch. The toggle is independent of the theme, since every
+  theme ships both; the swatch shows the appearance you are currently in. Click
+  a card to preview live, Apply to keep. Code-block colours only change on
+  Apply, since they are produced server-side.
 - **Custom theme** — a colour picker and a text field per palette variable, plus
-  the raw CSS. Edits preview as you make them; Save writes the palette to
-  `~/.config/dreamd/themes/` and switches to it.
+  the raw CSS. Variables are shown one appearance at a time: the shared block
+  plus whichever of light/dark you are editing. Edits preview as you make them;
+  Save writes the palette to `~/.config/dreamd/themes/` and switches to it.
 
 Everything the panel writes goes through the same code path as
 `dreamd config set`, so a change made here and one made from the shell produce
@@ -139,6 +142,7 @@ All fields optional:
 
 ```toml
 theme = "tokyo-night"                    # see `dreamd theme list`
+mode = "system"                          # or "light" / "dark"
 # theme_css = "/path/to/your.css"        # or a complete stylesheet of your own
 extra_ignores = ["vendor", "*.tmp.md"]
 tmux_target = "work:0.1"                 # pin a pane; skips auto-detect
@@ -177,24 +181,56 @@ preserved; comments and key ordering are not.
 ## Theming
 
 A theme is two files: `ui/theme.css` holds the reading *rules*, and a **palette**
-is a bare `:root { --bg: …; }` block. Ten palettes ship in the binary —
-`dreamd`, `gruvbox-dark`, `gruvbox-light`, `catppuccin-mocha`, `catppuccin-latte`,
-`tokyo-night`, `nord`, `solarized-light`, `high-contrast-dark`,
-`high-contrast-light`.
+holds the variables. Ten themes ship in the binary, each carrying **both a dark
+and a light appearance**:
+
+| | |
+|---|---|
+| `dreamd` | the default — serif, paper by day, indigo by night |
+| `manuscript` | warm sepia desk / vellum by candle |
+| `letterpress` | ink on cotton, justified, high contrast |
+| `athenaeum` | reading room / library at night, brass on green-black |
+| `gruvbox` `catppuccin` `tokyo-night` `nord` `solarized` `high-contrast` | the programmer-coded ones |
 
 ```sh
 dreamd theme list                        # bundled + yours, active marked
 dreamd theme set nord
-dreamd --theme gruvbox-light             # this run only
+dreamd config set mode light             # light, dark, or system (the default)
+dreamd --theme manuscript --mode dark    # this run only
 dreamd theme new mine --from nord        # copy into ~/.config/dreamd/themes/
 dreamd theme show mine                   # print the full stylesheet
 ```
 
-A palette carries colour *and* typography (`--font-size`, `--line-height`,
-`--content-width`), plus `--syntax-theme`, which names the syntect theme used for
-fenced code — that is what keeps code blocks from staying dark under a light
-theme. Palettes in `~/.config/dreamd/themes/` hot-reload on save; bundled ones
-are embedded in the binary and need a rebuild.
+`mode` is independent of which theme you picked — every theme has both halves.
+The default follows the OS and keeps following it while the app runs.
+
+A palette is a family: a bare `:root` of shared typography, plus a
+`:root[data-mode="light"]` and a `:root[data-mode="dark"]` block of colours.
+Switching appearance is one attribute on `<html>`, so it is instant.
+
+```css
+:root {
+  --font-body: ui-serif, "New York", "Iowan Old Style", Charter, Georgia, serif;
+  --font-size: 17px;
+  --content-width: 700px;
+}
+:root[data-mode="light"] { --bg: #f7f5fa; --syntax-theme: "InspiredGitHub"; }
+:root[data-mode="dark"]  { --bg: #14121c; --syntax-theme: "base16-ocean.dark"; }
+```
+
+`--syntax-theme` names the syntect theme for fenced code, per appearance — that
+is what keeps code blocks from staying dark under a light theme. A few optional
+variables let a theme change shape rather than only colour: `--font-heading`,
+`--heading-weight`, `--heading-rule`, `--letter-spacing`, `--para-spacing`,
+`--text-align`, `--hyphens`, `--code-bg`, `--hl-text`, `--stale-text`.
+
+A palette written before families existed — one bare `:root`, no mode blocks —
+still works, and reads the same in both appearances. The older per-appearance
+theme names (`gruvbox-dark`, `catppuccin-latte`, …) still resolve too;
+`dreamd theme set <old-name>` rewrites your config into the new spelling.
+
+Palettes in `~/.config/dreamd/themes/` hot-reload on save; bundled ones are
+embedded in the binary and need a rebuild.
 
 Setting `theme_css` instead points at a complete stylesheet of your own,
 replacing the base rules entirely — no palette is appended. It hot-reloads too.

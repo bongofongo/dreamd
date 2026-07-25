@@ -1,5 +1,177 @@
 # Session log
 
+## 2026-07-25 — ten theme families, two appearances each, a literary default
+
+Executed `docs/todo.md` sections 2–4 in one pass: a reading/literary theme pack, a
+dark/light toggle, and real design attention on the default. Section 1 (the settings
+panel) turned out to have shipped two sessions ago, so the whole file was rewritten
+as follow-ups rather than ticked off.
+
+### What happened
+
+**The shape, settled in plan mode.** Two Explore agents mapped the theming surface and
+a Plan agent pressure-tested the plumbing; it found three things the plan had wrong,
+all before any code (see *Mistakes*).
+
+1. **One file per family, two mode blocks.** `ui/themes/*.css` went from ten flat
+   palettes to ten families: a bare `:root` of shared type metrics plus
+   `:root[data-mode="light"]` and `:root[data-mode="dark"]` colour blocks. The
+   frontend sets `data-mode` on `<html>`, so switching appearance is one attribute —
+   no IPC, no re-inject, no visible swap. Same file count as before.
+2. **`theme::mode_slice`** is what makes the two values Rust parses by hand
+   (`--bg`, `--syntax-theme`) mode-aware. A brace-depth scanner that skips strings,
+   descends into non-mode blocks (so an `@media` wrapper needs no special case), and
+   drops the other appearance's blocks **and moves yours to the end**. The move is
+   load-bearing: `custom_property` is a last-wins *textual* scan, but CSS ranks
+   `:root[data-mode=…]` (0,1,1) above `:root` (0,0,1) whatever the source order, so
+   dropping alone would have disagreed with the webview — visible only as a window
+   frame in the wrong colour.
+3. **A stylesheet with no `[data-mode]` block is returned unchanged.** That is the
+   backwards-compatibility guarantee, and it is why the test is "has no mode blocks"
+   rather than "keep the `:root` blocks" — a hand-written `theme_css` may declare
+   `--bg` on `body`, and a `:root` filter would have thrown it away. Step 1 was
+   committed-shaped on its own: `theme_check` staying green against the *still-flat*
+   palettes, in both schemes, was the proof.
+4. **`Config.mode: Option<Mode>`**, `system` by default. An `Option` rather than a
+   plain field with a `System` default because the two are not the same thing — see
+   *Mistakes* 4.
+5. **`System` is resolved in `.setup()`**, from `Window::theme()`. Config-declared
+   windows are created inside Tauri's own setup, *before* the user hook, so a window
+   exists there; the call resolves inline on the main thread. `theme_bg` at
+   `main.rs:452` is gone, folded into the hook that already consumed it.
+   `AppState.appearance` is an `AtomicU8` so `syntax_theme()` — which runs per render
+   holding the config lock — never has to think about lock order. A forced mode also
+   pins the native appearance via `win.set_theme`, which on macOS is
+   `NSApplication.appearance`: app-wide, not per-window, and while pinned
+   `Window::theme()` reports the pin rather than the OS.
+6. **The frontend resolves it a second time**, deliberately: `matchMedia` at module
+   scope in `app.js`, before anything paints, plus a `tauri://theme-changed` listener
+   as the runtime-guaranteed path. `get_theme_css` became `get_theme` returning
+   `{css, mode, scheme}` — one command changing shape rather than a second call,
+   because boot IPC count is on the critical path. `set_appearance` **returns** the
+   new view and is awaited: fire-and-forget leaves a one-render window where
+   `render_markdown` uses the old syntect theme against the new palette.
+7. **`loadTheme` stopped re-parsing `--syntax-theme`** and reads
+   `getComputedStyle(document.documentElement)` instead. The engine has already done
+   the cascade, specificity, quotes and `@media`, and a value it resolved cannot drift
+   from `theme::custom_property` the way a second implementation would. `readCssVar`
+   survives only for CSS *not* applied to the document — swatches and the Custom tab —
+   and gained a JS `modeSlice` mirroring the Rust one.
+8. **`renderCurrent`'s overloaded flag was split.** `preserveScroll` also decided
+   whether to re-anchor, which is right for a file that changed on disk and wrong for
+   an appearance switch: nothing moved, so re-anchoring every highlight is work for no
+   result, and on a sunset auto-switch with a large document, a visible one. Now
+   `{preserveScroll, reanchor}`.
+9. **Ten families.** Merges preserving colours exactly: `gruvbox`, `catppuccin`,
+   `high-contrast` (the one family whose two halves already agreed on type metrics, so
+   the shared block was free). New siblings authored: canonical Solarized dark, Nord
+   Snow Storm light, Tokyo Night Day light. Three new literary families —
+   `manuscript` (Iowan Old Style, sepia / vellum by candle), `letterpress` (Charter,
+   justified with hyphenation, one press-red), `athenaeum` (Hoefler Text, brass on
+   green-black). All macOS-shipped faces, ending in a generic; no bundled font files,
+   no CSP change.
+10. **`dreamd` became a literary default** — `ui-serif`/New York at 17px/1.75/700px,
+    lilac-cast paper by day, indigo by night. Deliberately not sepia: that is
+    `manuscript`, and the default should read as itself.
+11. **Optional shape variables** consumed by `theme.css` with fallbacks, so no
+    existing or user palette is required to declare them and `REQUIRED` did not grow:
+    `--font-heading`, `--heading-weight`, `--heading-rule`, `--letter-spacing`,
+    `--para-spacing`, `--text-align`, `--hyphens`, `--code-bg`, `--hl-text`,
+    `--stale-text`.
+12. **`ALIASES`** maps the seven pre-family names onto family + scheme. Three rules,
+    each guarding a specific failure: `dreamd`/`nord`/`tokyo-night` are *absent*
+    (they are family names now, and aliasing them would pin dark for every existing
+    config); the alias step is the **last** resort in `palette()`, after a user file,
+    so `dreamd theme new gruvbox-dark` still wins; and the implied appearance loses to
+    an explicit `mode`. `dreamd theme set <old-name>` migrates the config in one
+    atomic `patch_global`, and `resolve` reports the *canonical* name so a config
+    still saying `catppuccin-latte` marks the `catppuccin` card active.
+
+**Contrast was computed, not eyeballed.** The four families dreamd authors clear
+4.5:1 on `--text`, `--muted`, `--link` and `--accent` against their own `--bg` in both
+appearances; `--muted` was the binding constraint and pushed three of them darker. The
+six *named* palettes keep their published colours where they fall short — Nord light's
+`--link` is 3.5:1 and canonical Solarized dark is 4.75:1 on body text by design.
+Quietly darkening Nord would make it not-Nord, and that is said in the file.
+
+**Two pre-existing bugs fixed on the way.** `mark.hl` was `background: var(--hl);
+color: inherit` — light grey on pale yellow on every dark theme since v1, while the
+titlebar button two hundred lines up already hardcoded `#1a1a1a`. And Tokyo Night
+Day's `--hl` was `#8c6c3e`, a dark brown: fine as a syntax colour, wrong as a
+highlighter, where the mark is a background the text has to survive.
+
+### Mistakes & deviations
+
+1. **The pre-paint bootstrap could not have been an inline `<script>`.** The plan put
+   it in `<head>`; `tauri.conf.json` sets `script-src 'self'` with no
+   `'unsafe-inline'`, so it would have been blocked *silently* and `data-mode` would
+   simply never have been set before paint. Flagged by the planning agent, verified
+   against the config, moved to module scope in `app.js`.
+2. **Dropping the other mode's block is not enough** — see *What happened* 2. Also
+   the planning agent's catch.
+3. **`theme::custom_property` and `readCssVar` were documented as mirrors and were
+   not.** Rust terminated a value on `;` only; JS on `;` or `}`. Inert while a palette
+   was one block; once mode blocks are appended after the shared block, a
+   semicolon-less final declaration swallows them. Fixed in the same edit.
+4. **`Config.mode` shipped as a plain field first, and `config_check` caught it.**
+   With `Mode::System` as the default, "never set" and "explicitly system" are the
+   same value, so a legacy alias's implied appearance would have beaten the user
+   choosing *System* in the panel — making the toggle a no-op for anyone still on
+   `gruvbox-dark`. That is the headline feature of this work. Changed to `Option`.
+5. **Cached block ranges in the Custom tab's var editor.** Any edit that changes the
+   string's length — `#fff` to `#ffffff`, or an insertion — invalidates every range
+   after it. Rows now carry the block *key* and ranges resolve at write time. Caught
+   while writing it, not by a harness.
+6. **Dedup order in `paletteVars` was backwards.** Iterating shared-first attributed a
+   variable declared in both blocks to `shared`, sending the edit somewhere the
+   cascade ignores.
+7. **The `<pre>` background strip cost 11% of `render/prose` and was reverted.** The
+   plan had `markdown.rs` strip the inline `background-color` syntect writes, so
+   `--code-bg` could own the slab. `perf-pass` flagged `render/prose` +11% — on a
+   corpus document with *zero* code fences, so the new function never runs. A worktree
+   at HEAD confirmed it (904 µs vs 1.02 ms at 512k), and reverting only `markdown.rs`
+   restored it exactly: pure codegen layout from touching the module. Replaced with
+   `background: var(--code-bg, var(--btn-bg)) !important` in `theme.css` — `!important`
+   because syntect writes it as an *inline* style, which no ordinary rule outranks.
+   Verified in Chromium that the rule wins and token span colours survive. Render path
+   now untouched by this session.
+8. **Nearly reported the stale baseline's phantom wins again.** The first `perf-quick`
+   showed render down 75–78%; `perf/baseline.json` still predates `56143c6`. Diffed
+   against the last real `pass-*.json` instead, which is also what exposed 7 as real.
+
+### State
+
+`cargo build` clean. `theme_check` 10 families × 2 modes × 20 vars + 7 aliases, 0
+failed — it now asserts through `theme::custom_property` rather than a substring test
+(which passed the light pass for a variable only the dark block declared), that every
+family declares both blocks with differing `--bg` *and* differing `--syntax-theme`,
+that every alias resolves, and that a flat pre-family palette reads identically in
+both schemes. `config_check` 34/34. `ui-check` 41/41 — pinned to
+`colorScheme: "dark"`, since Chromium defaults to light and `app.js` now reads that
+before first paint. `locate_check` unchanged (0 wrong with context).
+
+`perf-pass` after the revert: 195 metrics, **0 regressed**, 1 slower
+(`chromium.…highlightMode.renderer.composite_ms`, 2.74 → 3.31 ms — sub-4ms,
+Chromium-relative, inside that source's 27% noise floor). No Rust bench flagged. The
+58 improved rows are the stale baseline, not this work.
+
+The one honest oddity: `real.loop.debug-h10.repaints` came back 2 in both runs against
+4–5 historically, with `events_per_save` below 1 (the watcher coalescing saves). With
+n=2 the p50/p95 either side of it are close to meaningless and I could not attribute
+the drop to anything in this diff. Worth watching rather than explaining away.
+
+Deliberately measured and left alone: `--content-width` 820 → 700px makes the same 2MB
+document ~19% taller (`documentPx` +19%), which is why scroll raster falls 24–28% and
+composite rises under a millisecond. Consequence of the narrower reading measure, not
+a regression.
+
+Open, and now the top of `docs/todo.md`: **nobody has seen any of this in WKWebView.**
+`cargo tauri` is not installed here, so ten themes — including three whose whole point
+is a serif face — were authored and checked entirely through Chromium and the CSS. The
+`system` mode also rests on WKWebView's `prefers-color-scheme` tracking the effective
+NSApp appearance inside a Tauri window, which Chromium cannot confirm; the
+`tauri://theme-changed` listener is the fallback if it turns out not to.
+
 ## 2026-07-25 — Apache 2.0, and an app icon that isn't a blue square
 
 Short session: give the project a real licence, say so on the public page, and

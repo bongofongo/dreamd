@@ -1,0 +1,69 @@
+/* Letterpress — ink on cotton by day, ink on the plate at night.
+ *
+ * The high-contrast literary one: near-black on a cool near-white, tight
+ * tracking, justified with hyphenation, and a single press-red accent doing all
+ * the work. Charter was drawn by Matthew Carter to survive coarse output, which
+ * makes it hold up at small sizes on any display.
+ *
+ * This is the only theme that justifies. `hyphens: auto` needs the document
+ * language, which `index.html` declares as `lang="en"`; without hyphenation
+ * justified text opens rivers, so the two go together or neither does. */
+
+:root {
+  --font-body: Charter, "Bitstream Charter", "Sitka Text", Cambria, Georgia, serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --font-size: 17px;
+  --line-height: 1.65;
+  --content-width: 660px;
+  --ui-font-size: 14px;
+
+  --heading-weight: 700;
+  --heading-rule: none;
+  --letter-spacing: -0.006em;
+  --text-align: justify;
+  --hyphens: auto;
+}
+
+:root[data-mode="light"] {
+  --bg: #f4f4f1;
+  --sidebar-bg: #eaeae5;
+  --btn-bg: #e0e0d9;
+  --hover: #d5d5cc;
+  --border: #cfcfc6;
+
+  --text: #14140f;
+  --muted: #63635a;
+  --link: #1f4f8f;
+
+  --accent: #b3261e;
+  --accent-dim: #f2dcd9;
+
+  --hl: #ffe58a;
+  --stale: #b3261e;
+  --stale-bg: #f6dedc;
+  --stale-text: #ffffff;
+
+  --syntax-theme: "InspiredGitHub";
+}
+
+:root[data-mode="dark"] {
+  --bg: #17171a;
+  --sidebar-bg: #121214;
+  --btn-bg: #232327;
+  --hover: #2e2e33;
+  --border: #34343a;
+
+  --text: #ddd8cc;
+  --muted: #8b8880;
+  --link: #8fb3e0;
+
+  --accent: #e05a4e;
+  --accent-dim: #3a201d;
+
+  --hl: #ffd866;
+  --stale: #e05a4e;
+  --stale-bg: #3a1c1a;
+  --stale-text: #1a1a1a;
+
+  --syntax-theme: "base16-ocean.dark";
+}

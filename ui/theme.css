@@ -1,32 +1,60 @@
 /* dreamd base reading stylesheet — the rules, not the palette.
  *
- * The palette (`:root { --bg: … }`) lives in `ui/themes/<name>.css` and is
- * appended after this file, so a theme is just a variable block. Pick one with
- * `theme = "gruvbox-dark"` in config.toml, or in the settings panel.
+ * The palette lives in `ui/themes/<name>.css` and is appended after this file,
+ * so a theme is just variable blocks. Pick one with `theme = "gruvbox"` in
+ * config.toml, or in the settings panel.
+ *
+ * A palette is a *family*: a bare `:root` of shared type metrics plus a
+ * `:root[data-mode="light"]` and a `:root[data-mode="dark"]` block. The
+ * frontend sets `data-mode` on `<html>`, so switching appearance is one
+ * attribute rather than a re-fetch. A palette with no mode blocks — anything
+ * written before families existed — still works and reads the same either way.
  *
  * Setting `theme_css = "/path/to/your.css"` instead replaces this file entirely
  * — full control, no palette appended.
  *
  * Both paths are hot-reloaded: save and the app restyles without a restart.
- * Code-block colours come from syntect on the Rust side; the palette picks the
- * syntect theme with `--syntax-theme`. */
+ * Code-block *token* colours come from syntect on the Rust side; the palette
+ * picks the syntect theme per mode with `--syntax-theme`.
+ *
+ * Variables below fall into two groups. The palette must declare the ones with
+ * no fallback here (`theme_check` enforces all twenty). The ones written
+ * `var(--x, <default>)` are optional: they let a theme change shape rather than
+ * only colour, and a palette that ignores them looks exactly as it did. */
+
+/* Native scrollbars, form controls and the webview's own canvas, so they don't
+ * stay dark under a light palette. Chrome business, not the palette's — a user
+ * theme that forgot to declare it would otherwise get mismatched scrollbars. */
+:root[data-mode="light"] { color-scheme: light; }
+:root[data-mode="dark"] { color-scheme: dark; }
 
 body { background: var(--bg); color: var(--text); }
 
 #content {
   font: var(--font-size, 16px)/var(--line-height, 1.7)
         var(--font-body, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif);
+  letter-spacing: var(--letter-spacing, normal);
 }
 
 #content h1, #content h2, #content h3, #content h4 {
   line-height: 1.25;
   margin: 1.6em 0 0.6em;
-  font-weight: 650;
+  font-family: var(--font-heading, var(--font-body, inherit));
+  font-weight: var(--heading-weight, 650);
 }
-#content h1 { font-size: 1.9em; border-bottom: 1px solid var(--border); padding-bottom: 0.3em; }
-#content h2 { font-size: 1.5em; border-bottom: 1px solid var(--border); padding-bottom: 0.25em; }
+/* A rule under every h1 and h2 makes a document look like documentation. The
+ * reading themes set `--heading-rule: none`. */
+#content h1 { font-size: 1.9em; border-bottom: var(--heading-rule, 1px solid var(--border)); padding-bottom: 0.3em; }
+#content h2 { font-size: 1.5em; border-bottom: var(--heading-rule, 1px solid var(--border)); padding-bottom: 0.25em; }
 #content h3 { font-size: 1.25em; }
-#content p { margin: 0.8em 0; }
+#content p {
+  margin: var(--para-spacing, 0.8em) 0;
+  /* Justification without hyphenation opens rivers, so a theme that wants one
+   * has to ask for both. `hyphens: auto` reads the document language, which
+   * index.html declares. */
+  text-align: var(--text-align, left);
+  hyphens: var(--hyphens, manual);
+}
 #content a { color: var(--link); text-decoration: none; }
 #content a:hover { text-decoration: underline; }
 
@@ -41,9 +69,24 @@ body { background: var(--bg); color: var(--text); }
   border-radius: 8px;
   padding: 14px 16px;
   overflow-x: auto;
+  /* `pre` inherits `--font-body`, which is a serif in the reading themes. The
+   * inner `code` covers fenced blocks; a bare `pre` had nothing. */
+  font-family: var(--font-mono, ui-monospace, "SF Mono", Menlo, Consolas, monospace);
   font-size: 0.9em;
   line-height: 1.5;
   border: 1px solid var(--border);
+  /* The slab is the palette's, not syntect's. syntect ships seven themes and
+   * none is warm paper, so a sepia theme gets a cream or white block dropped
+   * into the middle of it; `--syntax-theme` then only has to get the *token*
+   * colours' polarity right.
+   *
+   * `!important` because syntect writes the background as an *inline style* on
+   * the `<pre>`, which no ordinary rule can outrank. Stripping it in Rust
+   * instead was measurably worse: adding the function to `markdown.rs` cost
+   * ~11% on `render/prose` — a document with no code blocks at all, so pure
+   * codegen layout, reproduced against a pre-change worktree. A theme that
+   * wants syntect's own slab back sets `--code-bg: transparent`. */
+  background: var(--code-bg, var(--btn-bg)) !important;
 }
 #content pre code { background: none; padding: 0; }
 
