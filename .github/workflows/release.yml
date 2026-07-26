@@ -142,12 +142,11 @@ jobs:
           draft: true
           generate_release_notes: true
 
-  # Gated off while releases are unsigned: Homebrew quarantines cask artifacts
-  # deliberately, so an unsigned .app installed this way opens as "dreamd is
-  # damaged" — which reads as a broken release, not as a signing policy. Curl is
-  # the only supported channel until there is a Developer ID certificate.
+  # Gated on the PUBLISH_CASK repo variable, which is now true — an unsigned
+  # artifact reaching users through the cask opens as "dreamd is damaged", so
+  # this stays off whenever signing is off:
   #
-  #   gh variable set PUBLISH_CASK --body true     # re-arm, once signing is on
+  #   gh variable set PUBLISH_CASK --body false    # disarm, if signing goes off
   #
   # Runs on publish, not on the draft, so the cask can only ever point at a
   # release a human has looked at.
@@ -159,7 +158,9 @@ jobs:
     if: >-
       github.event_name == 'release' && !github.event.release.prerelease
       && vars.PUBLISH_CASK == 'true'
-    runs-on: ubuntu-latest
+    # macOS, not ubuntu: `brew audit --cask` is a macOS-only command, and this
+    # job spends most of its time waiting on a download either way.
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
         with:
@@ -203,11 +204,19 @@ jobs:
 
       - name: Audit
         run: |
-          cd tap
-          brew style --fix Casks/dreamd.rb
+          set -euo pipefail
+          # `brew audit <path>` is disabled from Homebrew 6 ("Use brew audit
+          # [name ...] instead"), and auditing by name means the cask has to be
+          # reachable as a tap rather than as a loose file. Symlink the checkout
+          # into place; brew style --fix then edits the real file, which is what
+          # gets committed below.
+          TAPDIR="$(brew --repository)/Library/Taps/bongofongo/homebrew-tap"
+          mkdir -p "$(dirname "$TAPDIR")"
+          ln -s "$PWD/tap" "$TAPDIR"
+          brew style --fix "$TAPDIR/Casks/dreamd.rb"
           # --online is the one that catches a dead download URL, which is the
           # failure mode that actually reaches users.
-          brew audit --cask --online Casks/dreamd.rb
+          brew audit --cask --online bongofongo/tap/dreamd
 
       - name: Commit
         env:

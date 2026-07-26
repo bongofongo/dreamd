@@ -1,6 +1,10 @@
 # Homebrew cask for dreamd. The source of truth lives HERE, in the dreamd repo;
 # bongofongo/homebrew-tap/Casks/dreamd.rb is generated from it by the `tap` job
-# in .github/workflows/release.yml, which substitutes the three @@ tokens below.
+# in .github/workflows/release.yml, which substitutes the three tokens below.
+#
+# Keep this file in the shape `brew style` wants. The tap job runs
+# `brew style --fix` before committing, so any deviation is silently rewritten
+# there and the generated cask stops matching this template.
 #
 #   brew install --cask bongofongo/tap/dreamd
 cask "dreamd" do
@@ -10,14 +14,12 @@ cask "dreamd" do
   arch arm: "aarch64-apple-darwin", intel: "x86_64-apple-darwin"
 
   version "@@VERSION@@"
-
-  on_arm   { sha256 "@@SHA_ARM@@"   }
-  on_intel { sha256 "@@SHA_INTEL@@" }
+  sha256 arm:   "@@SHA_ARM@@",
+         intel: "@@SHA_INTEL@@"
 
   url "https://github.com/bongofongo/dreamd/releases/download/v#{version}/dreamd-#{version}-#{arch}.zip",
       # Required by `brew audit`: the url host differs from the homepage host.
       verified: "github.com/bongofongo/dreamd/"
-
   name "dreamd"
   desc "GUI markdown reader with a highlight-to-agent loop"
   homepage "https://fongo.uk/dreamd"
@@ -28,7 +30,9 @@ cask "dreamd" do
   end
 
   # Must equal bundle.macOS.minimumSystemVersion in src-tauri/tauri.conf.json.
-  depends_on macos: ">= :catalina"
+  # The bare symbol is ">= that version", not "exactly": brew resolves it to
+  # "Required: macOS >= 10.15". `brew style` rewrites ">= :catalina" to this.
+  depends_on macos: :catalina
 
   app "dreamd.app"
   # The CLI is the same executable the window runs — one binary, so the command
