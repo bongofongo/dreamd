@@ -227,6 +227,26 @@ causes were wrong.
 
 ## Recent updates
 
+- **2026-07-26 (later the same day)** — **dreamd 0.1.0 is out, and you can install it
+  with Homebrew.** The certificate described in the entry below was bought and set up,
+  which reverses that decision entirely: releases are now *signed* (stamped with an
+  identity Apple has verified) and *notarised* (uploaded to Apple, scanned, and given a
+  receipt that is attached to the app). That receipt is what stops macOS calling the app
+  "damaged", so all three ways of getting it now work — `brew install --cask
+  bongofongo/tap/dreamd`, a download button on the site, or the original terminal line
+  for people who don't use Homebrew. Each build was checked by hand before release: the
+  app was marked as if a browser had downloaded it, and macOS was asked whether it would
+  open it. It said yes.
+  Three problems were caught on the way, all of them the kind that only show up the
+  first time something runs for real. A release that had been built *before* signing was
+  switched on was still sitting there waiting to be published — publishing it would have
+  sent every Homebrew user a copy macOS refuses to open, so it was thrown away and
+  rebuilt. And the step that publishes the Homebrew recipe turned out to have never been
+  able to work at all: it checked its own output for leftover placeholders using a rule
+  that also matched a comment explaining the placeholders, so it stopped itself every
+  time. Two further faults behind that one — it ran on the wrong operating system, and
+  used a command Homebrew has since removed. All fixed, though the fixes only get their
+  first real run at the next release.
 - **2026-07-26** — the first real release attempt failed, and the fix changed how
   dreamd is distributed. Apple lets you hand out a Mac app three ways, and two of them
   require a **certificate you rent from Apple for $99 a year**. Without it, macOS

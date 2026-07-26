@@ -1,5 +1,97 @@
 # Session log
 
+## 2026-07-26 — signing on, v0.1.0 shipped, and a tap job that had never worked
+
+Same day as the entry below, and the reversal of it: a Developer ID certificate now
+exists, so signing went on and dreamd 0.1.0 shipped signed, notarized and installable
+with `brew install --cask bongofongo/tap/dreamd`. Getting there meant catching an
+unsigned draft that was one click from being published, and finding that the `tap`
+job had been incapable of succeeding since the day it was written.
+
+### What happened
+
+1. **`packaging/SIGNING.md`** — a twelve-step runbook for turning signing on, written
+   before touching anything: export the `.p12`, base64 it without newlines, mint an
+   app-specific password, **validate locally before uploading**, upload from the same
+   shell, add the tap token, flip the switches, rehearse with `workflow_dispatch`,
+   verify the artifact under quarantine, tag, update the site, clean up. It carries a
+   failure table mapping every `check-signing.sh` error to its fix, plus rotation and
+   back-out sections. The ordering constraint that matters is step 5 before step 6:
+   `check-signing.sh` costs ten seconds, the matrix costs twenty minutes.
+2. **The secrets went in and the switches flipped** — six `APPLE_*` secrets plus
+   `TAP_GITHUB_TOKEN`, `PUBLISH_CASK=true`, `NO_SIGN` deleted. The `workflow_dispatch`
+   rehearsal passed: `verify` green, both arches signed and notarized, `release` and
+   `tap` correctly skipped.
+3. **Artifact verification, both arches.** Recorded vs actual sha256, full authority
+   chain to Apple Root CA, `flags=0x10000(runtime)`, secure timestamp, stapled ticket,
+   and the one that matters — `xattr -w com.apple.quarantine` then `spctl`, which
+   returned `accepted, source=Notarized Developer ID`. The quarantined binary also
+   ran: `dreamd --version` and `dreamd theme list` both work from a quarantined
+   bundle, which is the cask's `binary` stanza proven end to end.
+4. **The existing `v0.1.0` draft was unsigned.** Built at `a972d9b`, one commit
+   before signing went on: `Signature=adhoc`, `TeamIdentifier=not set`, no stapled
+   ticket, `spctl` refusing it. With `PUBLISH_CASK` now true, publishing that draft
+   would have pushed a cask pointing at ad-hoc artifacts — "dreamd is damaged" for
+   every Homebrew user. Deleted the draft and the tag, re-tagged `v0.1.0` at the
+   signed commit. The version number was unspent, so nothing user-visible was
+   rewritten.
+5. **Three faults in the `tap` job, none of which had ever run** (`bc4e2a8`,
+   `bd157c4`):
+   - `grep -q '@@'` matched `cask.rb.tmpl`'s own header comment — *"substitutes the
+     three @@ tokens below"*. `sed` never touches a comment, so the guard fired on
+     every render. It had a 100% failure rate from the day it was written; v0.1.0 is
+     simply the first release that got far enough to reach it.
+   - `brew audit <path>` is disabled from Homebrew 6 ("Use `brew audit [name ...]`
+     instead"), and auditing by name needs the cask reachable as a tap — so the job
+     now symlinks the checkout into `Library/Taps` first.
+   - `brew audit --cask` is macOS-only and the job ran on `ubuntu-latest`. Moved to
+     `macos-latest`.
+   Separately, `brew style --fix` rewrites `on_arm`/`on_intel` into
+   `sha256 arm:, intel:` and `">= :catalina"` into `:catalina`, so the committed cask
+   could never have matched its template. `cask.rb.tmpl` is now written in the shape
+   brew wants and renders byte-identical to what gets committed — verified against
+   Homebrew 6.0.12: `no offenses detected`, `audit --online` exit 0.
+6. **`git push -u origin HEAD` in the tap job** (`ba634a9`) — the tap repo was empty,
+   so the first bump would have committed onto an unborn branch and aborted on a bare
+   push, at the very end, after publishing. Seeded the tap with a README as well, so
+   the already-tagged workflow could not hit it either.
+7. **The site now leads with Homebrew.** `BREW_CASK` in `consts.ts`, the brew line
+   first, curl demoted to a `without Homebrew` fallback under a new quieter `.alt`
+   eyebrow, and the download button finally pointed at `RELEASES_URL`. The
+   "Homebrew follows once there is a signature to check" sentence is gone. Built
+   clean: HTML 4.92 KB gzip, CSS 2.03 KB, JS still 0.
+
+### Mistakes & deviations
+
+- **The release.yml header contradicted itself.** `NO_SIGN` was deleted when signing
+  went on, but the paragraph above it still explained curl-only distribution, with
+  `# SIGNING IS ON` appended to the end. Rewritten in `f57273b` to say what the
+  *absence* of the key means, and not to reintroduce it to get past a red build.
+- **Assumed a fix on `main` would reach the failing job.** It does not: a `release`
+  event runs the workflow *from the tag*, and `v0.1.0` points at `f57273b`, which
+  predates all three tap fixes. Re-running would have replayed every bug. The cask
+  for 0.1.0 was therefore rendered and committed by hand after local `brew style` and
+  `brew audit --online` both passed; the fixed job gets its first real exercise on the
+  next release.
+- **Nearly recommended re-running the release workflow afterwards.** It would have
+  rebuilt with a fresh notarization ticket and timestamp, changing the zip bytes and
+  therefore the sha256, while the published cask still carried the old ones — turning
+  a working install into a checksum mismatch for everyone. Stopped at the question.
+- The environment's classifier blocked writing to the tap repo, so both tap commits
+  were handed over as commands rather than run here.
+
+### State
+
+`v0.1.0` published, both arches notarized and stapled, asset sha `2dafe5c8…` matching
+the cask in `bongofongo/homebrew-tap`. `brew install --cask bongofongo/tap/dreamd`
+confirmed working by the user. No Rust changed this session, so no `cargo build` gate
+and no perf tier — the commits are CI, packaging, docs and site only.
+
+Open: the site build is verified but **not deployed** (`npm run deploy` is manual and
+publishes live). The `macos-latest` + symlink-audit path in the `tap` job is verified
+locally against Homebrew 6.0.12 but has not yet run in CI; the next release is its
+first real test.
+
 ## 2026-07-26 — the first release failed on signing; ship curl-only instead
 
 The first tagged release died in the bundler with `SecKeychainItemImport: One or more
