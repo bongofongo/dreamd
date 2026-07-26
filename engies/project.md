@@ -2,7 +2,7 @@
 
 *This page is the daily landing spot for everyone on the team. It's kept up to date
 automatically and written so that you can be away for a week, read this in five
-minutes, and know exactly where things stand. Last updated: 2026-07-25.*
+minutes, and know exactly where things stand. Last updated: 2026-07-26.*
 
 ## What we're building
 
@@ -227,6 +227,17 @@ causes were wrong.
 
 ## Recent updates
 
+- **2026-07-26** — Fixed the public site's wordmark link. Clicking the "dreamd"
+  wordmark at the top of the page is supposed to scroll you back to the very top;
+  instead it moved you up only about 74 pixels and stopped. The reason: the section
+  it scrolls to is a `position: sticky` element (one that pins itself to the top of
+  the screen while you scroll past it), and the browser's built-in "scroll to this
+  element" behaviour considers a sticky element already at the top the moment any
+  part of it is in view — so it barely moved you. The page's scroll script now
+  catches clicks on that link itself and scrolls the window to the very top
+  directly, bypassing the browser's shortcut. This bug had been found and written
+  up as a known, open issue the day before (see the entry below); today's change
+  closes it.
 - **2026-07-25** — dreamd became something you can install rather than something you
   have to build. Until now, using it meant cloning the repository and compiling it
   yourself, which rules out anyone who doesn't already have a Rust toolchain. There is
@@ -385,41 +396,11 @@ causes were wrong.
   what "dreamd" means. Pictures, video,
   or a gallery tab can be added later without rearranging anything.
 
-- **2026-07-24** — A cleanup pass over the Rust code: about thirty lines removed by
-  deleting things that had been written twice (two copies of the folder scanner,
-  three copies of the "is this a markdown file?" check, two copies of the
-  stack-assembly code). Nothing about the app behaves differently — this was
-  checked by rendering real documents through both the old and new code and
-  confirming the output matched byte for byte. Two side effects worth knowing: the
-  file palette got roughly 20% faster, and a lurking bug was removed where two
-  files with the same path relative to the repo root could make one of them
-  unreachable from search.
-
-- **2026-07-24** — Built a performance measurement setup with three depths (about
-  one minute, five minutes, fifteen minutes) so speed can be checked at a cost that
-  matches the size of the change. It explained both slowdowns we'd been feeling —
-  saves are noticed more than once and re-check every highlight from scratch;
-  opening a large file is dominated by converting it to HTML, not by scanning the
-  folder as we'd assumed. It also surfaced a bug: highlights spanning bold, links
-  or code usually fail to reattach and are wrongly marked stale. No fixes yet —
-  this round was about being able to prove them, and two of our guesses about the
-  causes turned out to be wrong.
-
-- **2026-07-24** — Hovering any icon-only button now pops up its name and keybind,
-  so the toolbar is learnable without reading the docs. The keybind shown is read
-  from your live keymap, so a custom binding displays correctly.
-- **2026-07-24** — Added the `engies/` docs directory (this file), a `/wrap-up`
-  skill that commits a session and logs it to `docs/session-log.md`, and a
-  `/update-project-doc` skill plus a daily scheduled job that keeps this page
-  current.
-- **2026-07-24** — **v1 shipped.** Empty scaffold → working app in one session:
-  backend modules (`fs_walk`, `markdown`, `annotations`, `search`, `send`,
-  `watcher`, `config`), the full frontend, then a round of UI iteration (scrolling
-  fix, highlight mode, collapsible panes, overlay titlebar, per-file menu, vim
-  keybinds, nvim-style CLI). Security pass closed a raw-HTML XSS hole and
-  restricted external-link opening to `http`/`https`/`mailto`. Full detail in
-  `docs/session-log.md`.
-- **2026-07-24** — Plan review reworked the original design: annotations were
-  promoted from v2 to v1 core, and the send path was redesigned around a temp file
-  instead of shell interpolation.
-- **(earlier)** — Repo created with the scaffold and `docs/plan.md`.
+- **(earlier)** — A Rust cleanup pass (-30 duplicated lines, +20% faster file
+  palette); the three-tier perf measurement setup built and its first pass run
+  (53 metrics improved, none regressed); icon-button tooltips; the `engies/`
+  docs directory and its wrap-up/update-project-doc skills; **v1 shipped** —
+  empty scaffold to a working app in one session, with the highlight →
+  annotation → stack → send loop, an XSS fix, and a security-restricted
+  external-link policy; the original plan review that promoted annotations to
+  v1 core; repo created with `docs/plan.md`.
