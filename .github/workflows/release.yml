@@ -216,4 +216,8 @@ jobs:
           git add Casks/dreamd.rb
           git diff --staged --quiet && { echo "cask unchanged"; exit 0; }
           git commit -m "dreamd ${TAG#v}"
-          git push
+          # -u origin HEAD, not a bare `git push`: the tap starts life as an
+          # empty repository, so the first bump commits onto an unborn branch
+          # with no upstream and a bare push aborts with "no upstream branch"
+          # — after notarizing, publishing, and rendering the cask.
+          git push -u origin HEAD
