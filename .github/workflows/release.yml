@@ -31,12 +31,7 @@ permissions:
 # quarantine — a browser download, and `brew install --cask` — are exactly the
 # two that are paused. See packaging/install.sh's header.
 #
-# Deleting this one key turns signing back on everywhere: the preflight in
-# `verify` starts asserting the six APPLE_* secrets, and build.sh drops
-# --no-sign and resumes notarizing and stapling.
-env:
-  NO_SIGN: "1"
-
+# SIGNING IS ON (TURN OFF BY SETTING ENV VAR NO_SIGN: "1")
 jobs:
   # ~15 seconds, and it gates a ~20-minute matrix. CI asserts the version rather
   # than rewriting it: a tag should describe a commit, not change it.

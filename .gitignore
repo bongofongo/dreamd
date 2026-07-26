@@ -9,5 +9,4 @@
 /perf/harness/node_modules
 *.trace
 *.svg
-
-prompt.md
+token_expiry.md

@@ -61,16 +61,21 @@ inside the script, never from the CI matrix: a Linux target is one matrix entry
 plus one `case` arm. Tag `v*` → draft release; **publishing** it bumps the
 Homebrew cask from `packaging/cask.rb.tmpl`.
 
-**Releases are currently unsigned and curl-only.** `NO_SIGN: "1"` at the top of
-`release.yml` is the whole switch: it makes `check-signing.sh` stand down and
-`build.sh` pass `--no-sign`. The `tap` job is additionally gated on a
-`PUBLISH_CASK` repo variable that is not set. This is coherent, not a stopgap —
-`com.apple.quarantine` is written by the downloading application, curl never
-writes it, so `packaging/install.sh` installs an unsigned app that Gatekeeper
-never inspects. Homebrew and browser downloads *do* quarantine, which is why
-those two are the ones paused. Undoing it: get a Developer ID Application
-certificate, fill the six `APPLE_*` secrets, delete the `NO_SIGN` key, then
-`gh variable set PUBLISH_CASK --body true`.
+**Releases are signed and notarized.** Turned on 2026-07-26; `packaging/SIGNING.md`
+is the runbook, including rotation and back-out. The identity is
+`Developer ID Application: OLIVER ONSTOTT FONG (34VGHNCG6J)`, the six `APPLE_*`
+secrets are set, and `PUBLISH_CASK` is `true`, so `brew install --cask` and
+browser downloads are both live channels again — `com.apple.quarantine` is written
+by the downloading application, and a notarized, stapled `.app` passes Gatekeeper
+when it is. (curl never writes the flag, which is why the curl channel worked
+throughout.)
+
+`NO_SIGN` is the one switch that turns it all off — set it in `release.yml`'s `env`
+and `check-signing.sh` stands down while `build.sh` passes `--no-sign`. It is
+absent on purpose; don't reintroduce it to work around a signing failure, because
+an unsigned artifact served through the cask opens as "dreamd is damaged". Run
+`packaging/check-signing.sh` against the secrets instead — it names the wrong one
+in ten seconds rather than twenty minutes into the matrix.
 
 Four things that will bite:
 

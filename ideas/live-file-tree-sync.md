@@ -1,5 +1,8 @@
 # Auto-update on .md add/edit/remove
 
+## ADDENDUM
+Not sure why it wasn't working before, but as of right now it seems to be working.
+
 Have the app stay live as `.md` files are added, edited, or removed under the
 app root, without a restart.
 

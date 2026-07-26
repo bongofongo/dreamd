@@ -182,16 +182,19 @@ so unlike the app's perf numbers these results are the real thing, not a proxy.
   gets committed and a fresh clone cannot rebuild the site. It is also the source of
   truth for the *app's* icon set (`cargo tauri icon` reads it), so that negation is
   load-bearing well outside this directory.
-- **There is no download button, and the Homebrew line is gone — on purpose.**
-  Releases are unsigned while there is no Developer ID certificate (see the root
-  `CLAUDE.md`), and both of those channels hand the user a quarantined artifact that
-  opens as "dreamd is damaged". `curl … | sh` does not, because curl never writes
-  `com.apple.quarantine`. So the install section offers exactly one command and says
-  why. `RELEASES_URL` is still exported from `consts.ts`, unused, for when signing
-  returns; if you restore a button it points at `/releases/latest` rather than a
-  pinned asset, because this site deploys by a manual `npm run deploy` independent of
-  the release workflow and a pinned href would 404 between tag and deploy. `VERSION`
-  appears as prose only, where being stale is harmless.
+- **The install section is stale, and is the next thing to change here.** It offers
+  curl only, and says "Homebrew follows once there is a signature to check" — but
+  signing was turned on in the app repo on 2026-07-26 (root `CLAUDE.md`, and
+  `packaging/SIGNING.md` for the runbook). Once a signed release is actually
+  published, restore the `brew install --cask bongofongo/tap/dreamd` line and drop
+  that sentence. Until then the copy is merely early, not wrong: nothing quarantining
+  should be advertised before there is a notarized artifact behind it, or the user
+  gets "dreamd is damaged".
+  A download button, if you add one, points at `RELEASES_URL` (already exported from
+  `consts.ts`, unused, for exactly this) — `/releases/latest`, never a pinned asset,
+  because this site deploys by a manual `npm run deploy` independent of the release
+  workflow and a pinned href would 404 between tag and deploy. `VERSION` appears as
+  prose only, where being stale is harmless.
 - **`install.sh` is deliberately *not* served from `public/`,** even though it would
   work (`html_handling: drop-trailing-slash` only affects HTML, and curl ignores
   content-type) and `fongo.uk/dreamd/install.sh` would be the nicer URL. It would
