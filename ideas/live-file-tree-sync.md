@@ -27,3 +27,27 @@ the open document if it's the current file, `file-added`/`file-removed` call
   building is deferred for a single-file launch, the watcher/tree-rebuild path
   needs to still wake up correctly the first time a tree gets requested, not
   assume it was built at startup.
+
+## Decision: don't trust it, verify it
+
+You suspect the watcher isn't actually doing its job right. Two concrete
+next steps, before any new feature work here:
+
+- **Tests.** The repo has no `#[cfg(test)]` unit tests by convention —
+  `cargo test` compiles and reports nothing; correctness today comes from
+  running the app, the benches, and the two example harnesses
+  (`locate_check`, `config_check`, `theme_check`). A watcher test likely
+  wants to join that family: a new `cargo run --example watcher_check`
+  that drives `watcher.rs`'s `absorb`/`pump`/`emit` logic against a scratch
+  directory with synthetic create/modify/remove sequences and asserts the
+  right event comes out — including the tricky case the code already calls
+  out in comments (a remove-then-create in one debounce window, from an
+  editor that saves via temp-file-and-rename, should still net out to
+  `file-changed`, not `file-removed`).
+- **User testing.** Manually exercise the real dev loop before trusting any
+  of this: `nvim :w`, a `git checkout` that touches several files at once,
+  and whatever editor/save pattern you actually use day to day. The
+  watcher's own comments flag both macOS FSEvents firing ~1.6 events per
+  save and `git checkout` firing one event per changed file as the cases
+  the debounce exists for — worth confirming those are actually collapsed
+  correctly rather than assuming the debounce constant is right.

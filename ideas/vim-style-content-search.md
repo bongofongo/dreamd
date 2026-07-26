@@ -20,12 +20,31 @@ overlay — a different pattern from a bottom-docked search bar.
 - A regex toggle — literal substring by default, opt into JS `RegExp` (with a
   try/catch so an invalid pattern doesn't throw mid-keystroke).
 
-## Open question
+## Decision: raw source — and what that costs
 
-Search the **rendered** text or the **raw source**? Rendered is what's on
-screen and mirrors the existing precedent in highlight anchoring — quotes
-are always matched against rendered DOM text, never raw source (per
-`CLAUDE.md`'s anchoring section) — but raw source is likely what a
-regex-minded user expects for structural queries (matching across markdown
-syntax, etc). Worth settling before writing code, since it changes where the
-search runs (DOM walk vs. the source string already held for anchoring).
+Going with raw source, for speed: the source string is already resident
+(it's what `locate`/anchoring reads anyway), so searching it avoids a DOM
+walk/serialization on every keystroke. That's real, but it's not free:
+
+- **It doesn't avoid the anchoring problem, it just moves it.** A match
+  found in raw source still has to be mapped onto the rendered DOM to
+  highlight it and scroll to it — the exact problem `markdown::locate`
+  exists to solve for saved highlights, now needed *per search match* on
+  every keystroke instead of once per highlight. This is the main hidden
+  cost of the speed win.
+- **Syntax noise.** Markdown source contains characters invisible in the
+  rendered view — a link's raw `[text](url)`, HTML comments, code-fence
+  markers, frontmatter. A literal/regex match against source can surface a
+  "match" that doesn't correspond to anything the reader can actually see
+  on screen, or land at a source offset that doesn't map cleanly to a
+  rendered position.
+- **The sneaky opposite failure: missed matches.** Text split by inline
+  markup — `te**s**t` — reads as "test" once rendered, but as raw source
+  it's literally `te**s**t`. A literal or regex search for "test" against
+  source would miss it entirely, even though it's sitting right there on
+  screen. Rendered-text search wouldn't have this blind spot; raw-source
+  search does.
+
+Net: raw source for the speed, accept the DOM-mapping work as real (not
+skipped) work, and treat the emphasis-splitting blind spot as a known
+limitation to revisit if it turns out to bite in practice.

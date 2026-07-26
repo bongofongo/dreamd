@@ -20,13 +20,10 @@ today: sidebar via `nav-collapsed`, `#stack-panel` via its own `open` class,
   automatically on any chrome-requiring action (opening the palette, stack,
   etc.) — plain toggle is simpler and more predictable.
 
-## Relationship to the Mac title-bar work
+## Decision: keep it simple for now
 
-`docs/todo2.md` already has a Mac-only idea to hide the title bar + traffic
-lights as a packaged toggle. Worth deciding up front whether "view mode" here
-*is* that toggle (cross-platform, content-only, no window-chrome API calls),
-or a separate, simpler mode both platforms get immediately, with the Mac
-window-chrome piece layered on later as its own thing. Leaning toward: build
-this one first as pure CSS/keybind (cheap, ships on both platforms today),
-let the Mac-specific window-transparency work extend it later rather than
-gating on it.
+Confirmed — this is its own simple, cross-platform mode: a plain
+`body.view-mode` CSS toggle via keybind, no window-chrome API calls, no
+dependency on the Mac title-bar/traffic-light work in `docs/todo2.md`. That
+Mac-specific piece can extend or reuse this later, but isn't a prerequisite
+and shouldn't gate this from shipping now.

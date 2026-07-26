@@ -18,11 +18,15 @@ Buttons are minimal today: a plain `<button>remove</button>` with an inline
 classes already defined in `ui/index.html` (`button.icon`, `button.danger`).
 Easy first win independent of the animation work.
 
-## Open question
+## Decisions
 
-What should "pop" look like given removal isn't always from the top of the
-list (per your note — just borrowing the motion, not the literal mechanic)?
-Options: the removed card slides out sideways and the rest resettle, a fade
-+ collapse in place, or a snap-toward-the-panel-edge motion regardless of
-list position. Worth picking one metaphor and applying it consistently
-rather than literally simulating a LIFO stack visually.
+- **Motion: snap.** Push snaps a new card in; pop snaps the removed card out
+  — toward the panel edge, not a slide-and-resettle or fade. Applies
+  regardless of the item's position in the list (removal isn't literally
+  always top-of-stack, per the original note — the snap is borrowed motion
+  language, not a literal LIFO animation).
+- **Architecture change confirmed.** `refreshStack()`'s full teardown/rebuild
+  has to go before the animation can exist at all — diff against the
+  previous list, mount/unmount only the item(s) that actually changed, and
+  give each rendered card a stable identity (the highlight `id` already on
+  each pair) to animate against.
