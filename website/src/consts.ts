@@ -8,6 +8,9 @@ export const VERSION = "0.1.0";
 export const RELEASES_URL = `${REPO_URL}/releases/latest`;
 export const INSTALL_URL =
   "https://raw.githubusercontent.com/bongofongo/dreamd/main/packaging/install.sh";
+// The cask lives in ../packaging/cask.rb.tmpl and is published to the tap by the
+// release workflow. Keep this token identical to the one in that file's header.
+export const BREW_CASK = "bongofongo/tap/dreamd";
 
 export const TAGLINE = "Read your repo like a book. Then ask it questions.";
 export const SUBLINE =

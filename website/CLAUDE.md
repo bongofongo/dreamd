@@ -128,9 +128,9 @@ Not enforced by a harness here — there is no test suite and no perf gate in th
 directory. They are design rules, because paper_web's `perf/budgets.json` is what
 "in line with the family" means: HTML ≤ 15 KB gzip, CSS ≤ 5 KB, JS ≤ 5 KB.
 
-Current, measured: HTML **4.68 KB** gzip, CSS **2.07 KB** (index; the 404's own chunk is
-1.86 KB), JS **0**, fonts 2 woff2 (32 KB). Plenty of headroom; don't spend it on a
-framework.
+Current, measured (2026-07-26): HTML **4.91 KB** gzip, CSS **3.89 KB** on the index —
+a 2.03 KB shared chunk, which is all the 404 loads, plus a 1.87 KB page chunk — JS
+**0**, fonts 2 woff2 (32 KB). Plenty of headroom; don't spend it on a framework.
 
 Accessibility floor: WCAG AA (`--text` on `--bg` ≈ 10:1, `--muted` ≈ 5.2:1 — both
 pass), a visible focus ring on every interactive element, `aria-hidden` on decorative
@@ -182,19 +182,20 @@ so unlike the app's perf numbers these results are the real thing, not a proxy.
   gets committed and a fresh clone cannot rebuild the site. It is also the source of
   truth for the *app's* icon set (`cargo tauri icon` reads it), so that negation is
   load-bearing well outside this directory.
-- **The install section is stale, and is the next thing to change here.** It offers
-  curl only, and says "Homebrew follows once there is a signature to check" — but
-  signing was turned on in the app repo on 2026-07-26 (root `CLAUDE.md`, and
-  `packaging/SIGNING.md` for the runbook). Once a signed release is actually
-  published, restore the `brew install --cask bongofongo/tap/dreamd` line and drop
-  that sentence. Until then the copy is merely early, not wrong: nothing quarantining
-  should be advertised before there is a notarized artifact behind it, or the user
-  gets "dreamd is damaged".
-  A download button, if you add one, points at `RELEASES_URL` (already exported from
-  `consts.ts`, unused, for exactly this) — `/releases/latest`, never a pinned asset,
-  because this site deploys by a manual `npm run deploy` independent of the release
-  workflow and a pinned href would 404 between tag and deploy. `VERSION` appears as
-  prose only, where being stale is harmless.
+- **The install section leads with Homebrew, and that is a promise about the release
+  pipeline.** Signing and notarization were turned on in the app repo on 2026-07-26
+  (root `CLAUDE.md`; `packaging/SIGNING.md` is the runbook), which is what makes the
+  two quarantining channels — `brew install --cask` and a browser download —
+  advertisable at all. The cask token is `BREW_CASK` in `src/consts.ts` and must match
+  `packaging/cask.rb.tmpl`; the curl line stays below it as the no-Homebrew route, not
+  as the recommendation. **If a release ever ships with `NO_SIGN` set, or the `tap` job
+  does not run, this copy sends people to "dreamd is damaged"** — walk it back to curl
+  first, then debug the pipeline. The tap is populated by the `tap` job in
+  `release.yml`, gated on the `PUBLISH_CASK` repo variable.
+  The download button points at `RELEASES_URL` — `/releases/latest`, never a pinned
+  asset, because this site deploys by a manual `npm run deploy` independent of the
+  release workflow and a pinned href would 404 between tag and deploy. `VERSION`
+  appears as prose only, where being stale is harmless.
 - **`install.sh` is deliberately *not* served from `public/`,** even though it would
   work (`html_handling: drop-trailing-slash` only affects HTML, and curl ignores
   content-type) and `fongo.uk/dreamd/install.sh` would be the nicer URL. It would
