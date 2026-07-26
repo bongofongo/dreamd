@@ -3,6 +3,11 @@
 ## ADDENDUM
 Not sure why it wasn't working before, but as of right now it seems to be working.
 
+**2026-07-26: closed, no work needed.** Live file-tree sync works for the most
+part in day-to-day use — no big issue with it at the moment. Dropped from the
+overnight idea pass; the "don't trust it, verify it" section below is a
+someday-maybe, not a task.
+
 Have the app stay live as `.md` files are added, edited, or removed under the
 app root, without a restart.
 
