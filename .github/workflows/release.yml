@@ -23,15 +23,16 @@ on:
 permissions:
   contents: write
 
-# Curl-only distribution for now, so releases are UNSIGNED and not notarized.
+# Releases are signed and notarized. packaging/SIGNING.md is the runbook.
 #
-# That is a real choice, not a stopgap gone stale: com.apple.quarantine is set by
-# the downloading *application*, and curl does not set it, so an unsigned app
-# fetched by packaging/install.sh never meets Gatekeeper. The channels that do
-# quarantine — a browser download, and `brew install --cask` — are exactly the
-# two that are paused. See packaging/install.sh's header.
-#
-# SIGNING IS ON (TURN OFF BY SETTING ENV VAR NO_SIGN: "1")
+# There is no `env: NO_SIGN` key here, and that absence is the switch. Setting it
+# makes check-signing.sh stand down and build.sh pass --no-sign — right for a
+# local build, wrong for anything published: `brew install --cask` and a browser
+# download both write com.apple.quarantine, and an unsigned app that arrives
+# quarantined opens as "dreamd is damaged". (curl never writes the flag, which is
+# why the curl channel worked throughout the unsigned period.) So don't
+# reintroduce NO_SIGN to get past a red build — run packaging/check-signing.sh
+# against the secrets instead; it names the wrong one in ten seconds.
 jobs:
   # ~15 seconds, and it gates a ~20-minute matrix. CI asserts the version rather
   # than rewriting it: a tag should describe a commit, not change it.
