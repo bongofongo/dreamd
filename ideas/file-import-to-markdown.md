@@ -1,5 +1,10 @@
 # Import/convert another file type to markdown
 
+**Status: blocked, on hold.** The tenet-1 conflict below is real enough that
+this isn't worth designing further right now. Revisit once there's an
+explicit decision on how (or whether) to reconcile it — export-only work
+(`ideas/md-to-pdf-export.md`) is the current focus instead.
+
 A button to bring an easily-transferable file type in as markdown — the
 dictation trailed off before naming the specific source format(s), worth
 pinning down (plain `.txt`? `.docx`? `.rtf`? more than one?).
