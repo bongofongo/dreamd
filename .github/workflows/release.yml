@@ -194,7 +194,11 @@ jobs:
               -e "s|@@SHA_ARM@@|$SHA_ARM|" \
               -e "s|@@SHA_INTEL@@|$SHA_INTEL|" \
               dreamd/packaging/cask.rb.tmpl > tap/Casks/dreamd.rb
-          grep -q '@@' tap/Casks/dreamd.rb && { echo "unsubstituted token left in cask" >&2; exit 1; }
+          # Token-shaped, not a bare '@@': the template's own header comment says
+          # "the three @@ tokens below", sed never touches a comment, and a bare
+          # match therefore fired on every run. This guard failed 100% of the
+          # time from the day it was written until v0.1.0 was published.
+          grep -n '@@[A-Z_]\+@@' tap/Casks/dreamd.rb && { echo "unsubstituted token left in cask" >&2; exit 1; }
           cat tap/Casks/dreamd.rb
 
       - name: Audit
