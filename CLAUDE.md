@@ -48,6 +48,7 @@ harnesses above (each exits non-zero on failure); don't claim coverage beyond th
 ```sh
 packaging/set-version.sh 0.2.0       # Cargo.toml + website/src/consts.ts + Cargo.lock
 packaging/check-version.sh 0.2.0     # CI assertion; tag must match the tree
+packaging/check-signing.sh           # CI preflight; the six APPLE_* secrets, from env
 NO_SIGN=1 packaging/build.sh aarch64-apple-darwin   # full release artifact, local
 ```
 
@@ -59,6 +60,17 @@ is reproducible locally. Everything platform-specific is derived from the triple
 inside the script, never from the CI matrix: a Linux target is one matrix entry
 plus one `case` arm. Tag `v*` → draft release; **publishing** it bumps the
 Homebrew cask from `packaging/cask.rb.tmpl`.
+
+**Releases are currently unsigned and curl-only.** `NO_SIGN: "1"` at the top of
+`release.yml` is the whole switch: it makes `check-signing.sh` stand down and
+`build.sh` pass `--no-sign`. The `tap` job is additionally gated on a
+`PUBLISH_CASK` repo variable that is not set. This is coherent, not a stopgap —
+`com.apple.quarantine` is written by the downloading application, curl never
+writes it, so `packaging/install.sh` installs an unsigned app that Gatekeeper
+never inspects. Homebrew and browser downloads *do* quarantine, which is why
+those two are the ones paused. Undoing it: get a Developer ID Application
+certificate, fill the six `APPLE_*` secrets, delete the `NO_SIGN` key, then
+`gh variable set PUBLISH_CASK --body true`.
 
 Four things that will bite:
 

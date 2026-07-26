@@ -23,6 +23,20 @@ on:
 permissions:
   contents: write
 
+# Curl-only distribution for now, so releases are UNSIGNED and not notarized.
+#
+# That is a real choice, not a stopgap gone stale: com.apple.quarantine is set by
+# the downloading *application*, and curl does not set it, so an unsigned app
+# fetched by packaging/install.sh never meets Gatekeeper. The channels that do
+# quarantine — a browser download, and `brew install --cask` — are exactly the
+# two that are paused. See packaging/install.sh's header.
+#
+# Deleting this one key turns signing back on everywhere: the preflight in
+# `verify` starts asserting the six APPLE_* secrets, and build.sh drops
+# --no-sign and resumes notarizing and stapling.
+env:
+  NO_SIGN: "1"
+
 jobs:
   # ~15 seconds, and it gates a ~20-minute matrix. CI asserts the version rather
   # than rewriting it: a tag should describe a commit, not change it.
@@ -36,6 +50,21 @@ jobs:
         env:
           TAG: ${{ github.ref_name }}
         run: packaging/check-version.sh "${TAG#v}"
+
+      # The bundler's own diagnosis of a bad certificate secret is
+      # "SecKeychainItemImport: One or more parameters passed to a function were
+      # not valid" — raised after a full Rust build, on both runners at once, and
+      # naming none of the six secrets. Ten seconds here instead of forty
+      # minutes of runner time there.
+      - name: Signing secrets must be usable
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: packaging/check-signing.sh
 
   build:
     if: github.event_name != 'release'
@@ -109,6 +138,13 @@ jobs:
           draft: true
           generate_release_notes: true
 
+  # Gated off while releases are unsigned: Homebrew quarantines cask artifacts
+  # deliberately, so an unsigned .app installed this way opens as "dreamd is
+  # damaged" — which reads as a broken release, not as a signing policy. Curl is
+  # the only supported channel until there is a Developer ID certificate.
+  #
+  #   gh variable set PUBLISH_CASK --body true     # re-arm, once signing is on
+  #
   # Runs on publish, not on the draft, so the cask can only ever point at a
   # release a human has looked at.
   #
@@ -116,7 +152,9 @@ jobs:
   # Homebrew checkout and a fork, and opens a PR to yourself that will stop being
   # reviewed by the third release. Commit directly.
   tap:
-    if: github.event_name == 'release' && !github.event.release.prerelease
+    if: >-
+      github.event_name == 'release' && !github.event.release.prerelease
+      && vars.PUBLISH_CASK == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

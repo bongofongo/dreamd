@@ -227,6 +227,21 @@ causes were wrong.
 
 ## Recent updates
 
+- **2026-07-26** — the first real release attempt failed, and the fix changed how
+  dreamd is distributed. Apple lets you hand out a Mac app three ways, and two of them
+  require a **certificate you rent from Apple for $99 a year**. Without it, macOS
+  refuses to open the app and tells the user it is "damaged" — which looks like a
+  broken download, not a policy. The exception is the terminal: when you fetch
+  something with `curl`, macOS doesn't attach the flag that triggers that check at all.
+  So dreamd now ships **only** by pasting one line into a terminal. The Homebrew route
+  announced yesterday is switched off until there is a certificate to make it work
+  properly, and the website no longer offers a download button that would fail.
+  Nothing about the app itself changed — this is purely about how it reaches people.
+  Two supporting bits of work: a **pre-flight check** now inspects the signing
+  credentials in about ten seconds before a release starts, because the error Apple's
+  tools produce for a bad certificate names none of the six settings involved and only
+  appears twenty minutes in; and the whole arrangement is reversible by deleting a
+  single line, so buying the certificate later turns everything back on.
 - **2026-07-26** — Fixed the public site's wordmark link. Clicking the "dreamd"
   wordmark at the top of the page is supposed to scroll you back to the very top;
   instead it moved you up only about 74 pixels and stopped. The reason: the section

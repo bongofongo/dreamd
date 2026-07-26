@@ -1,5 +1,76 @@
 # Session log
 
+## 2026-07-26 — the first release failed on signing; ship curl-only instead
+
+The first tagged release died in the bundler with `SecKeychainItemImport: One or more
+parameters passed to a function were not valid`. Diagnosed it, built a preflight so it
+can never cost twenty minutes again, and then — on learning the account has no
+Developer ID certificate — narrowed distribution to the one channel that does not need
+one. Releases are now unsigned and curl-only, by decision rather than by omission.
+
+### What happened
+
+1. **The error, decoded.** The Tauri bundler base64-decodes `APPLE_CERTIFICATE` to a
+   temp file and runs `security import`. That message is `errSecParam`: the decoded
+   bytes are not a PKCS#12 bundle. It names none of the six `APPLE_*` secrets, and it
+   arrives *after* a full Rust build, on both matrix legs at once.
+2. **`packaging/check-signing.sh`** — a preflight that reads the same environment
+   `build.sh` does and says which secret is wrong. It separates the near-misses that
+   all produce the same upstream error: a `.cer` (public half, no private key) or a
+   PEM instead of a `.p12`, base64 with newlines (the bundler's decoder is strict),
+   a blank export password, a wrong export password, an `Apple Development`
+   certificate where Developer ID is required, `APPLE_SIGNING_IDENTITY` not matching
+   the certificate's CN, a team-id mismatch, an expired cert, and an account password
+   where an app-specific one belongs. Wired into the existing `verify` job, so it gates
+   the matrix for ~10s. Exercised against synthetic p12/cer fixtures — every branch
+   above was driven and produces the right message.
+3. **It immediately earned its keep.** The user's export was the `Apple Development`
+   identity; the script named it rather than letting the matrix rediscover it.
+4. **No Developer ID certificate exists** and enrolment is a $99/yr decision, so we
+   priced what signing actually buys. `com.apple.quarantine` is written by the
+   *downloading application*, not by the OS: curl never writes it, browsers and
+   `brew install --cask` both do. So `packaging/install.sh` can install an unsigned
+   app that Gatekeeper never inspects, while the other two channels hand the user
+   "dreamd is damaged".
+5. **Decision: curl-only for now.** `NO_SIGN: "1"` at workflow level in
+   `release.yml` is the entire switch — `check-signing.sh` stands down, `build.sh`
+   passes `--no-sign` and skips the codesign/spctl/stapler asserts. The `tap` job is
+   additionally gated on a `PUBLISH_CASK` repo variable that is not set. Zip artifacts
+   still ship: they are the transport `install.sh` fetches, not a browser download.
+6. **Site copy corrected.** `website/src/pages/index.astro` claimed "Signed and
+   notarised" and led with the Homebrew line — both would have been false the moment a
+   tag landed. Now one `curl` command, a note explaining why not to fetch the zip by
+   hand, and the download button removed. `RELEASES_URL` stays exported and unused for
+   when signing returns.
+7. Both `CLAUDE.md`s record the three steps that undo all of this: certificate, six
+   secrets, delete the `NO_SIGN` key, `gh variable set PUBLISH_CASK --body true`.
+
+### Mistakes & deviations
+
+- **Prompted for a passphrase mid-run.** The preflight passed the p12 password via
+  `-passin env:`, and openssl writes its prompt to `/dev/tty` — so a source it cannot
+  read becomes an interactive hang or a prompt scrolling past in a CI log, not an
+  error. Switched to a `0600` temp file plus `</dev/null` on both openssl calls: an
+  unreadable password now fails immediately with a message. Re-tested both ways.
+- **A test that proved nothing.** The "wrapped base64" case appeared to pass the
+  whitespace check. It wasn't a script bug — macOS `base64` emits a single line, so
+  the fixture had no newlines to catch. Re-ran through `fold -w 76` and the check
+  fired correctly. Worth remembering: GNU `base64` wraps, BSD does not.
+- No plan changed direction otherwise; the signing diagnosis was correct first time.
+
+### State
+
+Docs, CI config, one shell script, and site copy — nothing under `src-tauri/` or
+`ui/`, so no `cargo build` gate and no perf tier was run; the binary is untouched.
+`npm run build` in `website/` is clean and `RELEASES_URL`/`btn-quiet` have no dangling
+references. `check-signing.sh` was verified against generated certificates covering
+every failure branch, and `NO_SIGN=1` correctly short-circuits it.
+
+Open, and deliberately so: releases are unsigned, Homebrew is parked, and the site is
+**not deployed** — `npm run deploy` publishes live and was not run. The next tag will
+produce an unsigned draft release; `cargo tauri build --no-sign` should be run once on
+real hardware first, since the GUI cannot be launched from this environment.
+
 ## 2026-07-25 — a shippable macOS app: silent launch, half the binary, a release pipeline
 
 Set out to make dreamd installable on macOS — a downloadable `.app`, the CLI on

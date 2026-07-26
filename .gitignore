@@ -9,3 +9,5 @@
 /perf/harness/node_modules
 *.trace
 *.svg
+
+prompt.md

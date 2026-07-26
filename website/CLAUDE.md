@@ -182,11 +182,16 @@ so unlike the app's perf numbers these results are the real thing, not a proxy.
   gets committed and a fresh clone cannot rebuild the site. It is also the source of
   truth for the *app's* icon set (`cargo tauri icon` reads it), so that negation is
   load-bearing well outside this directory.
-- **The download button points at `/releases/latest`, deliberately, not at a
-  version-pinned asset URL.** This site deploys by a manual `npm run deploy` that is
-  completely independent of the app's release workflow, so a pinned href would 404 for
-  every visitor between "tag pushed" and "someone remembered to deploy the site".
-  `VERSION` still appears as prose, where being stale is harmless.
+- **There is no download button, and the Homebrew line is gone — on purpose.**
+  Releases are unsigned while there is no Developer ID certificate (see the root
+  `CLAUDE.md`), and both of those channels hand the user a quarantined artifact that
+  opens as "dreamd is damaged". `curl … | sh` does not, because curl never writes
+  `com.apple.quarantine`. So the install section offers exactly one command and says
+  why. `RELEASES_URL` is still exported from `consts.ts`, unused, for when signing
+  returns; if you restore a button it points at `/releases/latest` rather than a
+  pinned asset, because this site deploys by a manual `npm run deploy` independent of
+  the release workflow and a pinned href would 404 between tag and deploy. `VERSION`
+  appears as prose only, where being stale is harmless.
 - **`install.sh` is deliberately *not* served from `public/`,** even though it would
   work (`html_handling: drop-trailing-slash` only affects HTML, and curl ignores
   content-type) and `fongo.uk/dreamd/install.sh` would be the nicer URL. It would

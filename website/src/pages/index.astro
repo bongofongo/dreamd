@@ -8,7 +8,6 @@ import {
   INSTALL_URL,
   LICENSE_NAME,
   LICENSE_URL,
-  RELEASES_URL,
   REPO_URL,
   SUBLINE,
   TAGLINE,
@@ -46,24 +45,23 @@ import {
       <span class="eyebrow">get it</span>
       <h2>Install</h2>
       <p class="lede">
-        macOS, version {VERSION}. Signed and notarised. Apple Silicon and Intel.
+        macOS, version {VERSION}. Apple Silicon and Intel.
       </p>
-      <pre><code># Homebrew
-brew install --cask bongofongo/tap/dreamd
-
-# or, without Homebrew
-curl -fsSL {INSTALL_URL} | sh</code></pre>
+      <pre><code>curl -fsSL {INSTALL_URL} | sh</code></pre>
       <p class="note">
-        Both put the app in <code>/Applications</code> and <code>dreamd</code> on
+        Puts the app in <code>/Applications</code> and <code>dreamd</code> on
         your <code>PATH</code> — one binary, so the window and the command line
         are the same program. <code>dreamd</code> opens the repo you are standing
         in, <code>dreamd notes/todo.md</code> opens a file. Like nvim.
       </p>
+      <p class="note">
+        Builds are not notarised yet, so use the line above rather than
+        downloading the zip by hand: macOS quarantines anything a browser fetches
+        and would refuse to open it. The installer checks the release checksum
+        before it installs. Homebrew follows once there is a signature to check.
+      </p>
       <div class="dl">
-        <a class="btn btn-primary" href={RELEASES_URL} rel="noopener noreferrer">
-          Download for macOS
-        </a>
-        <a class="btn btn-quiet" href={REPO_URL} rel="noopener noreferrer">
+        <a class="btn btn-primary" href={REPO_URL} rel="noopener noreferrer">
           Source on GitHub
         </a>
       </div>
