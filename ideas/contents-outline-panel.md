@@ -1,7 +1,10 @@
 # Contents / outline panel
 
 A "contents" view outlining the current markdown file's heading structure,
-for quick navigation through a long document.
+for quick navigation through a long document. Same idea as what came up in
+dialogue as a "navigational preview" — confirmed as one feature, not two;
+`ideas/reading-progress-indicator.md` is the separate, distinct concept
+(how far through the doc you are, not how to get around it).
 
 ## Current state
 
@@ -21,10 +24,9 @@ nothing to jump to yet, and no extraction step to build an outline from.
 - A UI surface: a sidebar tab, a popover, or a panel similar to
   `#stack-panel` — click an entry, scroll/jump to that heading.
 
-## Open questions
+## Open question
 
-- Should it live-update on `file-changed` the same way everything else does,
-  or only rebuild when the panel is opened?
-- Is this strictly per-document navigation, or does it double as a
-  lightweight breadcrumb/progress indicator while reading (fits the
-  book-reading direction from the theming pass)?
+Should it live-update on `file-changed` the same way everything else does,
+or only rebuild when the panel is opened? Live-update matches how every
+other panel in the app already behaves, so it's the likely default unless
+there's a reason to defer it.

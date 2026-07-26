@@ -18,8 +18,9 @@ the same heading-list groundwork).
   extraction the outline panel needs, so it's worth sequencing after that
   work rather than building a second, separate heading-count mechanism.
 - Fits the book-reading direction from the theming pass — this is meant to
-  feel like a physical bookmark/progress cue, not a developer-tool scrollbar
-  minimap (that's the separate `navigational-preview.md` idea).
+  feel like a physical bookmark/progress cue, not a navigation tool. Getting
+  *around* the document is `ideas/contents-outline-panel.md`'s job; this one
+  only answers "how far am I."
 
 ## Open question
 
