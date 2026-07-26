@@ -80,9 +80,17 @@ jobs:
           # in packaging/build.sh — everything platform-specific is derived from
           # the triple, never encoded in this matrix.
           - { target: aarch64-apple-darwin, runner: macos-14 }
-          - { target: x86_64-apple-darwin, runner: macos-13 }
+          # macos-13 was retired 2025-12-04. A retired label does not error —
+          # the job queues for a runner that will never exist and burns the 24h
+          # workflow cap, which is exactly what the v0.1.0 attempt did. Its
+          # successor is the last Intel image Actions will offer; it goes away
+          # in autumn 2027, at which point this row is deleted, not relabelled.
+          - { target: x86_64-apple-darwin, runner: macos-15-intel }
           # - { target: x86_64-unknown-linux-gnu, runner: ubuntu-22.04 }
     runs-on: ${{ matrix.runner }}
+    # A cold build is ~8 minutes. This exists so that the *next* dead runner
+    # label fails in half an hour instead of pinning the run for a day.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
