@@ -164,6 +164,8 @@ See `perf/README.md` for what each tier measures and how much to trust it.
 | View mode (hide all chrome) | `Ctrl+M` (`Esc` exits)     |
 | Send stack                  | `Ctrl+Enter`               |
 | Copy stack to clipboard     | `Ctrl+C`                   |
+| Set a mark                  | `m` then a letter          |
+| Jump to a mark              | `'` then the same letter   |
 | Open settings               | `Ctrl+,`                   |
 
 Select text (a normal OS selection) and press `h` to turn it into a dreamd
@@ -175,6 +177,14 @@ falls back to the normal OS copy.
 The first two are native menu items, not dreamd keybinds, and they are not
 rebindable. They do not collide with `Ctrl+O`: modifier matching is exact, so a
 `⌘` chord never reaches a `Ctrl` binding.
+
+**Marks** are vim's, and they work the same way: `mq` remembers the file you are
+reading and where you are in it, `'q` returns there — from anywhere, including a
+different file. Any letter or digit is a mark, upper and lower case are separate
+ones, and a second `mq` overwrites the first. Nothing is written to disk: marks
+live for as long as the app does and are gone when you quit, like highlights and
+the stack. Only the leader keys are rebindable; the letter after them is an
+argument, not part of the binding.
 
 Rebind any of these in the settings panel, or in config. The bare `h` is an
 alias kept from before keybinds were configurable; turn it off with
@@ -228,6 +238,8 @@ jump_top = "Home"                        # scroll the document to the start
 jump_bottom = "End"                      # ...and to the end
 next_file = "]"                          # next file in the sidebar's order
 prev_file = "["                          # ...previous; both wrap at the ends
+set_mark = "m"                           # then a letter: `mq` bookmarks here
+jump_mark = "'"                          # then the same letter: `'q` goes back
 copy_stack = "Ctrl+C"
 settings = "Ctrl+,"
 save_annotation = "Ctrl+Y"

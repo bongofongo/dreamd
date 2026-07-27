@@ -191,6 +191,22 @@ a fixed-sequence matcher does not extend to it.
 **If marks lands first and ships `captureNext`, this plan's rules 1–4 are
 already done and only the representation and rebind-UI sections remain.**
 
+> **Status update — marks landed first.** `set_mark` / `jump_mark` shipped with
+> the `captureNext` primitive (`pendingMark`, `armMark`, `clearMark`,
+> `consumeMarkKey` in `ui/app.js`), so rules 1–4 above now exist in the tree and
+> this plan's scope has shrunk to **representation + rebind UI only**. What was
+> built differs from rules 1–4 in one deliberate way worth knowing before you
+> build on it: the marks machine never swallows an unrecognised key. A modified
+> combo or a non-alphanumeric cancels the pending leader and *falls through* to
+> the normal chain, so the blast radius is one keystroke at most. A fixed
+> sequence like `g g` needs the opposite for its second step — a `g` followed by
+> a non-`g` should arguably still be swallowed — so budget for a per-kind policy
+> rather than reusing `consumeMarkKey` verbatim. Rule 3 (arming from a whole-
+> keymap prefix scan) is still unbuilt: marks arm from an ordinary `matchCombo`
+> hit in the if-chain, because their leaders *are* ordinary single combos.
+> The spacebar trap is still live and still untouched — nothing in marks needed
+> the space-separated grammar.
+
 ## Traps
 
 - **The spacebar.** `comboFromEvent` pushes `e.key`, which is `" "` for space,

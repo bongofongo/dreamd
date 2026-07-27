@@ -48,7 +48,7 @@ await page.addInitScript(({ base, palettes }) => {
     palette: "Ctrl+F", palette_prev: "Ctrl+P", palette_next: "Ctrl+N",
     highlight: "Ctrl+H", send_stack: "Ctrl+Enter", toggle_stack: "Ctrl+O",
     toggle_outline: "Ctrl+I", toggle_tree: "Ctrl+B", toggle_view: "Ctrl+M",
-    jump_top: "Home", jump_bottom: "End",
+    jump_top: "Home", jump_bottom: "End", set_mark: "m", jump_mark: "'",
     next_file: "]", prev_file: "[",
     copy_stack: "Ctrl+C", settings: "Ctrl+,",
     save_annotation: "Ctrl+Y",
@@ -178,7 +178,7 @@ check("Ctrl+, opens settings", await page.locator("#settings-overlay.open").isVi
 
 // --- keys tab ---
 const rows = await page.locator("#st-keys .st-row").count();
-check("every action gets a row", rows === 17, `got ${rows}`);
+check("every action gets a row", rows === 19, `got ${rows}`);
 check(
   "a repo-shadowed key is flagged",
   (await page.locator("#st-keys .shadowed").count()) === 1,
@@ -359,7 +359,7 @@ await solo.addInitScript(({ base }) => {
             palette: "Ctrl+F", palette_prev: "Ctrl+P", palette_next: "Ctrl+N",
             highlight: "Ctrl+H", send_stack: "Ctrl+Enter", toggle_stack: "Ctrl+O",
             toggle_outline: "Ctrl+I", toggle_tree: "Ctrl+B", toggle_view: "Ctrl+M",
-            jump_top: "Home", jump_bottom: "End",
+            jump_top: "Home", jump_bottom: "End", set_mark: "m", jump_mark: "'",
             next_file: "]", prev_file: "[",
             copy_stack: "Ctrl+C", settings: "Ctrl+,",
             save_annotation: "Ctrl+Y",

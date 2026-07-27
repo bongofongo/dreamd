@@ -125,6 +125,11 @@ pub struct Keymap {
     /// Open the next / previous markdown file in the sidebar's order.
     pub next_file: String,
     pub prev_file: String,
+    /// Leader keys for vim-style marks. Each is an ordinary single combo: the
+    /// *letter* that follows is captured as data by the frontend, so it is not
+    /// — and cannot be — part of the binding string.
+    pub set_mark: String,
+    pub jump_mark: String,
     /// Copy the assembled stack to the clipboard.
     pub copy_stack: String,
     /// Open the settings panel.
@@ -168,6 +173,19 @@ impl Default for Keymap {
             // buries the brackets behind a modifier.
             next_file: "]".into(),
             prev_file: "[".into(),
+            // Vim's marks. `m` is a bare letter, which is a real claim on the
+            // keyspace — but the same claim `quick_highlight`'s bare `h` has
+            // made since before keybinds were configurable, and `m` does
+            // nothing else in a reader.
+            //
+            // `'` rather than vim's other spelling, `` ` ``: both are correct
+            // vim (`'a` jumps to the line, `` `a `` to the column — a
+            // distinction a reader has no use for), and backtick is a dead key
+            // on several international layouts, where it arrives as
+            // `e.key === "Dead"` and can never match. Rebind in one line if you
+            // want it.
+            set_mark: "m".into(),
+            jump_mark: "'".into(),
             copy_stack: "Ctrl+C".into(),
             settings: "Ctrl+,".into(),
             save_annotation: "Ctrl+Y".into(),

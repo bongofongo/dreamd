@@ -1141,6 +1141,96 @@ function exitView() { document.body.classList.remove("view-mode"); }
 function jumpTop() { scrollEl.scrollTo({ top: 0 }); }
 function jumpBottom() { scrollEl.scrollTo({ top: scrollEl.scrollHeight }); }
 
+// ---- marks ---------------------------------------------------------------
+// Vim's marks: `m{letter}` remembers where you are, `'{letter}` goes back.
+// Explicit and user-placed — not a browser-style automatic history.
+//
+// In memory, and only in memory. Tenet 2: this dies with the process, and
+// nothing here is ever written to disk.
+//
+// **Global across the repo, not per file.** The open question in the idea, and
+// the answer is not close. dreamd shows one document at a time out of a whole
+// repo, so the useful move is "bookmark the spot in the architecture doc, come
+// back to it from wherever I've wandered to" — which is cross-file by
+// definition. Per-file marks would be a bookmark you can only use once you have
+// already navigated to the thing you were trying to navigate to. It is also the
+// simpler build: one flat map keyed by letter, and a jump is `openFile` plus a
+// scroll, both of which already exist. Vim splits a–z (buffer) from A–Z
+// (global) because it has a buffer list and a reader does not; here every
+// letter is global and case-sensitive, which buys 62 marks instead of 26.
+const marks = new Map(); // letter -> { path, top }
+
+// The single keystroke a leader key is waiting on, or null. Nothing else in the
+// frontend keeps input state between events, so this is the whole of it.
+let pendingMark = null;  // { kind: "set" | "jump", at }
+const MARK_TIMEOUT_MS = 1500;
+
+function armMark(kind) { pendingMark = { kind, at: Date.now() }; }
+function clearMark() { pendingMark = null; }
+
+/// The second half of a mark chord. Returns true when it consumed the event.
+///
+/// Every branch here was written against one question: *can this swallow a
+/// keystroke someone meant for something else?* The guarantee it settles on is
+/// narrow enough to state in a sentence — **the only event this can consume is
+/// a bare alphanumeric arriving within `MARK_TIMEOUT_MS` of a leader key, plus
+/// key repeats while the leader itself is held down.** Everything else returns
+/// false and falls through to the normal chain untouched. That is why the
+/// modified-combo and non-alphanumeric cases cancel and fall through rather
+/// than swallowing: a mark chord going wrong should cost the mark, never the
+/// keystroke.
+function consumeMarkKey(e) {
+  if (!pendingMark) return false;
+  // A modifier pressed on its own is part of *typing* the letter — `Shift`
+  // before `A` — not the letter. Stay armed and let it by.
+  if (MODIFIER_KEYS.includes(e.key)) return false;
+  // Holding the leader down repeats its keydown. Swallow those and stay armed,
+  // or `m` held for half a second sets the mark `m`.
+  if (e.repeat) { e.preventDefault(); return true; }
+
+  const { kind, at } = pendingMark;
+  // Disarmed from here on, whatever happens next: an action that throws must
+  // not leave a leader armed, and every non-modifier key ends the chord.
+  clearMark();
+
+  // A leader pressed and then abandoned must not turn a keystroke a minute
+  // later into a mark.
+  if (Date.now() - at > MARK_TIMEOUT_MS) return false;
+  // A modified combo is a command, not a mark letter. Cancel and fall through
+  // so the palette key still opens the palette.
+  if (e.ctrlKey || e.altKey || e.metaKey) return false;
+  // Arrows, function keys, `Dead` and `Process` from an IME: not marks, and not
+  // ours to eat either.
+  const key = e.key || "";
+  if (!/^[0-9a-z]$/i.test(key)) return false;
+
+  e.preventDefault();
+  if (kind === "set") setMark(key); else jumpMark(key);
+  return true;
+}
+
+function setMark(key) {
+  if (!currentFile) return;
+  marks.set(key, { path: currentFile, top: scrollEl.scrollTop });
+  toast(`Mark ${key} set`);
+}
+
+async function jumpMark(key) {
+  const m = marks.get(key);
+  if (!m) { toast(`No mark ${key}`); return; }
+  // `openFile` resolves once the document is rendered and its scroll reset to
+  // 0, so the scroll below lands on a laid-out document rather than an empty
+  // one. Skipped when the mark is in the file already open, which is the common
+  // case and would otherwise re-render for nothing.
+  if (m.path !== currentFile) await openFile(m.path);
+  // A stored offset is a pixel position, so it drifts if the file changed on
+  // disk since the mark was dropped — a heading anchor would be sturdier, and
+  // is the obvious follow-up. `scrollTo` clamps to the scrollable range on its
+  // own, so a document that has since got shorter lands at its end rather than
+  // failing.
+  scrollEl.scrollTo({ top: m.top });
+}
+
 // ---- reading progress ----------------------------------------------------
 // Answers "how far am I", and nothing else. Getting *around* the document is
 // the contents panel's job, so this is deliberately not clickable and not a
@@ -1592,6 +1682,10 @@ function wireKeys() {
     if (e.key === "Escape") {
       // Recording a keybind swallows Escape as "cancel", not "close panel".
       if (cancelRecording()) { e.preventDefault(); return; }
+      // So does a half-typed mark chord, for the same reason: both are
+      // transient input modes, and Escape backing out of the mode you are
+      // visibly in beats Escape reaching past it.
+      if (pendingMark) { clearMark(); e.preventDefault(); return; }
       // Escape is also the way out of view mode, because view mode hides the
       // titlebar and leaves nothing to click. It is the *last* claim on the
       // key though: if any overlay or the file menu is open, this Escape
@@ -1607,18 +1701,30 @@ function wireKeys() {
       if (!claimed) exitView();
       return;
     }
-    // While an overlay is open, let its own inputs handle keys.
+    // While an overlay is open, let its own inputs handle keys. Any overlay
+    // reachable by mouse can be opened with a mark leader still armed, so this
+    // is also the central place that disarms it — cheaper and harder to forget
+    // than a `clearMark()` in each of the four open paths.
     if ($("palette-overlay").classList.contains("open") ||
         $("annot-overlay").classList.contains("open") ||
         $("confirm-overlay").classList.contains("open") ||
-        $("settings-overlay").classList.contains("open")) return;
+        $("settings-overlay").classList.contains("open")) { clearMark(); return; }
 
     // Palette works from anywhere.
-    if (matchCombo(e, keymap.palette)) { e.preventDefault(); openPalette(); return; }
-    if (matchCombo(e, keymap.settings)) { e.preventDefault(); openSettings(); return; }
+    if (matchCombo(e, keymap.palette)) { e.preventDefault(); clearMark(); openPalette(); return; }
+    if (matchCombo(e, keymap.settings)) { e.preventDefault(); clearMark(); openSettings(); return; }
 
-    // Bare-letter shortcuts must not fire while typing in a field.
-    if (isEditable(e.target)) return;
+    // Bare-letter shortcuts must not fire while typing in a field. Same reason
+    // as the overlay guard for the `clearMark`: focus can reach a field by
+    // mouse while a leader is armed, and a mark must never eat what someone is
+    // typing into a textarea.
+    if (isEditable(e.target)) { clearMark(); return; }
+
+    // The second half of a mark chord outranks every single-combo binding: with
+    // `m` armed, `h` is the mark letter, not the highlight shortcut. Sits below
+    // both guards above so it can only ever see keystrokes aimed at the
+    // document.
+    if (consumeMarkKey(e)) return;
 
     // The configured highlight key turns the current selection into a dreamd
     // highlight and prompts for an annotation. It does NOT toggle mode. Bare
@@ -1636,6 +1742,11 @@ function wireKeys() {
     if (matchCombo(e, keymap.jump_bottom)) { e.preventDefault(); jumpBottom(); return; }
     if (matchCombo(e, keymap.next_file)) { e.preventDefault(); stepFile(1); return; }
     if (matchCombo(e, keymap.prev_file)) { e.preventDefault(); stepFile(-1); return; }
+    // Arming only. The letter that follows is captured by `consumeMarkKey` at
+    // the top of the next keydown, which is why these stay ordinary combos and
+    // the settings panel needs no idea marks exist.
+    if (matchCombo(e, keymap.set_mark)) { e.preventDefault(); armMark("set"); return; }
+    if (matchCombo(e, keymap.jump_mark)) { e.preventDefault(); armMark("jump"); return; }
     if (matchCombo(e, keymap.send_stack)) { e.preventDefault(); sendStack([]); return; }
     if (matchCombo(e, keymap.copy_stack)) {
       // Don't hijack a real copy: if text is selected, let the OS copy it.
@@ -1646,6 +1757,12 @@ function wireKeys() {
       return;
     }
   });
+
+  // Switching away with a leader armed and coming back minutes later must not
+  // find it still waiting. The timeout would catch this anyway; blur catches it
+  // without waiting for the timeout to be *checked*, which only happens on the
+  // next keydown.
+  window.addEventListener("blur", clearMark);
 }
 
 // ---- tooltips ------------------------------------------------------------
@@ -1766,6 +1883,8 @@ const KEY_ACTIONS = [
   { id: "jump_bottom", label: "Jump to bottom" },
   { id: "next_file", label: "Next file", sub: "Move through the sidebar's order without touching the tree — wraps at the ends" },
   { id: "prev_file", label: "Previous file" },
+  { id: "set_mark", label: "Set mark", sub: "Then a letter or digit: remembers this file and scroll position until the app quits" },
+  { id: "jump_mark", label: "Jump to mark", sub: "Then the same letter — marks work across files" },
   { id: "send_stack", label: "Send stack to agent" },
   { id: "copy_stack", label: "Copy stack", sub: "Ignored while text is selected, so OS copy still works" },
   { id: "settings", label: "Open settings" },
