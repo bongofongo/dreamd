@@ -148,9 +148,16 @@ essentially the same code. The loop improved: `save_to_paint_ms` 3055 → 2246ms
 `perf/results/pass-055dbbf-20260727-223410.json`.
 
 **Nothing here has run on Linux.** `cargo build`, the five harnesses, the
-AppImage/deb/tarball and the GTK menu shape are all first-run-in-CI. Left open:
-`README.md:11` still claims "No session state is persisted", which tenet 2's
-step-4 amendment made false — flagged to the user, not fixed, as out of scope.
+AppImage/deb/tarball and the GTK menu shape are all first-run-in-CI.
+
+*Follow-up, same session:* the README's "No session state is persisted" and "No
+persistence by design" were both left over from before tenet 2's step-4
+amendment and were fixed on request. The intro now states what actually
+persists, and a new **Marks on disk** section documents the file, the lazy
+per-file re-anchor, the primary/secondary claim and the `marks prune` flags —
+each verified against the code or `--help` rather than written from memory,
+which caught two wrong flag descriptions and an over-absolute claim about
+code-block highlights (single-token ones do paint).
 
 ## 2026-07-27 — Step 5: the embedded Claude Code pane, and a spike that opened the gate
 

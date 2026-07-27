@@ -7,10 +7,16 @@ loop: highlight passages as evidence, attach a question to each, build up a
 stack, then push the selected pairs to your agent in one action.
 
 Rust backend (Tauri, its own window — not a browser tab), file-tree + fuzzy
-search explorer, CSS-themeable, read-only viewer. No session state is persisted:
-highlights, annotations, and the stack live in memory and are gone when the
-process exits. Your preferences do persist — config and themes under
-`~/.config/dreamd/` — and that is the only thing dreamd ever writes.
+search explorer, CSS-themeable, read-only viewer.
+
+**dreamd never writes to your markdown, and never writes anything inside the
+repo.** Editing stays in Neovim. Everything it does persist lives under
+`~/.config/dreamd/`, as plain files and no database: your preferences
+(`config.toml` and saved themes), and your marks — highlights, the questions
+attached to them, and the stack — in `marks/<repo>-<hash>.json`, mode `0600`,
+written debounced and flushed on quit. Marks persisting is what lets an agent
+loop span more than one session; see [Marks on disk](#marks-on-disk) for the
+details, including which dreamd wins when two are open on the same repo.
 
 ## Install
 
@@ -397,13 +403,51 @@ text itself*, that highlight can no longer be located: it's flagged **stale** �
 turned red and pushed to the margin with a `?` ("still pertinent?") to keep or
 dismiss.
 
+## Marks on disk
+
+Highlights, annotations and the stack are written to
+`~/.config/dreamd/marks/<repo-basename>-<16hex>.json` (mode `0600`), debounced,
+and flushed when you quit. They are keyed by repo, so opening a different repo
+shows that repo's marks and nothing else. Nothing is written inside the repo
+itself.
+
+Marks read back off disk are re-anchored **lazily, once per file, the first time
+you open it** — not all at once at startup, which would land straight on the
+cold-start time. A mark that no longer locates reads as stale, exactly as one
+made this session would.
+
+**Two dreamds on one repo.** The first to open a repo claims it, by binding that
+repo's socket under `~/.config/dreamd/run/`. Only the holder writes marks; a
+second window keeps its marks in memory for as long as it is open and says so on
+stderr rather than racing the first one's file. Close the first and the second
+does *not* silently take over — the claim is decided when a repo is adopted.
+
+```sh
+dreamd marks path                  # where this repo's marks file is
+dreamd marks prune                 # dry run: reports what each flag would remove
+dreamd marks prune --stale         # stale AND unannotated — what a checkout stranded
+dreamd marks prune --older-than 30d  # answered longer ago than that (30d/12h/90m)
+```
+
+`prune` is a destructive verb with a read-only default, so the first thing you
+type is a dry run. The two flags are not the same set: `--stale` removes marks
+nobody ever asked a question about, `--older-than` removes ones that were asked
+*and answered*.
+
+A corrupt or unreadable marks file costs you the marks, never the launch.
+
 ## Status / known v1 limits
 
 - Fuzzy search covers file **paths** only; in-file/content (`live_grep`) search
   is a v2 item.
 - Highlight anchoring matches on the selected text (whitespace-normalized);
   heavily formatted inline selections may not re-locate and will read as stale.
-- No persistence by design.
+  Inside fenced code blocks, a highlight spanning more than one syntax token
+  anchors correctly but does not *paint*: syntax highlighting splits the line
+  into per-token spans, and the painter skips matches straddling a span
+  boundary. The mark is real and reaches your agent; you just can't see it.
+- Marks persist per repo, but only for the dreamd holding that repo's claim; a
+  second window on the same repo keeps its marks in memory only.
 
 ## Releasing
 
