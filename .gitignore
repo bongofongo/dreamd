@@ -10,3 +10,6 @@
 *.trace
 *.svg
 token_expiry.md
+
+# agent worktrees, transient
+/.claude/worktrees
