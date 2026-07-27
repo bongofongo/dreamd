@@ -151,6 +151,44 @@
       mark.hl:hover { outline: 1px solid var(--hl, #f2d16b); outline-offset: 1px; }
       mark.hl.stale { background: var(--stale, #ef6a7d); color: var(--stale-text, #1a1a1a); }
 
+      /* copy button on a fenced code block — injected by `decorateCodeBlocks`
+         after every render.
+
+         It is a *sibling* of the <pre>, inside a wrapper, never a child of it.
+         Two reasons, both load-bearing: `#content pre` scrolls horizontally, so
+         a child would slide out of view and widen the scroll area; and keeping
+         it outside is what stops it landing in the middle of a drag-selection
+         across the block.
+
+         The button holds no text nodes at all — two inline SVGs swapped by
+         `data-copied`, with the wording on `aria-label` and `data-tip`.
+         Highlight anchoring reads *rendered DOM text* (`selection.toString()`,
+         plus the text-node walks in `applyHighlights`), so a stray "Copy" text
+         node here would end up inside a reader's quote and mis-anchor it.
+         `user-select: none` is the second layer of that same guard.
+
+         Rules are `button.code-copy` rather than `.code-copy` so they outrank
+         `button.icon` above, whose padding this one replaces. */
+      .code-block { position: relative; }
+      button.code-copy {
+        position: absolute; top: 8px; right: 8px; z-index: 2;
+        padding: 4px 6px; line-height: 0; border-radius: 6px;
+        background: var(--bg, #14121c);
+        opacity: 0; transition: opacity 0.12s ease;
+        user-select: none; -webkit-user-select: none;
+      }
+      .code-block:hover > button.code-copy,
+      button.code-copy:focus-visible { opacity: 1; }
+      button.code-copy:hover { background: var(--hover, #292435); }
+      button.code-copy svg { width: 14px; height: 14px; display: block; }
+      button.code-copy .ic-check { display: none; }
+      button.code-copy[data-copied] {
+        opacity: 1;
+        border-color: var(--accent, #a48cf5); color: var(--accent, #a48cf5);
+      }
+      button.code-copy[data-copied] .ic-copy { display: none; }
+      button.code-copy[data-copied] .ic-check { display: block; }
+
       /* contents / outline panel — same visual language as #stack-panel, but
          anchored left so both can be open at once. */
       #outline-panel {

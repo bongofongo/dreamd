@@ -441,6 +441,10 @@ async function renderCurrent({ preserveScroll, reanchor }) {
   perf.span("intercept_links", t);
 
   t = perf.now();
+  decorateCodeBlocks();
+  perf.span("decorate_code", t);
+
+  t = perf.now();
   const highlights = reanchor
     ? await invoke("reanchor", { path: currentFile })
     : await invoke("get_highlights", { path: currentFile });
@@ -504,6 +508,100 @@ function interceptLinks() {
       else img.removeAttribute("src");
     }
   });
+}
+
+// ---- code blocks ---------------------------------------------------------
+
+// The copy button's contents. Author-written and static — nothing from the
+// document is interpolated into it, so `innerHTML` here parses only this
+// string. Deliberately no text and no <svg><title>: the button must contribute
+// zero text nodes to #content (see the CSS note in index.html). The two icons
+// are both present and CSS picks one, so toggling state never touches the DOM
+// shape.
+const COPY_ICON_SVG =
+  '<svg class="ic-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor"' +
+  ' stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+  '<rect x="9" y="9" width="11" height="11" rx="2"></rect>' +
+  '<path d="M5 15V5a2 2 0 0 1 2-2h10"></path></svg>' +
+  '<svg class="ic-check" viewBox="0 0 24 24" fill="none" stroke="currentColor"' +
+  ' stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+  '<path d="M20 6 9 17l-5-5"></path></svg>';
+
+/// Give every rendered code block a copy button, top right.
+///
+/// Post-render DOM decoration rather than markup from `markdown::render`: the
+/// button is chrome, not document content, and keeping it out of the render
+/// pass keeps it out of anything that reads the rendered HTML. It runs on the
+/// fresh DOM after each render, like `interceptLinks` — `renderCurrent`'s
+/// `innerHTML` assignment throws the previous buttons away, which is also what
+/// makes them survive a `file-changed` re-render with nothing to clean up.
+///
+/// Called *before* `applyHighlights` so the DOM shape is settled before any
+/// mark is placed; the button adds no text nodes either way, so neither the
+/// text-node scan nor `getSelection().toString()` can see it.
+function decorateCodeBlocks() {
+  for (const pre of contentEl.querySelectorAll("pre")) {
+    const parent = pre.parentNode;
+    if (!parent) continue;
+    // Idempotent: a re-run over an already-decorated block is a no-op. Nothing
+    // calls it twice today, but it is one line and removes the whole class of
+    // double-button bug.
+    if (parent.classList && parent.classList.contains("code-block")) continue;
+
+    const wrap = document.createElement("div");
+    wrap.className = "code-block";
+    parent.insertBefore(wrap, pre);
+    wrap.appendChild(pre);
+
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "icon code-copy";
+    btn.setAttribute("aria-label", "Copy code");
+    btn.dataset.tip = "Copy code";
+    btn.innerHTML = COPY_ICON_SVG;
+    btn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      copyCodeBlock(pre, btn);
+    });
+    // #content's own `mouseup` listener starts a highlight whenever the
+    // selection is non-empty, and a leftover selection elsewhere in the
+    // document would otherwise make a copy click open the annotation modal.
+    btn.addEventListener("mouseup", (e) => e.stopPropagation());
+    wrap.appendChild(btn);
+  }
+}
+
+/// Copy one block's source to the clipboard.
+///
+/// The text comes from `textContent`, never from re-parsing the highlighted
+/// markup: syntect's <span>s and any `mark.hl` the reader has placed are
+/// markup we would have to strip, and stripping it by hand is exactly the
+/// "execute, don't escape" mistake tenet 4 exists to prevent. `textContent` is
+/// the code the reader sees, with the marks contributing nothing.
+///
+/// Delivery goes through the existing `copy_to_clipboard` command (arboard,
+/// text only) rather than `navigator.clipboard`, so it uses the same path as
+/// "Copy path" and the send fallback, and does not depend on the webview's
+/// clipboard permissions.
+async function copyCodeBlock(pre, btn) {
+  // syntect emits no <code>; the plain fallback does. Either way this is the
+  // element holding the code text.
+  const inner = pre.querySelector("code") || pre;
+  // syntect opens with a newline after `<pre …>`, and a fenced block always
+  // ends in one. Neither is part of the code.
+  const text = (inner.textContent || "").replace(/^\n/, "").replace(/\s+$/, "");
+  if (!text) return;
+  try {
+    await invoke("copy_to_clipboard", { text });
+  } catch (e) {
+    toast("Copy failed: " + String(e));
+    return;
+  }
+  btn.dataset.copied = "1";
+  clearTimeout(btn._copiedTimer);
+  btn._copiedTimer = setTimeout(() => delete btn.dataset.copied, 1400);
+  toast("Code copied");
 }
 
 /// Is this already-normalized absolute path inside the open repo root?
