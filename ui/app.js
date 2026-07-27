@@ -79,6 +79,8 @@ let keymap = {
   toggle_view: "Ctrl+M",
   jump_top: "Home",
   jump_bottom: "End",
+  next_file: "]",
+  prev_file: "[",
   quick_highlight: true,
 };
 let pending = null; // { id, mark } while awaiting an annotation
@@ -364,6 +366,42 @@ function markActiveInTree(path) {
 
 function cssEscape(s) {
   return window.CSS && CSS.escape ? CSS.escape(s) : s.replace(/["\\]/g, "\\$&");
+}
+
+// Open the next / previous file in the sidebar's own order.
+//
+// The sidebar DOM *is* the flattened tree: `renderNode` emits `.tree-item.file`
+// depth-first, so document order here is already exactly the order on screen.
+// Reading it back beats re-deriving a flat list from `FileNode` in Rust — there
+// is only ever one ordering, and it follows every repaint (`rebuild_index`, the
+// watcher's add/remove, File ▸ Open moving the root) with no second thing to
+// keep in step and no new IPC round trip per keystroke.
+//
+// Collapsed directories are deliberately **not** skipped. Collapsing sets
+// `display:none` on the children and leaves them in the DOM, and the whole point
+// of this binding is to move without touching the tree — which may be collapsed
+// entirely (`nav-collapsed`) or hidden outright by view mode. Skipping would make
+// files unreachable by keyboard depending on state the user may not be looking at.
+//
+// Wraps at both ends, matching `movePalette`. There is no affordance for "that
+// was the last file", so stopping would be a silent no-op indistinguishable from
+// a dead key.
+function stepFile(d) {
+  const files = $("tree").querySelectorAll(".tree-item.file");
+  if (!files.length) return;
+  // `activeTreeItem` is one of these nodes by construction (`markActiveInTree`
+  // queries the same list, `paintTree` re-resolves it), so this avoids a scan
+  // over `dataset.path` on every keypress. -1 when it is null, and also when the
+  // open file isn't in the tree at all — a gitignored target reached by a link —
+  // in which case stepping from just outside the list puts `next` on the first
+  // entry and `prev` on the last.
+  const i = [].indexOf.call(files, activeTreeItem);
+  const el = files[i < 0 ? (d > 0 ? 0 : files.length - 1)
+                        : (i + d + files.length) % files.length];
+  // The sidebar scrolls independently of the reading pane; without this the
+  // active row walks off the top of it after a few presses.
+  el.scrollIntoView({ block: "nearest" });
+  openFile(el.dataset.path);
 }
 
 // ---- open / render -------------------------------------------------------
@@ -1193,6 +1231,8 @@ function wireKeys() {
     if (matchCombo(e, keymap.toggle_stack)) { e.preventDefault(); toggleStack(); return; }
     if (matchCombo(e, keymap.jump_top)) { e.preventDefault(); jumpTop(); return; }
     if (matchCombo(e, keymap.jump_bottom)) { e.preventDefault(); jumpBottom(); return; }
+    if (matchCombo(e, keymap.next_file)) { e.preventDefault(); stepFile(1); return; }
+    if (matchCombo(e, keymap.prev_file)) { e.preventDefault(); stepFile(-1); return; }
     if (matchCombo(e, keymap.send_stack)) { e.preventDefault(); sendStack([]); return; }
     if (matchCombo(e, keymap.copy_stack)) {
       // Don't hijack a real copy: if text is selected, let the OS copy it.
@@ -1321,6 +1361,8 @@ const KEY_ACTIONS = [
   { id: "toggle_stack", label: "Toggle stack panel" },
   { id: "jump_top", label: "Jump to top", sub: "Scroll the open document to the start" },
   { id: "jump_bottom", label: "Jump to bottom" },
+  { id: "next_file", label: "Next file", sub: "Move through the sidebar's order without touching the tree — wraps at the ends" },
+  { id: "prev_file", label: "Previous file" },
   { id: "send_stack", label: "Send stack to agent" },
   { id: "copy_stack", label: "Copy stack", sub: "Ignored while text is selected, so OS copy still works" },
   { id: "settings", label: "Open settings" },

@@ -119,6 +119,8 @@ export const KEYMAP = {
   toggle_view: "Ctrl+M",
   jump_top: "Home",
   jump_bottom: "End",
+  next_file: "]",
+  prev_file: "[",
   copy_stack: "Ctrl+C",
   settings: "Ctrl+,",
   save_annotation: "Ctrl+Y",

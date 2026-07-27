@@ -122,6 +122,9 @@ pub struct Keymap {
     /// Jump the reading pane to the top / bottom of the open document.
     pub jump_top: String,
     pub jump_bottom: String,
+    /// Open the next / previous markdown file in the sidebar's order.
+    pub next_file: String,
+    pub prev_file: String,
     /// Copy the assembled stack to the clipboard.
     pub copy_stack: String,
     /// Open the settings panel.
@@ -157,6 +160,14 @@ impl Default for Keymap {
             // "Shift+G" in one line.
             jump_top: "Home".into(),
             jump_bottom: "End".into(),
+            // `]`/`[` is the near-universal "next/prev thing" convention, and
+            // unlike a bare letter it costs no typing keyspace a reader wants:
+            // the dispatch sits below the `isEditable` and overlay guards, so
+            // the annotation box and the palette input never see these. They
+            // are the only bare-punctuation defaults; rebind if your layout
+            // buries the brackets behind a modifier.
+            next_file: "]".into(),
+            prev_file: "[".into(),
             copy_stack: "Ctrl+C".into(),
             settings: "Ctrl+,".into(),
             save_annotation: "Ctrl+Y".into(),
