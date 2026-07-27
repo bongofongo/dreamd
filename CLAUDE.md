@@ -80,6 +80,11 @@ by the downloading application, and a notarized, stapled `.app` passes Gatekeepe
 when it is. (curl never writes the flag, which is why the curl channel worked
 throughout.)
 
+`Swatinem/rust-cache` carries `~/.cargo/bin`, so the pinned `cargo install
+tauri-cli` in the matrix exits in ~1s on a warm cache and needs no cache of its
+own. A multi-minute install step means the *rust-cache* missed; don't read it as
+a missing tauri-cli cache and add one (tried 2026-07-27, changed nothing).
+
 `NO_SIGN` is the one switch that turns it all off — set it in `release.yml`'s `env`
 and `check-signing.sh` stands down while `build.sh` passes `--no-sign`. It is
 absent on purpose; don't reintroduce it to work around a signing failure, because

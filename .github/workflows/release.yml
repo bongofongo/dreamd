@@ -101,21 +101,15 @@ jobs:
           workspaces: ". -> target"
 
       # Pinned. An unpinned tauri-cli means a bundler change can break a release
-      # with no commit in this repo. Bump it deliberately — in both places.
+      # with no commit in this repo. Bump it deliberately.
       #
-      # Cached separately from Swatinem/rust-cache, which covers ./target and
-      # not ~/.cargo/bin. Without this the CLI is compiled from source on both
-      # matrix legs of every release: several minutes of runner time, twice, for
-      # a binary that only changes when the version above does.
-      - name: Cache tauri-cli
-        id: tauri-cli-cache
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/bin/cargo-tauri
-          key: cargo-tauri-2.11.4-${{ matrix.runner }}
-
+      # Not separately cached, and measurably doesn't need to be:
+      # Swatinem/rust-cache already carries `~/.cargo/bin`, so `cargo install`
+      # finds the pinned version present and exits in ~1s. The 6-11 minutes this
+      # step cost on 2026-07-26 was a *cold rust-cache*, not a per-run cost —
+      # an `actions/cache` on ~/.cargo/bin/cargo-tauri was added on 2026-07-27,
+      # measured to change nothing, and removed again.
       - name: Install tauri-cli
-        if: steps.tauri-cli-cache.outputs.cache-hit != 'true'
         run: cargo install tauri-cli --version "2.11.4" --locked
 
       # The Tauri bundler imports APPLE_CERTIFICATE into a keychain itself, then
