@@ -114,6 +114,8 @@ pub struct Keymap {
     pub toggle_stack: String,
     /// Toggle the contents / outline panel.
     pub toggle_outline: String,
+    /// Collapse / restore the sidebar file tree.
+    pub toggle_tree: String,
     /// Copy the assembled stack to the clipboard.
     pub copy_stack: String,
     /// Open the settings panel.
@@ -134,9 +136,9 @@ impl Default for Keymap {
             highlight: "Ctrl+H".into(),
             send_stack: "Ctrl+Enter".into(),
             toggle_stack: "Ctrl+O".into(),
-            // I for "index". Ctrl+B, the obvious sidebar-toggle key, is left
-            // free for the file-tree keybind that idea file already claims.
+            // I for "index"; B is the sidebar, the way every editor spells it.
             toggle_outline: "Ctrl+I".into(),
+            toggle_tree: "Ctrl+B".into(),
             copy_stack: "Ctrl+C".into(),
             settings: "Ctrl+,".into(),
             save_annotation: "Ctrl+Y".into(),

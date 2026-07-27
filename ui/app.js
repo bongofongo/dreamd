@@ -75,6 +75,7 @@ let keymap = {
   settings: "Ctrl+,",
   save_annotation: "Ctrl+Y",
   toggle_outline: "Ctrl+I",
+  toggle_tree: "Ctrl+B",
   quick_highlight: true,
 };
 let pending = null; // { id, mark } while awaiting an annotation
@@ -798,6 +799,11 @@ async function refreshStack() {
   }
 }
 
+// The file tree's collapsed state is one class on <body> and nothing else —
+// `#workspace` drops the sidebar column in CSS. Nothing is torn down, so this
+// is a pure style flip and the tree survives being hidden.
+function toggleTree() { document.body.classList.toggle("nav-collapsed"); }
+
 function toggleStack() { $("stack-panel").classList.toggle("open"); refreshStack(); }
 
 // ---- contents / outline panel --------------------------------------------
@@ -1043,6 +1049,8 @@ function wireEvents() {
 function wireUi() {
   $("btn-collapse").onclick = () => document.body.classList.add("nav-collapsed");
   $("btn-expand").onclick = () => document.body.classList.remove("nav-collapsed");
+  // The two buttons stay one-way on purpose — each is only visible in the state
+  // it acts on — so the keybind is the only caller that has to flip either way.
   $("btn-hl-mode").onclick = () => toggleHighlightMode();
   // In highlight mode, finishing a text selection auto-starts the flow.
   contentEl.addEventListener("mouseup", () => {
@@ -1143,6 +1151,7 @@ function wireKeys() {
       triggerHighlight();
       return;
     }
+    if (matchCombo(e, keymap.toggle_tree)) { e.preventDefault(); toggleTree(); return; }
     if (matchCombo(e, keymap.toggle_outline)) { e.preventDefault(); toggleOutline(); return; }
     if (matchCombo(e, keymap.toggle_stack)) { e.preventDefault(); toggleStack(); return; }
     if (matchCombo(e, keymap.send_stack)) { e.preventDefault(); sendStack([]); return; }
@@ -1268,6 +1277,7 @@ const KEY_ACTIONS = [
   { id: "highlight", label: "Highlight selection", sub: "Turn the selection into evidence and ask for an annotation" },
   { id: "save_annotation", label: "Save annotation", sub: "From inside the annotation box" },
   { id: "toggle_outline", label: "Toggle contents panel", sub: "Outline of the open document's headings" },
+  { id: "toggle_tree", label: "Toggle file tree", sub: "Collapse or restore the sidebar" },
   { id: "toggle_stack", label: "Toggle stack panel" },
   { id: "send_stack", label: "Send stack to agent" },
   { id: "copy_stack", label: "Copy stack", sub: "Ignored while text is selected, so OS copy still works" },

@@ -102,7 +102,7 @@ See `perf/README.md` for what each tier measures and how much to trust it.
 
 - **Open a file:** click it in the tree, or open the fuzzy palette.
 - **File options:** hover a file row and click `⋯` → **Copy path** or **Delete** (delete moves it to the OS Trash after a confirm).
-- **Collapse the tree:** click the `◀` arrow in the tree header; a floating `▶` at the left edge brings it back. The preview stays full-width.
+- **Collapse the tree:** press `Ctrl+B`, or click the `◀` arrow in the tree header; a floating `▶` at the left edge brings it back. The preview stays full-width.
 - **Top bar** (on the traffic-light row): contents, settings, highlighter, stack, and send — all icons.
 - **Contents:** the outline icon (or `Ctrl+I`) opens a panel listing the open
   document's headings, indented by level; click one to jump to it. It follows
@@ -140,6 +140,7 @@ See `perf/README.md` for what each tier measures and how much to trust it.
 | Add annotation (in modal)   | `Ctrl+Y`                   |
 | Toggle highlight mode       | toolbar highlighter icon   |
 | Toggle contents panel       | `Ctrl+I`                   |
+| Toggle file tree            | `Ctrl+B`                   |
 | Toggle stack panel          | `Ctrl+O`                   |
 | Send stack                  | `Ctrl+Enter`               |
 | Copy stack to clipboard     | `Ctrl+C`                   |
@@ -201,6 +202,7 @@ highlight = "Ctrl+H"
 send_stack = "Ctrl+Enter"
 toggle_stack = "Ctrl+O"
 toggle_outline = "Ctrl+I"
+toggle_tree = "Ctrl+B"
 copy_stack = "Ctrl+C"
 settings = "Ctrl+,"
 save_annotation = "Ctrl+Y"

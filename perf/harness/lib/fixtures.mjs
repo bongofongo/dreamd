@@ -115,6 +115,7 @@ export const KEYMAP = {
   send_stack: "Ctrl+Enter",
   toggle_stack: "Ctrl+O",
   toggle_outline: "Ctrl+I",
+  toggle_tree: "Ctrl+B",
   copy_stack: "Ctrl+C",
   settings: "Ctrl+,",
   save_annotation: "Ctrl+Y",
