@@ -26,7 +26,7 @@
 //!   with its quote attached. The argument against it is redundancy, not
 //!   danger — the agent can read the same bytes with its own tool either way.
 
-use crate::annotations::{Highlight, Origin, Resolution, Store};
+use crate::annotations::{Origin, Store};
 use crate::guard;
 use crate::mcp::view::{Closure, Mark, MarkDetail, Marked, Question, State};
 use serde::Deserialize;
@@ -184,16 +184,13 @@ fn get_highlight(store: &Store, root: &Path, args: &Value) -> ToolResult {
 fn resolve_highlight(store: &mut Store, args: &Value) -> ToolResult {
     let id = string_arg(args, "id")?;
     let note = optional_string_arg(args, "note")?;
-    let at = now_secs();
 
-    let found = with_highlight_mut(store, &id, |h| {
-        h.resolved = Some(Resolution { note, at });
-    })
-    .is_some();
-    if !found {
+    // `Store::resolve` records the answer and clears the stack entry in one
+    // pass, without disturbing the reanchor gate. Doing it out here through
+    // `into_parts`/`from_parts` cost a wasted `SourceIndex` rebuild per mark.
+    if !store.resolve(&id, note) {
         return Err(ToolError::NotFound(format!("no mark with id {id}")));
     }
-    store.remove_from_stack(&id);
 
     to_value(&Closure {
         ok: true,
@@ -297,28 +294,6 @@ fn mark_passage(store: &mut Store, root: &Path, args: &Value) -> ToolResult {
 
 // ---- plumbing -----------------------------------------------------------
 
-/// Mutate one highlight in place.
-///
-/// **Temporary.** `Store` exposes no `&mut Highlight` and no `resolve`, so this
-/// goes through the public `into_parts`/`from_parts` seam — the same door
-/// step 4's loader and writer use. `annotations.rs` is frozen for this thread,
-/// so growing it a `resolve` method is not this thread's to do; when it does,
-/// delete this and call it.
-///
-/// The one real cost is that `from_parts` resets `reanchored`, so the next
-/// `ensure_reanchored` on a file re-scans it once. That is a wasted pass, not a
-/// wrong answer, and it happens at most once per resolved mark.
-fn with_highlight_mut<T>(
-    store: &mut Store,
-    id: &str,
-    f: impl FnOnce(&mut Highlight) -> T,
-) -> Option<T> {
-    let (mut highlights, stack) = std::mem::take(store).into_parts();
-    let out = highlights.iter_mut().find(|h| h.id == id).map(f);
-    *store = Store::from_parts(highlights, stack);
-    out
-}
-
 /// Resolve `file` against the repo root, refusing anything that lands outside.
 ///
 /// Canonicalisation precedes containment, which is the entire point: without
@@ -340,12 +315,6 @@ fn resolve_in_root(root: &Path, file: &str) -> Result<PathBuf, ToolError> {
         )));
     }
     Ok(target)
-}
-
-fn now_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs())
 }
 
 fn to_value<T: serde::Serialize>(value: &T) -> ToolResult {
@@ -673,9 +642,9 @@ mod tests {
 
     #[test]
     fn resolving_does_not_disturb_the_rest_of_the_store() {
-        // `with_highlight_mut` round-trips the whole store through
-        // into_parts/from_parts. This is what pins that the round trip is
-        // lossless for everything except the (deliberately reset) reanchor set.
+        // Resolving touches exactly one highlight and one stack entry. This
+        // pins that everything else — the other marks, their annotations, and
+        // the queue order — is left alone.
         let (mut store, ids) = store_with(&[
             ("alpha", Some("first")),
             ("beta", Some("second")),

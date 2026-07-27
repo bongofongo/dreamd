@@ -265,6 +265,31 @@ impl Store {
         self.stack.retain(|x| x != id);
     }
 
+    /// Close a question: record the answer and drop the stack entry. Returns
+    /// false if the id names nothing.
+    ///
+    /// The highlight survives — the evidence stays anchored to the passage,
+    /// which is the whole reason this is not [`remove`](Store::remove).
+    ///
+    /// It deliberately leaves `reanchored` alone. Resolving changes no line
+    /// numbers, so a file already checked against this run's bytes is still
+    /// checked. The MCP layer used to reach `resolved` through
+    /// `into_parts`/`from_parts`, which resets the gate, and so paid one wasted
+    /// `SourceIndex` rebuild per resolved mark — in the primary loop, where an
+    /// agent closes marks in bursts. That is what this method exists to avoid,
+    /// and `resolving_a_mark_does_not_invalidate_the_reanchor_cache` pins it.
+    pub fn resolve(&mut self, id: &str, note: Option<String>) -> bool {
+        let at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        let Some(h) = self.highlights.iter_mut().find(|h| h.id == id) else {
+            return false;
+        };
+        h.resolved = Some(Resolution { note, at });
+        self.remove_from_stack(id);
+        true
+    }
+
     fn find(&self, id: &str) -> Option<&Highlight> {
         self.highlights.iter().find(|h| h.id == id)
     }
@@ -636,6 +661,66 @@ mod tests {
         assert_eq!(store.for_file(FILE).len(), 1);
         assert_eq!(store.for_file("/repo/b.md").len(), 1);
         assert!(store.for_file("/repo/missing.md").is_empty());
+    }
+
+    // ---- resolve ----------------------------------------------------------
+
+    #[test]
+    fn resolve_closes_the_question_and_keeps_the_evidence() {
+        let (mut store, ids) = store_with("alpha\nbeta\n", &["alpha", "beta"]);
+        store.set_annotation(&ids[0], "why?".into());
+        store.set_annotation(&ids[1], "and?".into());
+
+        assert!(store.resolve(&ids[0], Some("because".into())));
+        let h = store.get(&ids[0]).expect("the highlight survives");
+        assert_eq!(
+            h.resolved.as_ref().and_then(|r| r.note.as_deref()),
+            Some("because")
+        );
+        assert!(h.resolved.as_ref().expect("resolved").at > 0);
+        assert_eq!(h.quote, "alpha", "the evidence is untouched");
+        assert_eq!(
+            store
+                .stack_pairs()
+                .iter()
+                .map(|p| p.highlight.id.clone())
+                .collect::<Vec<_>>(),
+            vec![ids[1].clone()],
+            "only the resolved entry leaves the queue"
+        );
+    }
+
+    #[test]
+    fn resolving_an_unknown_id_changes_nothing() {
+        let (mut store, ids) = store_with("alpha\n", &["alpha"]);
+        store.set_annotation(&ids[0], "why?".into());
+        assert!(!store.resolve("h0000000000000000", None));
+        assert_eq!(store.stack_pairs().len(), 1);
+    }
+
+    #[test]
+    fn resolving_a_mark_does_not_invalidate_the_reanchor_cache() {
+        // Resolving changes no line numbers, so a file already checked against
+        // this run's bytes must stay checked. The MCP layer's old helper
+        // round-tripped the store through `into_parts`/`from_parts`, which
+        // starts `reanchored` empty — correct, but it made the next
+        // `ensure_reanchored` rebuild a `SourceIndex` for nothing, once per
+        // resolved mark, in the primary loop. Under that helper this test goes
+        // red on the last assertion, which is how it has teeth.
+        let (mut store, ids) = store_with("alpha\nbeta\n", &["beta"]);
+        store.set_annotation(&ids[0], "why?".into());
+        store.reanchor_file(FILE, "alpha\nbeta\n");
+        assert_eq!(store.get(&ids[0]).expect("present").line_start, 2);
+
+        assert!(store.resolve(&ids[0], Some("done".into())));
+
+        // A source that would move the mark if the gate had been cleared.
+        store.ensure_reanchored(FILE, "x\ny\nz\nbeta\n");
+        assert_eq!(
+            store.get(&ids[0]).expect("present").line_start,
+            2,
+            "resolving cleared the reanchor gate and paid for a second scan"
+        );
     }
 
     // ---- reanchor ---------------------------------------------------------
