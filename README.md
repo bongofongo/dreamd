@@ -104,7 +104,14 @@ See `perf/README.md` for what each tier measures and how much to trust it.
 - **File options:** hover a file row and click `⋯` → **Copy path** or **Delete** (delete moves it to the OS Trash after a confirm).
 - **Collapse the tree:** press `Ctrl+B`, or click the `◀` arrow in the tree header; a floating `▶` at the left edge brings it back. The preview stays full-width.
 - **Top bar** (on the traffic-light row): the reading-position readout, then
-  contents, settings, highlighter, stack and send — all icons.
+  contents, print, settings, highlighter, stack and send — all icons.
+- **Print / save as PDF:** the printer icon opens your OS print dialog over the
+  open document; pick **Save as PDF** as the destination to export it. What
+  prints is the document alone — no sidebar, no panels, no copy buttons, black
+  on white whatever theme you read in, and the whole file however far down it
+  you had scrolled. Highlights print as plain text: they are session state, and
+  the export is meant to be the document. dreamd chooses no filename and writes
+  nothing itself; the save is entirely your dialog's.
 - **Reading position:** a percentage in the top bar and a hairline rail along
   the bottom edge of the document, both tracking how far through the open file
   you are. It is a bookmark cue, not a control — the rail is not clickable, and

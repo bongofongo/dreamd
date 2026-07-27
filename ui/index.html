@@ -498,6 +498,159 @@
     <!-- Live theme preview. Sits after #user-theme so anything it declares
          wins, and is emptied the moment the settings panel stops previewing. -->
     <style id="theme-preview"></style>
+
+    <!-- Paper. Everything below is `@media print` and therefore inert on
+         screen: nothing here can change what the reader is looking at.
+
+         Why this is its own <style> element, and the *last* one in <head>:
+         the theme is injected into #user-theme at runtime and a user palette
+         goes in after that, so a print rule written in the structural sheet
+         above would lose every equal-specificity tie to a rule the theme
+         happens to declare — `#content { color: … }` being the obvious one.
+         Being last is how these win those ties. It also means a theme cannot
+         override the print sheet, which is the deliberate trade: tenet 5 makes
+         the *screen* themeable, and a palette designed for a screen is exactly
+         what must not reach paper.
+
+         There is no print-specific Rust and no PDF library. The OS print
+         dialog's "Save as PDF" is the export, so dreamd never picks a path and
+         never writes a file — which is what keeps tenet 1 whole. See the
+         `print` section in app.js. -->
+    <style id="print-css">
+      @media print {
+        /* A deliberate typographic margin rather than whatever the dialog
+           defaults to. WebKit takes this as the "Default" margin option, so a
+           user who wants edge-to-edge can still override it in the dialog. */
+        @page { margin: 16mm; }
+
+        /* 1. Colour — neutralised at the *variable* level, not per element.
+
+           Every colour in this app resolves through these custom properties:
+           the chrome above, the reading rules in ui/theme.css, and whatever a
+           user palette declares. Redefining them here repaints the whole
+           cascade for paper in one block, with no per-element overrides and
+           nothing to keep in step when a rule is added somewhere else. The
+           default theme is dark, so without this the document prints as light
+           grey text on white — the single thing that would make the output
+           useless.
+
+           All three family selectors are listed because
+           `:root[data-mode="dark"]` outranks a bare `:root` regardless of
+           source order; matching each one is what makes this block win on
+           specificity, and being the last stylesheet is what wins the tie.
+
+           `--content-width` and `--font-size` are in millimetres and points on
+           purpose. 160mm inside a 16mm margin centres on both A4 and Letter and
+           holds a ~80-character measure at 11pt; `--line-height` comes down
+           from the reading themes' 1.75 because airy leading costs paper. */
+        :root,
+        :root[data-mode="light"],
+        :root[data-mode="dark"] {
+          color-scheme: light;
+          --bg: #ffffff;
+          --sidebar-bg: #ffffff;
+          --btn-bg: #f4f4f4;
+          --hover: #f4f4f4;
+          --border: #b8b8b8;
+          --text: #000000;
+          --muted: #333333;
+          --link: #000000;
+          --accent: #555555;
+          --accent-dim: #ffffff;
+          --code-bg: #f7f7f7;
+          --content-width: 160mm;
+          --font-size: 11pt;
+          --line-height: 1.5;
+        }
+
+        /* 2. Layout — flatten the app out of the way of the paginator.
+
+           #content-scroll is a scroller inside a 100vh flex column, so left
+           alone the printed output is the one screenful that happened to be in
+           view: a document scrolled to 60% prints its middle third and nothing
+           else. Every box between <body> and #content is put back into normal
+           flow so the document paginates in full, from the top, whatever the
+           reading pane was scrolled to. */
+        html, body { height: auto; overflow: visible; background: #ffffff; }
+        body { display: block; }
+        #workspace, #main-wrap, #content-scroll {
+          display: block; overflow: visible;
+          height: auto; min-height: 0; position: static;
+        }
+        #content { padding: 0; margin: 0 auto; }
+
+        /* 3. Chrome — gone, unconditionally.
+
+           `!important` rather than source order, because several of these are
+           shown by a *more specific* selector (`#outline-panel.open`,
+           `.modal-overlay.open`) that no amount of being last can outrank. It
+           also makes this independent of `body.view-mode`: printing looks the
+           same whether or not the reader had the chrome hidden, which is the
+           point — view mode is a reading preference, not an export setting.
+
+           `button.code-copy` is in the list because the copy buttons are
+           injected into every rendered code block and would otherwise print as
+           a small empty box over each one. */
+        #titlebar, #sidebar, #btn-expand,
+        #outline-panel, #stack-panel, #stale-rail, #progress-rail,
+        #file-menu, #tooltip, #toast,
+        #palette-overlay, .modal-overlay,
+        button.code-copy { display: none !important; }
+
+        /* 4. The document itself.
+
+           Highlights print as plain text. They are session state that dies with
+           the process (tenet 2) and a PDF is durable, so baking them in is a
+           category error — and a *stale* highlight's red says something about
+           anchoring that means nothing at all on paper. Content-only also makes
+           the export reproducible: the same file gives the same PDF regardless
+           of what this session happened to mark up. Folding highlights and the
+           annotation stack in as an appendix is designed but not built — see
+           docs/plans/md-to-pdf-export.md. */
+        #content mark.hl,
+        #content mark.hl.stale {
+          background: none; color: inherit; padding: 0; outline: none;
+        }
+
+        /* Anything that scrolls on screen is *clipped* on paper, and clipped
+           means silently lost. Long code lines wrap instead, and a table stops
+           being a block-level scroller. */
+        #content pre { overflow: visible; white-space: pre-wrap; word-break: break-word; }
+        #content table { display: table; width: 100%; overflow: visible; }
+
+        /* syntect writes token colours as inline styles on every span, and its
+           themes are chosen for a screen: under a dark palette that is pale
+           pastels, which on a white slab is unreadable. An author `!important`
+           is the one thing that outranks an inline style, so code prints in the
+           body colour and keeps only syntect's bold and italic, which carry
+           structure and cost nothing. This does throw away usable colour on a
+           light palette; uniform legibility is worth more than that, and the
+           alternative (re-render through a light syntax theme before printing)
+           needs a second render round trip on the print path — see the plan. */
+        #content pre span { color: inherit !important; }
+
+        /* Pagination hints. Deliberately sparse: `break-inside: avoid` on a
+           block taller than a page pushes a blank page instead, so it goes only
+           on images, which are already capped at the measure. A heading alone at
+           the foot of a page is the one break worth forbidding outright.
+
+           The `page-break-*` aliases are belt to `break-*`'s braces: both are
+           one line, and this is a stylesheet that cannot be rendered here to
+           find out which one the shipping WebKit honours. */
+        #content :is(h1, h2, h3, h4, h5, h6) { break-after: avoid; page-break-after: avoid; }
+        #content img { break-inside: avoid; page-break-inside: avoid; }
+        #content p, #content li { orphans: 3; widows: 3; }
+
+        /* A link is dead on paper and its href is the only thing that can
+           revive it. External links only — a relative `.md` link points into a
+           repo the PDF's reader may not have, and in-document `#anchor` links
+           are noise. One rule to delete if the brackets read as clutter. */
+        #content a[href^="http"]::after {
+          content: " (" attr(href) ")";
+          font-size: 0.85em; word-break: break-all; opacity: 0.7;
+        }
+      }
+    </style>
   </head>
   <!-- Collapsed by default; `init()` removes the class unless there is a file
        to open. This direction round means `dreamd file.md` never flashes a
@@ -511,6 +664,14 @@
         <span id="progress-pct" data-tip="Reading position"></span>
         <button id="btn-outline" class="icon" data-tip="Toggle contents" data-tip-key="toggle_outline">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h2"/><path d="M9 6h11"/><path d="M7 12h2"/><path d="M12 12h8"/><path d="M10 18h2"/><path d="M15 18h5"/></svg>
+        </button>
+        <!-- No `data-tip-key`, because there is no keybind: printing is a rare,
+             deliberate action, and the obvious combo (`Ctrl+P`) is already
+             `palette_prev`, which the settings panel would flag red as a clash.
+             `#btn-hl-mode` below is the existing precedent for a titlebar
+             action with no key of its own. -->
+        <button id="btn-print" class="icon" data-tip="Print / save as PDF">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9V3h12v6"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><path d="M6 14h12v7H6z"/></svg>
         </button>
         <button id="btn-settings" class="icon" data-tip="Settings" data-tip-key="settings">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1.08-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1.08 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>

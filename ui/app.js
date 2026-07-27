@@ -1287,6 +1287,39 @@ async function sendStack(ids) {
   }
 }
 
+// ---- print / export to PDF -----------------------------------------------
+// Export is the OS print dialog and its "Save as PDF" destination. No PDF
+// crate, no bundled renderer, nothing added to the dependency tree: the whole
+// feature is an `@media print` stylesheet (see the `#print-css` block in
+// index.html) plus this one call.
+//
+// **Tenet 1 holds.** dreamd picks no path and writes no file — the dialog is
+// the OS's, the destination is the user's, and if they aim it at somewhere
+// inside the repo that is their save dialog doing what they told it. The tenet
+// is about the app not mutating repo content on its own, and nothing here
+// touches the markdown at all.
+//
+// **This goes through Rust, and that is not incidental.** `window.print()` is a
+// no-op in WKWebView: WebKit routes it to the UI delegate's `_webView:
+// printFrame:`, which wry does not implement, so the JS call returns having
+// done nothing whatsoever on the one platform dreamd is built for. The Rust
+// side calls `NSPrintOperation` directly. See `print_document` in main.rs.
+//
+// Nothing is closed or toggled first. Both side panels are absolutely
+// positioned overlays and the print sheet hides them along with the rest of the
+// chrome, unconditionally — so what comes out is the same document whatever was
+// open on screen, view mode included.
+async function printDocument() {
+  // A blank page, or worse the "Select a markdown file" placeholder, is not
+  // something to hand to a printer.
+  if (!currentFile) { toast("Nothing open to print"); return; }
+  try {
+    await invoke("print_document");
+  } catch (e) {
+    toast(String(e));
+  }
+}
+
 // ---- command palette -----------------------------------------------------
 let paletteResults = [];
 let paletteSel = 0;
@@ -1499,6 +1532,7 @@ function wireUi() {
     ro.observe(contentEl);
   }
 
+  $("btn-print").onclick = printDocument;
   $("btn-outline").onclick = toggleOutline;
   $("outline-close").onclick = () => $("outline-panel").classList.remove("open");
   $("btn-stack").onclick = toggleStack;

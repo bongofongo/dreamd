@@ -465,6 +465,31 @@ fn copy_to_clipboard(text: String) -> Result<(), String> {
     send::copy_clipboard(&text)
 }
 
+/// Open the OS print dialog over the rendered document — the "export to PDF"
+/// path, via the dialog's own Save-as-PDF destination.
+///
+/// This exists as a command rather than a bare `window.print()` in `app.js`
+/// because `window.print()` **does nothing at all in WKWebView**. WebKit routes
+/// it to the UI delegate's `_webView:printFrame:`, and wry's `WKUIDelegate`
+/// implements only the file-upload, media-permission and new-window callbacks —
+/// so the JS call returns having silently printed nothing, on the one platform
+/// dreamd is built for. `WebviewWindow::print` goes the other way, straight to
+/// `printOperationWithPrintInfo:` / `NSPrintOperation`; on WebKitGTK it runs
+/// `WebKitPrintOperation`'s dialog. Tauri's own docs claim `window.print()`
+/// works everywhere; on macOS + wry it does not.
+///
+/// No PDF crate is involved, nothing is written here, and no path is chosen
+/// here — the dialog is the OS's and the destination is the user's, which is
+/// what keeps this inside tenet 1. What the page looks like is entirely the
+/// `#print-css` block in `ui/index.html`.
+#[tauri::command]
+fn print_document(app: tauri::AppHandle) -> Result<(), String> {
+    app.get_webview_window("main")
+        .ok_or_else(|| "no window to print".to_string())?
+        .print()
+        .map_err(|e| e.to_string())
+}
+
 /// Move a file to the OS trash. The path must resolve to inside the repo root.
 #[tauri::command]
 fn delete_file(state: State<AppState>, path: String) -> Result<(), String> {
@@ -799,6 +824,7 @@ fn main() {
             save_theme,
             delete_theme,
             copy_to_clipboard,
+            print_document,
             delete_file,
             open_external,
             perf_mark,
