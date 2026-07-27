@@ -104,6 +104,10 @@ See `perf/README.md` for what each tier measures and how much to trust it.
 - **File options:** hover a file row and click `⋯` → **Copy path** or **Delete** (delete moves it to the OS Trash after a confirm).
 - **Collapse the tree:** press `Ctrl+B`, or click the `◀` arrow in the tree header; a floating `▶` at the left edge brings it back. The preview stays full-width.
 - **Top bar** (on the traffic-light row): contents, settings, highlighter, stack, and send — all icons.
+- **View mode:** `Ctrl+M` hides the top bar, the tree and both side panels at
+  once, leaving just the document. `Ctrl+M` again or `Esc` brings the chrome
+  back exactly as you left it — view mode never changes what you had collapsed
+  or open underneath. The palette and settings still open over it.
 - **Contents:** the outline icon (or `Ctrl+I`) opens a panel listing the open
   document's headings, indented by level; click one to jump to it. It follows
   the file while it is open, so a `:w` in Neovim updates it with the document.
@@ -142,6 +146,7 @@ See `perf/README.md` for what each tier measures and how much to trust it.
 | Toggle contents panel       | `Ctrl+I`                   |
 | Toggle file tree            | `Ctrl+B`                   |
 | Toggle stack panel          | `Ctrl+O`                   |
+| View mode (hide all chrome) | `Ctrl+M` (`Esc` exits)     |
 | Send stack                  | `Ctrl+Enter`               |
 | Copy stack to clipboard     | `Ctrl+C`                   |
 | Open settings               | `Ctrl+,`                   |
@@ -203,6 +208,7 @@ send_stack = "Ctrl+Enter"
 toggle_stack = "Ctrl+O"
 toggle_outline = "Ctrl+I"
 toggle_tree = "Ctrl+B"
+toggle_view = "Ctrl+M"                   # hide all chrome; Esc also exits
 copy_stack = "Ctrl+C"
 settings = "Ctrl+,"
 save_annotation = "Ctrl+Y"

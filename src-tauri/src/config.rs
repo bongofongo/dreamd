@@ -116,6 +116,9 @@ pub struct Keymap {
     pub toggle_outline: String,
     /// Collapse / restore the sidebar file tree.
     pub toggle_tree: String,
+    /// Distraction-free view mode: hide the titlebar, sidebar and side panels
+    /// in one flip, leaving only the rendered document.
+    pub toggle_view: String,
     /// Copy the assembled stack to the clipboard.
     pub copy_stack: String,
     /// Open the settings panel.
@@ -139,6 +142,10 @@ impl Default for Keymap {
             // I for "index"; B is the sidebar, the way every editor spells it.
             toggle_outline: "Ctrl+I".into(),
             toggle_tree: "Ctrl+B".into(),
+            // M for "minimal". Ctrl+M is free here and unclaimed by the
+            // webview; the macOS menubar's Cmd-chords can't reach it because
+            // `matchCombo` requires an exact modifier match.
+            toggle_view: "Ctrl+M".into(),
             copy_stack: "Ctrl+C".into(),
             settings: "Ctrl+,".into(),
             save_annotation: "Ctrl+Y".into(),

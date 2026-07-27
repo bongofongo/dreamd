@@ -196,6 +196,22 @@
       .pair .top { display: flex; align-items: center; gap: 6px; }
       #stack-actions { display: flex; gap: 8px; padding: 10px; border-top: 1px solid var(--border, #2e2940); }
 
+      /* view mode: one class over <body> hides every piece of chrome at once.
+         It deliberately does NOT touch `nav-collapsed` or either panel's `open`
+         class — it only out-ranks them in CSS — so leaving view mode restores
+         exactly the chrome the user had before entering, rather than stranding
+         them with a sidebar they never collapsed. That is also why this block
+         must stay *after* `body.nav-collapsed #btn-expand`, `#outline-panel.open`
+         and `#stack-panel.open`: those tie on specificity and source order
+         decides. Overlays (palette, settings, annotation) are `position: fixed`
+         above all of this and stay usable in view mode. */
+      body.view-mode #titlebar,
+      body.view-mode #sidebar,
+      body.view-mode #btn-expand,
+      body.view-mode #outline-panel,
+      body.view-mode #stack-panel { display: none; }
+      body.view-mode #workspace { grid-template-columns: 0 1fr; }
+
       /* command palette */
       #palette-overlay {
         position: fixed; inset: 0; background: rgba(0,0,0,0.4);

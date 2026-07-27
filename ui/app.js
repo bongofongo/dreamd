@@ -76,6 +76,7 @@ let keymap = {
   save_annotation: "Ctrl+Y",
   toggle_outline: "Ctrl+I",
   toggle_tree: "Ctrl+B",
+  toggle_view: "Ctrl+M",
   quick_highlight: true,
 };
 let pending = null; // { id, mark } while awaiting an annotation
@@ -806,6 +807,22 @@ function toggleTree() { document.body.classList.toggle("nav-collapsed"); }
 
 function toggleStack() { $("stack-panel").classList.toggle("open"); refreshStack(); }
 
+// Distraction-free reading: `body.view-mode` hides the titlebar, the sidebar
+// and both side panels together. Same shape as `toggleTree` — one class, no
+// teardown — and deliberately *additive*: it never writes `nav-collapsed` or a
+// panel's `open` class, so exiting restores whatever chrome was there before.
+// It is a plain toggle, not a mode that auto-exits: the palette and settings
+// float above view mode and leaving them puts you back where you were.
+//
+// The toast is the discoverability cost of hiding the titlebar — there is no
+// button left to click, so entering names both ways out.
+function toggleView() {
+  const on = document.body.classList.toggle("view-mode");
+  if (on) toast(`View mode — ${displayCombo(keymap.toggle_view)} or Esc to exit`);
+}
+
+function exitView() { document.body.classList.remove("view-mode"); }
+
 // ---- contents / outline panel --------------------------------------------
 // Built by walking the rendered DOM rather than as a side channel from Rust:
 // the headings are already in the tree the render just produced, and they
@@ -1123,11 +1140,19 @@ function wireKeys() {
     if (e.key === "Escape") {
       // Recording a keybind swallows Escape as "cancel", not "close panel".
       if (cancelRecording()) { e.preventDefault(); return; }
+      // Escape is also the way out of view mode, because view mode hides the
+      // titlebar and leaves nothing to click. It is the *last* claim on the
+      // key though: if any overlay or the file menu is open, this Escape
+      // closes that and view mode survives.
+      const claimed = ["palette-overlay", "annot-overlay", "confirm-overlay",
+                       "settings-overlay", "file-menu"]
+        .some((id) => $(id).classList.contains("open"));
       closePalette();
       closeFileMenu();
       if ($("annot-overlay").classList.contains("open")) cancelAnnot();
       if ($("confirm-overlay").classList.contains("open")) closeConfirm();
       if ($("settings-overlay").classList.contains("open")) closeSettings();
+      if (!claimed) exitView();
       return;
     }
     // While an overlay is open, let its own inputs handle keys.
@@ -1151,6 +1176,7 @@ function wireKeys() {
       triggerHighlight();
       return;
     }
+    if (matchCombo(e, keymap.toggle_view)) { e.preventDefault(); toggleView(); return; }
     if (matchCombo(e, keymap.toggle_tree)) { e.preventDefault(); toggleTree(); return; }
     if (matchCombo(e, keymap.toggle_outline)) { e.preventDefault(); toggleOutline(); return; }
     if (matchCombo(e, keymap.toggle_stack)) { e.preventDefault(); toggleStack(); return; }
@@ -1278,6 +1304,7 @@ const KEY_ACTIONS = [
   { id: "save_annotation", label: "Save annotation", sub: "From inside the annotation box" },
   { id: "toggle_outline", label: "Toggle contents panel", sub: "Outline of the open document's headings" },
   { id: "toggle_tree", label: "Toggle file tree", sub: "Collapse or restore the sidebar" },
+  { id: "toggle_view", label: "Toggle view mode", sub: "Hide the titlebar, sidebar and panels — Esc also exits" },
   { id: "toggle_stack", label: "Toggle stack panel" },
   { id: "send_stack", label: "Send stack to agent" },
   { id: "copy_stack", label: "Copy stack", sub: "Ignored while text is selected, so OS copy still works" },
