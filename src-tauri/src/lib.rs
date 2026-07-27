@@ -15,12 +15,14 @@ pub mod config;
 pub mod fs_walk;
 pub mod guard;
 pub mod markdown;
+pub mod mcp;
 #[cfg(target_os = "macos")]
 pub mod menu;
 pub mod perf;
 pub mod search;
 pub mod send;
 pub mod theme;
+pub mod untrusted;
 pub mod watcher;
 
 use std::path::{Path, PathBuf};
