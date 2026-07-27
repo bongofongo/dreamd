@@ -294,11 +294,25 @@ async function adoptRepoInfo() {
   nameEl.title = hasRepo ? info.root || "" : "";
 }
 
+// Every file path the tree currently shows. The watcher cannot tell a rename
+// that creates a file from a rename that replaces one, so it emits `file-added`
+// for both; this is what lets the ordinary atomic-replace save be dropped
+// without a repo walk. Rebuilt from the tree itself, so it can never disagree
+// with what is on screen.
+const knownPaths = new Set();
+
+function collectPaths(node, into) {
+  if (node.is_dir) for (const c of node.children) collectPaths(c, into);
+  else into.add(node.path);
+}
+
 // Split out so callers that already hold a fresh tree — `rebuild_index`
 // returns one — don't have to ask Rust to walk the repo again for it.
 function paintTree(root) {
   const tree = $("tree");
   tree.innerHTML = "";
+  knownPaths.clear();
+  collectPaths(root, knownPaths);
   // Render the root's children directly (skip the root dir node itself).
   for (const child of root.children) tree.appendChild(renderNode(child));
   // An empty sidebar used to render as literally nothing, which reads as a bug
@@ -1898,7 +1912,14 @@ function wireEvents() {
       perf.span("save_to_paint", t0);
     }
   });
-  listen("file-added", async () => {
+  listen("file-added", async (e) => {
+    // Most `file-added` events are an atomic-replace save of a file the tree
+    // already has — Neovim's default `backupcopy=auto` and Claude Code's writer
+    // both save that way, and the watcher cannot tell those from a genuinely
+    // new file. Dropping the known ones here is what keeps `save_to_paint` off
+    // the repo-walk path. Ahead of `perf.at`, so `events_per_save` keeps
+    // counting events that caused work rather than events that arrived.
+    if (e.payload && e.payload.path && knownPaths.has(e.payload.path)) return;
     perf.at("watcher_event");
     const t0 = perf.now();
     // `rebuild_index` hands back the tree from the walk it just did; asking for

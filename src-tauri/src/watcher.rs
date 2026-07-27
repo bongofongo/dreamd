@@ -3,6 +3,7 @@
 //! watches the active theme CSS for hot-reload.
 
 use crate::{is_markdown, theme};
+use notify::event::ModifyKind;
 use notify::{EventKind, RecursiveMode, Watcher};
 use serde::Serialize;
 use std::collections::HashMap;
@@ -35,6 +36,13 @@ struct Acc {
     created: bool,
     modified: bool,
     removed: bool,
+    /// A rename *landed on* this path. Kept apart from `modified` because it is
+    /// the only event a brand-new file's final path ever sees: a writer that
+    /// stages into `foo.md.tmp.NNN` and renames reports Create/Modify against
+    /// the temp name — which `is_markdown` discards — and a lone
+    /// `Modify(Name)` against `foo.md`. Folded into `modified`, that file never
+    /// reaches the tree. Claude Code's writer works exactly this way.
+    renamed: bool,
 }
 
 /// How long the pump waits before rechecking `cancel` while nothing is
@@ -170,13 +178,17 @@ fn emit(app: &AppHandle, path: &Path, acc: &Acc) {
         let _ = app.emit("file-removed", payload);
         return;
     }
-    // The tree and the search index only learn about new files from this.
-    if acc.created {
+    // The tree and the search index only learn about new files from this. A
+    // rename counts because it cannot be told apart from a create here — the
+    // usual case is an atomic-replace save of a file the tree already has, so
+    // the frontend drops the event when it already knows the path rather than
+    // paying a repo walk per `:w`.
+    if acc.created || acc.renamed {
         let _ = app.emit("file-added", payload.clone());
     }
     // A remove on a path that still exists is a rename-style save, so the open
     // document has to repaint just as it would for a plain write.
-    if acc.modified || acc.removed {
+    if acc.modified || acc.removed || acc.renamed {
         let _ = app.emit("file-changed", payload);
     }
 }
@@ -203,9 +215,81 @@ fn absorb(
         let field: fn(&mut Acc) = match event.kind {
             EventKind::Create(_) => |a| a.created = true,
             EventKind::Remove(_) => |a| a.removed = true,
+            // Ahead of the general `Modify` arm, which would otherwise swallow
+            // it — see `Acc::renamed`.
+            EventKind::Modify(ModifyKind::Name(_)) => |a| a.renamed = true,
             EventKind::Modify(_) => |a| a.modified = true,
             _ => continue,
         };
         field(pending.entry(path).or_default());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use notify::event::{DataChange, RenameMode};
+    use notify::Event;
+
+    /// Built by hand rather than through `ThemeWatch::new`, which reads the
+    /// real `~/.config/dreamd` — see the note in CLAUDE.md.
+    fn themes() -> ThemeWatch {
+        ThemeWatch {
+            file: None,
+            dir: PathBuf::from("/nonexistent/dreamd/themes"),
+        }
+    }
+
+    fn absorb_one(kind: EventKind, path: &str) -> Acc {
+        let mut pending = HashMap::new();
+        let mut touched = false;
+        absorb(
+            Ok(Event::new(kind).add_path(PathBuf::from(path))),
+            &themes(),
+            &mut pending,
+            &mut touched,
+        );
+        pending.remove(Path::new(path)).unwrap_or_default()
+    }
+
+    /// The whole point of `Acc::renamed`: an atomic-replace writer gives the
+    /// final path nothing but this event, so if it lands in `modified` the
+    /// frontend is never told a file appeared.
+    #[test]
+    fn rename_is_not_a_plain_modify() {
+        let acc = absorb_one(
+            EventKind::Modify(ModifyKind::Name(RenameMode::Any)),
+            "/repo/docs/new.md",
+        );
+        assert!(acc.renamed);
+        assert!(!acc.modified);
+    }
+
+    #[test]
+    fn content_write_is_a_plain_modify() {
+        let acc = absorb_one(
+            EventKind::Modify(ModifyKind::Data(DataChange::Content)),
+            "/repo/docs/new.md",
+        );
+        assert!(acc.modified);
+        assert!(!acc.renamed);
+    }
+
+    /// The staging file an atomic-replace writer creates is not markdown —
+    /// `foo.md.tmp.9182.beef` — so it must never enter `pending` at all.
+    #[test]
+    fn staging_file_is_ignored() {
+        let mut pending = HashMap::new();
+        let mut touched = false;
+        absorb(
+            Ok(
+                Event::new(EventKind::Create(notify::event::CreateKind::File))
+                    .add_path(PathBuf::from("/repo/docs/new.md.tmp.9182.beef")),
+            ),
+            &themes(),
+            &mut pending,
+            &mut touched,
+        );
+        assert!(pending.is_empty());
     }
 }
