@@ -1,5 +1,79 @@
 # Session log
 
+## 2026-07-27 — Deep perf run, and a scroll regression frozen into the baseline on purpose
+
+A one-task session: run the deep tier, move `perf/baseline.json`, commit it. It
+got there, and turned up one thing worth more than the baseline itself — a real,
+reproducible Chromium scroll regression that arrived with the overnight feature
+batch and had been invisible because every tier since was diffing against
+pre-feature numbers.
+
+### What happened
+
+1. **The baseline was two days and one feature batch stale.** It sat at
+   `312ac8b` (25 Jul). Everything since — the outline panel, `/` search, marks,
+   code-block copy buttons, the reading rail, the print stylesheet — landed
+   against it, so `perf-quick` and `perf-pass` had been comparing current code
+   to a pre-feature zero the whole time.
+
+2. **Ran `./perf/run.sh deep --update-baseline` on a quiet machine.** load1 1.71
+   on 8 cores, against 3.03 when the old baseline was taken. All four tools
+   present (`hyperfine`, `samply`, `cargo-bloat`, `xctrace`), no section null,
+   nothing silently skipped. 276 metrics compared. New baseline is
+   `bc79844`, committed as `85c4963` with the before/after in the body.
+
+3. **Criterion came back all green** — `reanchor_today/500` 311.6 → 281.6 µs,
+   `reanchor_exact_source/10` −11.8%, `keystrokes/10` −15.3%, `render/mixed/8k`
+   −9.6%, nothing regressed. Recorded as a re-zero, not a win: the machine was
+   quieter, and no commit in the range claims a core optimization.
+
+4. **The Chromium scroll rows are a real regression, and it was frozen in
+   deliberately.** `mixed-2m` `renderer.total_ms` 63.6 → 85.8 (+34.9%),
+   `main_thread_task_ms` 240 → 335 (+39.5%), highlightMode 285 → 434 (+52.2%).
+   It reproduces across two independent deep runs today at load 4.54 and 1.71,
+   so it is not noise. `script_ms`, `style_ms` and `layout_ms` are all still 0
+   while raster and composite carry the whole delta — which points at declared
+   CSS rather than added JS, matching the earlier finding that a rule can cost
+   double digits by merely existing. Baselining it means it stops being flagged,
+   so it is named in the commit body and here instead. It needs its own A/B
+   against the new zero; that is the next perf task, not this one.
+
+5. **Read the profiles rather than the summary table.** Render is 84% syntect
+   `highlighted_html_for_string`, of which 75% of total time is
+   `syntect::parsing::regex::Regex::search` down into fancy_regex's VM, plus ~6%
+   first-use regex compilation — pulldown-cmark itself is noise, so a render win
+   has to come out of syntect. `repo-5000` startup is 43% `opendir`/`open`, 18%
+   `stat`, 8% `getdirentries64`: the `ignore` walker's syscalls with nothing
+   above them, consistent with `walk_done` being 46.9 ms of the 53.6 ms total.
+
+6. **Two smaller shifts recorded.** A new `d:decorate_code` phase mark at 8 ms
+   (the code-block copy buttons), and `d:ipc_get_highlights` swapping scenarios —
+   the ~1 s seeded cost now lands on `launch_small_repo` (3 → 923 ms) instead of
+   `launch` (1002 → 14 ms). Both of today's runs agree, so the new baseline is
+   self-consistent and the total is unchanged.
+
+### Mistakes & deviations
+
+- **`profile.symbolicated: true` overstates what the tier delivered.** samply's
+  capture symbolicates properly against `target/profiling/examples/render_doc`,
+  but the Instruments trace profiles `/Applications/dreamd.app` — the release
+  build, which sets `strip = true` — so every app frame in it is a raw address.
+  Only the dyld and libc frames resolve. The startup finding above survives that
+  because it is a syscall finding, but the flag should not be read as "both
+  profiles are readable".
+- Nearly reported the samply profile as unsymbolicated too: its saved JSON holds
+  raw addresses because samply defers symbolication to `samply load`. Resolved
+  them with `atos` against the profiling binary instead of concluding the tier
+  had failed.
+
+### State
+
+Committed `85c4963`, `perf/baseline.json` only — the two untracked files under
+`docs/` belong to another session and were left alone. No Rust or `ui/` change
+this session, so no `cargo build` gate and no `perf-pass`; the deep run *is* the
+measurement. Open: the Chromium scroll regression, unexplained and now
+baselined. Chromium numbers throughout are relative signal, not WKWebView.
+
 ## 2026-07-27 — CI from nothing: 99 tests, the security tenets made reachable, and one cache reverted for being useless
 
 The ask was to improve CI/CD ahead of two pending decisions — whether highlight
