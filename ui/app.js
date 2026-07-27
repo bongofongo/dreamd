@@ -910,36 +910,203 @@ async function deleteHighlight() {
 }
 
 // ---- stack panel ---------------------------------------------------------
+// The stack is the ledger of the app's core loop, so this render path has one
+// rule above every other: what the panel shows, in the order it shows it, is
+// exactly what `get_stack` just returned. The animation below is in service of
+// that, never at its expense.
+//
+// It *reconciles* rather than rebuilds. The old version wiped `innerHTML` and
+// re-created every card on every change, which is correct but leaves no node
+// alive long enough for a transition to attach to — and it silently re-checked
+// every checkbox, so "Send selected" could only differ from "Send all" if you
+// unchecked something in the seconds before pressing it. Keying each card by
+// the highlight id fixes both: a pair that is still on the stack keeps its
+// node (and therefore its checkbox), a new pair mounts with the enter
+// animation, a departed one leaves with the exit animation.
+//
+// The hazard the exit animation introduces, and the reason for the two guards
+// in `exitPair`/`checkedIds`: a leaving card is still in the DOM for ~170ms
+// after its pair is gone from the store, and `send_stack(ids)` resolves ids
+// against the *highlight* list rather than against the stack — so a checkbox
+// that outlived its pair would put a just-removed pair back into the send.
+
+// Monotonic, the same idiom as `paletteSeq`. Two refreshes can be in flight at
+// once (a remove racing an annotation save); with stable keys an older reply
+// landing last would resurrect a card that is already gone, where the old
+// teardown-and-rebuild merely painted a stale list.
+let stackSeq = 0;
+
+// Mirrors the `.pair.leaving` transition in `index.html`, plus a little slack.
+// Removal is on a timer rather than on `transitionend`: a card that outlives
+// its pair is the one failure this file must not have, and `transitionend` can
+// simply never arrive — close the panel or press Ctrl+M 50ms into an exit and
+// the card is `display: none`, its transition abandoned. The timer does not
+// care. (It also sidesteps `transitionend` firing once per property, which
+// would otherwise cut the collapse short at whichever property finishes first.)
+const STACK_EXIT_MS = 170;
+
+// Motion is only ever attempted on a panel the reader can actually see. A
+// closed (`display: none`) panel runs neither animations nor transitions, so
+// animating into one buys nothing and would leave `.enter`'s `both` fill mode
+// holding a card at `opacity: 0` until the panel is next opened. Reduced
+// motion opts out for the same reason it always does.
+function stackAnimates() {
+  if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) return false;
+  if (document.body.classList.contains("view-mode")) return false;
+  return $("stack-panel").classList.contains("open");
+}
+
 async function refreshStack() {
+  const seq = ++stackSeq;
   const pairs = await invoke("get_stack");
+  if (seq !== stackSeq) return; // superseded by a later refresh
   const badge = $("stack-badge");
   badge.textContent = pairs.length;
   badge.classList.toggle("show", pairs.length > 0);
-  const list = $("stack-list");
-  list.innerHTML = "";
-  if (pairs.length === 0) {
-    list.innerHTML = `<div class="empty">No pairs yet. Select text and press ${keymap.highlight}.</div>`;
-    return;
-  }
+  reconcileStack($("stack-list"), pairs);
+}
+
+// A live card: a `.pair` that still stands for something on the stack.
+function isLivePair(n) {
+  return !!n && !!n.classList && n.classList.contains("pair") && !n.classList.contains("leaving");
+}
+
+function reconcileStack(list, pairs) {
+  // Decided once per refresh, so an enter and an exit in the same pass cannot
+  // disagree about whether this render is animated.
+  const animate = stackAnimates();
+
+  // The empty-state notice is removed up front so it can never be mistaken for
+  // a position in the ordering pass below.
+  const empty = list.querySelector(".empty");
+  if (empty && pairs.length) empty.remove();
+
+  // `.leaving` cards are deliberately not adoptable: a pair that comes right
+  // back (annotate → remove → annotate) mounts a fresh card rather than
+  // inheriting one mid-exit with its checkbox already torn out.
+  const live = new Map();
+  for (const el of [...list.children]) if (isLivePair(el)) live.set(el.dataset.id, el);
+
+  const ordered = [];
+  const seen = new Set();
   for (const p of pairs) {
-    const el = document.createElement("div");
-    el.className = "pair";
-    const loc = p.highlight.line_start === p.highlight.line_end
-      ? `L${p.highlight.line_start}`
-      : `L${p.highlight.line_start}-${p.highlight.line_end}`;
-    const rel = p.highlight.file_path.replace(/^.*\//, "");
-    el.innerHTML =
-      `<div class="top"><input type="checkbox" checked data-id="${p.highlight.id}" />` +
-      `<span class="loc">${escapeHtml(rel)} · ${loc}${p.highlight.state === "stale" ? " · ⚠ stale" : ""}</span></div>` +
-      `<div class="ev">${escapeHtml(p.highlight.quote.slice(0, 200))}</div>` +
-      `<div class="an">${escapeHtml(p.annotation)}</div>`;
-    const rm = document.createElement("button");
-    rm.textContent = "remove";
-    rm.style.marginTop = "6px";
-    rm.onclick = async () => { await invoke("remove_pair", { id: p.highlight.id }); refreshStack(); };
-    el.appendChild(rm);
-    list.appendChild(el);
+    const id = String(p.highlight.id);
+    seen.add(id);
+    let el = live.get(id);
+    if (el) updatePair(el, p);
+    else {
+      el = buildPair(p);
+      if (animate) el.classList.add("enter");
+    }
+    ordered.push(el);
   }
+  for (const [id, el] of live) if (!seen.has(id)) exitPair(el, animate);
+
+  // Place the cards in `pairs` order, moving only the nodes actually out of
+  // place. Re-inserting a node restarts its CSS animation, so a blanket
+  // append-everything sweep would replay the enter snap on every card on every
+  // refresh. `.leaving` cards hold their old slot until they collapse and are
+  // stepped over rather than counted as a position.
+  let cursor = list.firstChild;
+  for (const el of ordered) {
+    while (cursor && cursor !== el && !isLivePair(cursor)) cursor = cursor.nextSibling;
+    if (cursor === el) cursor = el.nextSibling;
+    else list.insertBefore(el, cursor); // a null cursor appends
+  }
+
+  // Appended last, so it sits *below* any card still animating out rather than
+  // claiming the list is empty above one the reader can still see.
+  if (!pairs.length && !list.querySelector(".empty")) {
+    const msg = document.createElement("div");
+    msg.className = "empty";
+    msg.textContent = `No pairs yet. Select text and press ${keymap.highlight}.`;
+    list.appendChild(msg);
+  }
+}
+
+function buildPair(p) {
+  const id = String(p.highlight.id);
+  const el = document.createElement("div");
+  el.className = "pair";
+  el.dataset.id = id;
+
+  const top = document.createElement("div");
+  top.className = "top";
+  const cb = document.createElement("input");
+  cb.type = "checkbox";
+  cb.checked = true;
+  cb.dataset.id = id;
+  const loc = document.createElement("span");
+  loc.className = "loc";
+  // Shares `button.icon`/`button.danger` from index.html instead of the inline
+  // `marginTop` this used to carry, and moves up into the header row where the
+  // rest of the card's chrome already lives.
+  const rm = document.createElement("button");
+  rm.className = "icon danger rm";
+  rm.textContent = "✕";
+  rm.setAttribute("aria-label", "Remove from stack");
+  rm.dataset.tip = "Remove from stack"; // `wireTooltips()` delegates on [data-tip]
+  rm.onclick = async () => {
+    await invoke("remove_pair", { id: p.highlight.id });
+    refreshStack();
+  };
+  top.append(cb, loc, rm);
+
+  const ev = document.createElement("div");
+  ev.className = "ev";
+  const an = document.createElement("div");
+  an.className = "an";
+  el.append(top, ev, an);
+
+  // Drop `.enter` once it has played, so a later reorder of this node does not
+  // replay it. The class is only ever added on a visible panel (see
+  // `stackAnimates`), so the event does arrive; if a Ctrl+M mid-animation
+  // cancels it, the class simply survives and the snap replays on the way back.
+  el.addEventListener("animationend", () => el.classList.remove("enter"), { once: true });
+
+  updatePair(el, p);
+  return el;
+}
+
+// Everything a refresh can legitimately change about an existing card. The
+// checkbox is pointedly *not* touched: it is the reader's selection, and the
+// old rebuild resetting it on every unrelated refresh was the bug that made
+// "Send selected" indistinguishable from "Send all".
+function updatePair(el, p) {
+  const h = p.highlight;
+  const span = h.line_start === h.line_end ? `L${h.line_start}` : `L${h.line_start}-${h.line_end}`;
+  const rel = h.file_path.replace(/^.*\//, "");
+  const stale = h.state === "stale";
+  // `textContent` throughout, so none of this needs `escapeHtml` at all — the
+  // quote and the annotation are user text and never markup (tenet 4).
+  el.querySelector(".loc").textContent = `${rel} · ${span}${stale ? " · ⚠ stale" : ""}`;
+  el.querySelector(".ev").textContent = h.quote.slice(0, 200);
+  el.querySelector(".an").textContent = p.annotation;
+  el.classList.toggle("stale", stale);
+}
+
+// Snap a removed card out toward the panel edge while collapsing its box, then
+// drop it. Idempotent: a second call on an already-leaving card does nothing.
+function exitPair(el, animate) {
+  if (el.classList.contains("leaving")) return;
+  el.classList.remove("enter");
+  el.classList.add("leaving");
+  el.setAttribute("aria-hidden", "true");
+  // Guard 1 of 2. The checkbox goes *now*, the moment the pair leaves the
+  // stack, so it cannot be picked up by `checkedIds()` — or by anything else
+  // that queries `#stack-list` — during the exit. Guard 2 is the `.leaving`
+  // filter in `checkedIds()` itself.
+  const cb = el.querySelector('input[type="checkbox"]');
+  if (cb) cb.remove();
+
+  if (!animate) { el.remove(); return; }
+  // Lock the height the collapse animates from.
+  el.style.height = `${el.offsetHeight}px`;
+  requestAnimationFrame(() => {
+    el.style.height = "0px"; // inline, to beat the inline height set just above
+    el.classList.add("out");
+  });
+  setTimeout(() => el.remove(), STACK_EXIT_MS);
 }
 
 // The file tree's collapsed state is one class on <body> and nothing else —
@@ -1101,8 +1268,13 @@ function buildOutline() {
   list.appendChild(frag);
 }
 
+// `.leaving` cards are excluded: a pair removed from the stack lingers in the
+// DOM for the length of its exit animation, and `send_stack` resolves ids
+// against the highlight list rather than against the stack — so a checkbox that
+// outlived its pair would send a pair the reader just took off. `exitPair`
+// already deletes that checkbox; this is the second, cheaper guard.
 function checkedIds() {
-  return [...document.querySelectorAll('#stack-list input[type="checkbox"]:checked')]
+  return [...document.querySelectorAll('#stack-list .pair:not(.leaving) input[type="checkbox"]:checked')]
     .map((c) => Number(c.dataset.id));
 }
 

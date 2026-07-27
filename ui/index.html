@@ -264,11 +264,59 @@
       #stack-panel.open { display: flex; }
       #stack-panel h3 { margin: 0; padding: 10px 12px; border-bottom: 1px solid var(--border, #2e2940); font-size: 13px; display: flex; align-items: center; justify-content: space-between; }
       #stack-list { flex: 1; overflow: auto; padding: 8px; }
-      .pair { border: 1px solid var(--border, #2e2940); border-radius: 6px; padding: 8px; margin-bottom: 8px; }
-      .pair .loc { font-size: 11px; opacity: 0.6; }
+      /* A card, not a bare outline: `--btn-bg` over the panel's `--sidebar-bg`
+         is the same one-step lift every other raised surface here uses, and it
+         is what makes the gaps between pairs read as gaps. */
+      .pair {
+        border: 1px solid var(--border, #2e2940); border-radius: 8px;
+        padding: 8px; margin-bottom: 8px;
+        background: var(--btn-bg, #1f1c2b);
+      }
+      .pair:hover { border-color: var(--accent-dim, #2b2447); }
+      .pair.stale { border-color: var(--stale, #ef6a7d); }
+      /* The location line has to yield: it is metadata, and the remove button
+         to its right must keep its size on a long filename. */
+      .pair .loc { font-size: 11px; opacity: 0.6; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .pair .ev { font-size: 12px; opacity: 0.85; margin: 4px 0; border-left: 2px solid var(--hl, #f2d16b); padding-left: 6px; }
+      .pair.stale .ev { border-left-color: var(--stale, #ef6a7d); }
       .pair .an { font-size: 13px; }
       .pair .top { display: flex; align-items: center; gap: 6px; }
+      /* Muted rather than hover-only (cf. `.file-opts`): this is the only way
+         to take a pair off the stack, so it stays legible without being a red
+         ✕ shouting from every card. Overrides `button.icon`'s padding. */
+      .pair .rm { flex: 0 0 auto; padding: 1px 6px; font-size: 11px; line-height: 1.4; opacity: 0.4; }
+      .pair:hover .rm, .pair .rm:hover, .pair .rm:focus-visible { opacity: 1; }
+
+      /* Push/pop motion. Snap, not slide-and-resettle: a new pair arrives from
+         the panel's right edge in 130ms with no overshoot, a removed one leaves
+         the same way while its own box collapses so the cards below it do not
+         jump. `.leaving` is animation, never state — `refreshStack()` keys off
+         the highlight id and skips these, and `checkedIds()` excludes them so a
+         card that outlives its pair can never be sent. */
+      @keyframes stack-snap-in {
+        from { opacity: 0; transform: translateX(26px); }
+        to   { opacity: 1; transform: none; }
+      }
+      .pair.enter { animation: stack-snap-in 0.13s cubic-bezier(0.16, 1, 0.3, 1) both; }
+      .pair.leaving {
+        overflow: hidden; pointer-events: none;
+        transition: height 0.15s ease-in, padding 0.15s ease-in, margin 0.15s ease-in,
+                    border-width 0.15s ease-in, opacity 0.1s ease-in, transform 0.13s ease-in;
+      }
+      /* Paired with an inline `height: 0` set in the same frame — the starting
+         height is measured in JS, so it cannot live here. */
+      .pair.leaving.out {
+        padding-top: 0; padding-bottom: 0; margin-bottom: 0;
+        border-top-width: 0; border-bottom-width: 0;
+        opacity: 0; transform: translateX(20px);
+      }
+      /* Belt to `app.js`'s own `prefers-reduced-motion` check, which removes a
+         leaving card outright rather than waiting on a transition. */
+      @media (prefers-reduced-motion: reduce) {
+        .pair.enter { animation: none; }
+        .pair.leaving { transition: none; }
+      }
+
       #stack-actions { display: flex; gap: 8px; padding: 10px; border-top: 1px solid var(--border, #2e2940); }
 
       /* view mode: one class over <body> hides every piece of chrome at once.

@@ -127,7 +127,9 @@ See `perf/README.md` for what each tier measures and how much to trust it.
 - **Highlight → annotate:** select text in the preview, press the highlight key,
   type a question/comment, "Add to stack".
 - **Send:** press the send key (or the toolbar **Send ▸**) to push the whole
-  stack; open the stack panel to cherry-pick which pairs go.
+  stack; open the stack panel to cherry-pick which pairs go. Ticks stick — a
+  pair you untick stays unticked as you add and remove others, so **Send
+  selected** sends the selection you actually built.
 
 ### Send behavior (tmux optional)
 
