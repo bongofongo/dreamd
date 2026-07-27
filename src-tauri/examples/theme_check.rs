@@ -125,7 +125,10 @@ fn main() {
                 failed += 1;
             }
             Some(css) if theme::background(&css, *scheme).is_none() => {
-                println!("FAIL  alias {alias}: no parseable --bg in {}", label(*scheme));
+                println!(
+                    "FAIL  alias {alias}: no parseable --bg in {}",
+                    label(*scheme)
+                );
                 failed += 1;
             }
             Some(_) => {}

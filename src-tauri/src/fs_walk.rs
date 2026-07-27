@@ -7,7 +7,6 @@ use serde::Serialize;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-
 #[derive(Debug, Clone, Serialize)]
 pub struct FileNode {
     /// File or directory name (leaf component).

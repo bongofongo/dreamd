@@ -98,7 +98,12 @@ impl Doc {
     /// Every line span where `quote_ns` occurs with `prefix_ns`/`suffix_ns`
     /// matching in full — i.e. every answer that is defensible on the evidence
     /// an anchor carries.
-    fn perfect_spans(&self, quote_ns: &str, prefix_ns: &str, suffix_ns: &str) -> Vec<(usize, usize)> {
+    fn perfect_spans(
+        &self,
+        quote_ns: &str,
+        prefix_ns: &str,
+        suffix_ns: &str,
+    ) -> Vec<(usize, usize)> {
         let mut out = Vec::new();
         // Overlapping occurrences included: the corpus is periodic in places,
         // and `str::match_indices` cannot see a match that begins inside the

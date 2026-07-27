@@ -91,7 +91,8 @@ pub fn render_with(source: &str, code_theme: &str) -> String {
     let parser = Parser::new_ext(source, options());
 
     let mut events: Vec<Event> = Vec::new();
-    let mut code_buf: Option<(String, String)> = None; // (lang, text)
+    // (lang, text) of the fence currently being read.
+    let mut code_buf: Option<(String, String)> = None;
     // Fenced blocks are collected during the parse and highlighted afterwards,
     // in parallel — syntect dominates render time on any document with code
     // (`render/code/2m` vs `render/prose/2m` is a ~750x spread) and each block
@@ -287,12 +288,11 @@ fn highlight_blocks(blocks: &[Block], theme_name: &str) -> Vec<(usize, String)> 
     // taking a fixed slice.
     std::thread::scope(|scope| {
         for _ in 0..workers {
-            scope.spawn(|| loop {
-                let Some(b) = blocks.get(next.fetch_add(1, Ordering::Relaxed)) else {
-                    break;
-                };
-                let html = highlight_code(&b.lang, &b.text, theme);
-                out.lock().unwrap().push((b.at, html));
+            scope.spawn(|| {
+                while let Some(b) = blocks.get(next.fetch_add(1, Ordering::Relaxed)) {
+                    let html = highlight_code(&b.lang, &b.text, theme);
+                    out.lock().unwrap().push((b.at, html));
+                }
             });
         }
     });
@@ -441,7 +441,9 @@ fn best_match(
         }
         // Better context wins; between equal contexts, the copy nearer to
         // where the highlight already was.
-        if best.map_or(true, |(s, p)| score > s || (score == s && dist(pos) < dist(p))) {
+        if best.map_or(true, |(s, p)| {
+            score > s || (score == s && dist(pos) < dist(p))
+        }) {
             best = Some((score, pos));
         }
     }
@@ -568,9 +570,7 @@ impl<'a> SourceIndex<'a> {
             .checked_sub(1)
             .and_then(|i| self.line_starts.get(i).copied());
         let source = self.source;
-        let stripped = self
-            .stripped
-            .get_or_insert_with(|| Stripped::build(source));
+        let stripped = self.stripped.get_or_insert_with(|| Stripped::build(source));
         let hint = hint_src.map(|b| stripped.offset_of(b));
         let (start, end) = stripped.find(&quote_ns, &prefix_ns, &suffix_ns, hint)?;
         Some(Location {

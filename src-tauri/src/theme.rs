@@ -64,7 +64,10 @@ pub const BUNDLED: &[(&str, &str)] = &[
     ("athenaeum", include_str!("../../ui/themes/athenaeum.css")),
     ("gruvbox", include_str!("../../ui/themes/gruvbox.css")),
     ("catppuccin", include_str!("../../ui/themes/catppuccin.css")),
-    ("tokyo-night", include_str!("../../ui/themes/tokyo-night.css")),
+    (
+        "tokyo-night",
+        include_str!("../../ui/themes/tokyo-night.css"),
+    ),
     ("nord", include_str!("../../ui/themes/nord.css")),
     ("solarized", include_str!("../../ui/themes/solarized.css")),
     (
@@ -358,7 +361,7 @@ pub fn custom_property(css: &str, name: &str, scheme: Scheme) -> Option<String> 
             // `;` *or* `}`: a final declaration written without its semicolon
             // would otherwise swallow every block after it — which is only
             // harmless while a palette is a single block.
-            let value = css[start..].split(|c| c == ';' || c == '}').next()?;
+            let value = css[start..].split([';', '}']).next()?;
             return Some(value.trim().to_string());
         }
         from = at;

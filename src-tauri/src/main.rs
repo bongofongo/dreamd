@@ -318,7 +318,11 @@ fn get_theme(state: State<AppState>) -> ThemeView {
 /// before this landed would bake the old code colours into the new palette.
 /// Awaiting the return value is what closes that window.
 #[tauri::command]
-fn set_appearance(app: tauri::AppHandle, state: State<AppState>, scheme: theme::Scheme) -> ThemeView {
+fn set_appearance(
+    app: tauri::AppHandle,
+    state: State<AppState>,
+    scheme: theme::Scheme,
+) -> ThemeView {
     state.set_scheme(scheme);
     let view = theme_view(&state);
     // The native window background follows too, so an auto-switch doesn't leave
@@ -760,7 +764,11 @@ fn main() {
     }
 
     if deferred && has_repo {
-        let (c, root, ignores) = (catalog.clone(), repo_root.clone(), cfg.extra_ignores.clone());
+        let (c, root, ignores) = (
+            catalog.clone(),
+            repo_root.clone(),
+            cfg.extra_ignores.clone(),
+        );
         std::thread::spawn(move || c.build(&root, &ignores));
     } else if !has_repo {
         // Nothing to walk, so nothing will ever resolve the catalog's readiness

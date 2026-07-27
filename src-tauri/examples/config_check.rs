@@ -12,10 +12,10 @@
 
 use dreamd::config::{self, Config, Mode};
 use dreamd::theme;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 fn main() {
-    let root = PathBuf::from(std::env::temp_dir()).join("dreamd-config-check");
+    let root = std::env::temp_dir().join("dreamd-config-check");
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).expect("temp dir");
 
@@ -53,7 +53,11 @@ fn main() {
     write_global("tmux_autodetect = false\n\n[keymap]\npalette = \"Ctrl+Space\"\n");
     write_local(&repo, Some("tmux_target = \"%3\"\n"));
     let cfg = Config::load(&repo);
-    checks.eq("local file preserves global keybind", cfg.keymap.palette, "Ctrl+Space");
+    checks.eq(
+        "local file preserves global keybind",
+        cfg.keymap.palette,
+        "Ctrl+Space",
+    );
     checks.eq(
         "local file preserves global tmux_autodetect",
         cfg.tmux_autodetect,
@@ -72,7 +76,11 @@ fn main() {
     write_global("theme_css = \"/tmp/does-not-exist.css\"\n");
     write_local(&repo, Some("theme = \"tokyo-night\"\n"));
     let cfg = Config::load(&repo);
-    checks.eq("a repo naming a theme clears a global theme_css", cfg.theme_css, None);
+    checks.eq(
+        "a repo naming a theme clears a global theme_css",
+        cfg.theme_css,
+        None,
+    );
     checks.eq("and that theme wins", cfg.theme, Some("tokyo-night".into()));
 
     // --- repo-local theme_css is untrusted input --------------------------
@@ -86,13 +94,21 @@ fn main() {
     // repo-local file is allowed to set it.
     write_global("");
     write_local(&repo, None);
-    checks.eq("default mode is system", Config::load(&repo).mode(), Mode::System);
+    checks.eq(
+        "default mode is system",
+        Config::load(&repo).mode(),
+        Mode::System,
+    );
 
     write_global("mode = \"light\"\n");
     checks.eq("global mode", Config::load(&repo).mode(), Mode::Light);
 
     write_local(&repo, Some("mode = \"dark\"\n"));
-    checks.eq("repo-local mode wins", Config::load(&repo).mode(), Mode::Dark);
+    checks.eq(
+        "repo-local mode wins",
+        Config::load(&repo).mode(),
+        Mode::Dark,
+    );
     checks.ok(
         "and is reported as an override",
         config::local_override_keys(&repo).contains(&"mode".to_string()),
@@ -101,7 +117,11 @@ fn main() {
     write_local(&repo, None);
     write_global("");
     config::set_global_key("mode", "dark".into()).expect("set mode");
-    checks.eq("written mode reloads", Config::load(&repo).mode(), Mode::Dark);
+    checks.eq(
+        "written mode reloads",
+        Config::load(&repo).mode(),
+        Mode::Dark,
+    );
 
     let before = std::fs::read_to_string(config::global_path()).expect("read");
     checks.ok(
@@ -130,13 +150,18 @@ fn main() {
     );
 
     // --- write-back -------------------------------------------------------
-    write_global("# hand-written\ntmux_target = \"work:0.1\"\n\n[keymap]\npalette = \"Ctrl+Space\"\n");
+    write_global(
+        "# hand-written\ntmux_target = \"work:0.1\"\n\n[keymap]\npalette = \"Ctrl+Space\"\n",
+    );
     write_local(&repo, None);
     config::set_global_key("theme", "nord".into()).expect("set theme");
     config::set_global_key("keymap.toggle_stack", "Ctrl+B".into()).expect("set keybind");
     let text = std::fs::read_to_string(config::global_path()).expect("read back");
     checks.ok("write keeps unrelated keys", text.contains("work:0.1"));
-    checks.ok("write keeps unrelated keybinds", text.contains("Ctrl+Space"));
+    checks.ok(
+        "write keeps unrelated keybinds",
+        text.contains("Ctrl+Space"),
+    );
     checks.ok("write applies the new key", text.contains("Ctrl+B"));
     checks.ok(
         "write does not spell out defaults",
@@ -228,7 +253,10 @@ impl Checks {
     }
 
     fn finish(self) {
-        println!("config_check: {} passed, {} failed", self.passed, self.failed);
+        println!(
+            "config_check: {} passed, {} failed",
+            self.passed, self.failed
+        );
         if self.failed > 0 {
             std::process::exit(1);
         }

@@ -341,8 +341,8 @@ pub fn write_global(table: &Table) -> std::io::Result<()> {
 pub fn patch_global(patch: Table) -> Result<Config, String> {
     let mut table = global_table();
     deep_merge(&mut table, patch);
-    let cfg = Config::deserialize(Value::Table(table.clone()))
-        .map_err(|e| format!("rejected: {e}"))?;
+    let cfg =
+        Config::deserialize(Value::Table(table.clone())).map_err(|e| format!("rejected: {e}"))?;
     write_global(&table).map_err(|e| format!("cannot write {}: {e}", global_path().display()))?;
     Ok(cfg)
 }

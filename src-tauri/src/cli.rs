@@ -123,7 +123,8 @@ fn theme_cmd(action: ThemeCmd, cfg: &Config) -> Result<(), String> {
             // self-healing path: a config migrates the first time it is
             // touched, and the alias table stays a shim rather than a second
             // naming scheme.
-            let migrate = theme::dealias(&name).filter(|_| theme::BUNDLED.iter().all(|(n, _)| *n != name));
+            let migrate =
+                theme::dealias(&name).filter(|_| theme::BUNDLED.iter().all(|(n, _)| *n != name));
             match migrate {
                 Some((family, scheme)) => {
                     let mode = match scheme {
@@ -165,7 +166,8 @@ fn theme_cmd(action: ThemeCmd, cfg: &Config) -> Result<(), String> {
                     .name
                     .unwrap_or_else(|| theme::DEFAULT_THEME.to_string())
             });
-            let css = theme::palette(&source).ok_or_else(|| format!("no theme named {source:?}"))?;
+            let css =
+                theme::palette(&source).ok_or_else(|| format!("no theme named {source:?}"))?;
             if let Some(existing) = theme::user_path(&name) {
                 if existing.exists() {
                     return Err(format!("{} already exists", existing.display()));
@@ -234,7 +236,8 @@ fn render_value(value: &toml::Value) -> String {
 
 fn edit(path: PathBuf) -> Result<(), String> {
     if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+        std::fs::create_dir_all(dir)
+            .map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
     }
     if !path.exists() {
         std::fs::write(&path, "").map_err(|e| format!("cannot create {}: {e}", path.display()))?;
