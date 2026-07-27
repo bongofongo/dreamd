@@ -119,6 +119,9 @@ pub struct Keymap {
     /// Distraction-free view mode: hide the titlebar, sidebar and side panels
     /// in one flip, leaving only the rendered document.
     pub toggle_view: String,
+    /// Jump the reading pane to the top / bottom of the open document.
+    pub jump_top: String,
+    pub jump_bottom: String,
     /// Copy the assembled stack to the clipboard.
     pub copy_stack: String,
     /// Open the settings panel.
@@ -146,6 +149,14 @@ impl Default for Keymap {
             // webview; the macOS menubar's Cmd-chords can't reach it because
             // `matchCombo` requires an exact modifier match.
             toggle_view: "Ctrl+M".into(),
+            // Vim's `gg`/`G` would be the obvious pair, but `gg` is a two-key
+            // sequence and `matchCombo` only knows single combos — see
+            // docs/plans/jump-top-bottom-keybind.md. `Home`/`End` are single
+            // keys with the same effect, and do nothing else in the app, so
+            // they cost no keyspace; a vim user rebinds jump_bottom to
+            // "Shift+G" in one line.
+            jump_top: "Home".into(),
+            jump_bottom: "End".into(),
             copy_stack: "Ctrl+C".into(),
             settings: "Ctrl+,".into(),
             save_annotation: "Ctrl+Y".into(),

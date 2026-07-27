@@ -77,6 +77,8 @@ let keymap = {
   toggle_outline: "Ctrl+I",
   toggle_tree: "Ctrl+B",
   toggle_view: "Ctrl+M",
+  jump_top: "Home",
+  jump_bottom: "End",
   quick_highlight: true,
 };
 let pending = null; // { id, mark } while awaiting an annotation
@@ -823,6 +825,15 @@ function toggleView() {
 
 function exitView() { document.body.classList.remove("view-mode"); }
 
+// Jump the reading pane to the ends of the document. `#content-scroll` is the
+// scroller, not the window, so the browser's own Home/End would do nothing
+// unless focus happened to be inside it — which is why these are worth binding
+// at all. Instant, not smooth: everything else that moves this pane
+// (`scrollIntoView`, restoring `scrollTop` after a re-render) is instant, and a
+// smooth animation over a long document is the one place scrolling can jank.
+function jumpTop() { scrollEl.scrollTo({ top: 0 }); }
+function jumpBottom() { scrollEl.scrollTo({ top: scrollEl.scrollHeight }); }
+
 // ---- contents / outline panel --------------------------------------------
 // Built by walking the rendered DOM rather than as a side channel from Rust:
 // the headings are already in the tree the render just produced, and they
@@ -1180,6 +1191,8 @@ function wireKeys() {
     if (matchCombo(e, keymap.toggle_tree)) { e.preventDefault(); toggleTree(); return; }
     if (matchCombo(e, keymap.toggle_outline)) { e.preventDefault(); toggleOutline(); return; }
     if (matchCombo(e, keymap.toggle_stack)) { e.preventDefault(); toggleStack(); return; }
+    if (matchCombo(e, keymap.jump_top)) { e.preventDefault(); jumpTop(); return; }
+    if (matchCombo(e, keymap.jump_bottom)) { e.preventDefault(); jumpBottom(); return; }
     if (matchCombo(e, keymap.send_stack)) { e.preventDefault(); sendStack([]); return; }
     if (matchCombo(e, keymap.copy_stack)) {
       // Don't hijack a real copy: if text is selected, let the OS copy it.
@@ -1306,6 +1319,8 @@ const KEY_ACTIONS = [
   { id: "toggle_tree", label: "Toggle file tree", sub: "Collapse or restore the sidebar" },
   { id: "toggle_view", label: "Toggle view mode", sub: "Hide the titlebar, sidebar and panels — Esc also exits" },
   { id: "toggle_stack", label: "Toggle stack panel" },
+  { id: "jump_top", label: "Jump to top", sub: "Scroll the open document to the start" },
+  { id: "jump_bottom", label: "Jump to bottom" },
   { id: "send_stack", label: "Send stack to agent" },
   { id: "copy_stack", label: "Copy stack", sub: "Ignored while text is selected, so OS copy still works" },
   { id: "settings", label: "Open settings" },
