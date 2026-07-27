@@ -134,6 +134,14 @@ async function init() {
   // load-bearing — left unawaited, a rejection here is an unhandled one.
   const tree = loadTree().catch((e) => console.error(e));
 
+  // Same treatment, and for the same reason: the badge is chrome, not the
+  // document. Unawaited so `first_paint` below measures the document arriving
+  // rather than a `get_stack` round trip — the store is empty at boot today,
+  // but it stops being empty the moment an agent or a loaded file populates it,
+  // and a boot that never asked would paint a badge of nothing over a full
+  // stack. `.catch` is load-bearing for the same reason it is on `loadTree`.
+  refreshStack().catch((e) => console.error(e));
+
   // nvim-style: `dreamd file.md` opens the file on load.
   if (initial) await openFile(initial).catch((e) => console.error(e));
   else await tree;
@@ -669,6 +677,40 @@ function scrollToFragment(frag) {
 // — flattening a 2MB document costs ~4ms whether there is one quote or five
 // hundred. Measured crossover in the Chromium harness is around 5.
 const SCAN_THRESHOLD = 4;
+
+// `applyHighlights` assumes a virgin DOM — it never removes what is already
+// there, which is true for its original caller because `renderCurrent` has just
+// written `contentEl.innerHTML`. Anything repainting the overlay *in place* has
+// to run this first or every mark gets wrapped again, one `<mark>` deeper each
+// time.
+//
+// `normalize()` is not optional: unwrap leaves adjacent text nodes behind, and a
+// quote split across two of them is silently skipped by locateInNodes — so
+// without this, repeated repaints progressively stop finding their own marks.
+function clearHighlights() {
+  for (const m of [...contentEl.querySelectorAll("mark.hl")]) unwrap(m);
+  contentEl.normalize();
+  staleRail.innerHTML = "";
+}
+
+/// Re-place the highlight overlay without re-rendering the document.
+///
+/// The correct external-repaint call is `renderCurrent({preserveScroll: true,
+/// reanchor: false})` — but that is the full path `save_to_paint` measures
+/// (IPC render, `innerHTML`, `interceptLinks`, `decorateCodeBlocks`), far too
+/// expensive for an agent resolving six marks in a row when the source has not
+/// moved. Only the marks changed, so only the marks are re-placed.
+///
+/// The find bracket is the same pairing `renderCurrent` uses, and mandatory for
+/// the same reason: every stored find `Range` points into text nodes that
+/// `clearHighlights` is about to join and `applyHighlights` about to split.
+async function repaintHighlights() {
+  if (!currentFile) return;
+  invalidateFind();
+  clearHighlights();
+  applyHighlights(await invoke("get_highlights", { path: currentFile }));
+  if (findQuery) findRecompute(false);
+}
 
 function applyHighlights(list) {
   staleRail.innerHTML = "";
@@ -1899,6 +1941,45 @@ async function doDeleteFile() {
 }
 
 // ---- events / wiring -----------------------------------------------------
+
+// `marks-changed`, the agent push path. Payload is
+// `{file_path: string | null, stack: bool}`; a null `file_path` means repo-wide.
+//
+// Coalesced, mirroring the watcher's own debounce, because the emitter is an
+// agent rather than a pair of hands: resolving six marks in a row is six events
+// inside a few milliseconds, and each one un-coalesced costs a `get_highlights`
+// round trip plus a full overlay re-place. The two flags accumulate across the
+// window, so a burst that touched both the open document and the stack still
+// does each job exactly once.
+const MARKS_COALESCE_MS = 80;
+let marksTimer = null;
+let marksWantPaint = false;
+let marksWantStack = false;
+
+function onMarksChanged(payload) {
+  const file = payload ? payload.file_path : null;
+  // Repo-wide always concerns the open document; a named file only when it is
+  // the one on screen. Marks in a file nobody is looking at need no paint —
+  // `openFile` will call `get_highlights` for it whenever it is opened.
+  if (file == null || file === currentFile) marksWantPaint = true;
+  if (payload && payload.stack) marksWantStack = true;
+  if (marksTimer) return;
+  marksTimer = setTimeout(async () => {
+    marksTimer = null;
+    // Read and clear together, before the first `await`: an event arriving
+    // mid-flight has to open a *new* window rather than be dropped into the one
+    // already draining.
+    const paint = marksWantPaint;
+    const stack = marksWantStack;
+    marksWantPaint = false;
+    marksWantStack = false;
+    try {
+      if (paint) await repaintHighlights();
+      if (stack) await refreshStack();
+    } catch (e) { console.error(e); }
+  }, MARKS_COALESCE_MS);
+}
+
 function wireEvents() {
   listen("file-changed", async (e) => {
     // `save_to_paint` is the core product loop: one :w in Neovim through to a
@@ -1944,6 +2025,14 @@ function wireEvents() {
     }
   });
   listen("theme-reloaded", () => loadTheme());
+
+  // The store changed under us — an agent over the MCP socket, not this window.
+  // Emitted *only* from that layer: a Tauri command's return value is already
+  // the GUI's source of truth for its own mutation, so echoing user-origin
+  // mutations back would put two repaint paths in a race against each other
+  // (and `stackSeq` exists because two in-flight stack refreshes is a known
+  // hazard). It also keeps `save_to_paint` entirely out of this path.
+  listen("marks-changed", (e) => onMarksChanged(e.payload));
 
   // File → Open moved the tree root. Rust has already re-walked and re-read
   // config for the new repo by the time this fires, so this is the boot
