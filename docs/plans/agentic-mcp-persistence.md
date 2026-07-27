@@ -179,9 +179,21 @@ signatures + `seed_highlights` at :660), `send.rs` (test fixture `pair()` at
 `ui/app.js`**: drop the `Number(` at `:1750` and `:2002`. Everything else already
 round-trips ids as strings.
 
-**After this step, `annotations.rs` is closed** until step 5. Any thread that
-wants to change it is a signal the shape was wrong — stop and reconsider rather
-than editing it in a parallel thread.
+**`annotations.rs` is closed for the duration of the parallel window only** —
+threads B, C, E and G. It reopens the moment those land, because the freeze
+exists to prevent a merge, not because the shape is sacred.
+
+State the stop condition to those threads as **"a capability you need isn't
+there,"** not "a field you need isn't there." The distinction is not academic: on
+the first run, thread C needed to write `resolved`, found the field present and
+public, and so never tripped a field-shaped stop condition — it reached for the
+`from_parts`/`into_parts` seam instead. Correct behaviour given the rule, and its
+helper was commented and tested, but `from_parts` resets `reanchored`, so every
+resolved mark cost one wasted `SourceIndex` rebuild in the primary loop.
+
+The lesson for step 1: **ship the write paths, not just the fields.** A public
+field with no method to set it is not a frozen shape, it is an invitation to
+work around the freeze.
 
 **Tests** (`annotations.rs`, pure)
 - `two_ids_minted_back_to_back_are_different` — pins the counter; nanos alone can
