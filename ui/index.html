@@ -864,6 +864,10 @@
     <div id="tooltip"></div>
     <div id="toast"></div>
 
+    <!-- `defer` scripts run in document order, so paths.js is defined before
+         app.js first calls it. Separate file so `node --test` can drive the
+         link/image containment guard without a browser. -->
+    <script src="paths.js" defer></script>
     <script src="app.js" defer></script>
   </body>
 </html>

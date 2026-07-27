@@ -508,7 +508,7 @@ function interceptLinks() {
         const target = normalizePath(base + rel);
         if (!/\.(md|markdown|mdown|mkd)$/i.test(target)) {
           toast("Ignored non-markdown local link");
-        } else if (!insideRepo(target)) {
+        } else if (!insideRepo(target, repoRoot)) {
           // Enough `../` segments resolve outside the root; images have always
           // refused that and links now do too.
           toast("Ignored link outside the repo");
@@ -529,7 +529,7 @@ function interceptLinks() {
       const base = currentFile.replace(/[^\/]*$/, "");
       const abs = normalizePath(base + src);
       // Only load local images that live inside the repo root.
-      if (insideRepo(abs)) img.src = "file://" + abs;
+      if (insideRepo(abs, repoRoot)) img.src = "file://" + abs;
       else img.removeAttribute("src");
     }
   });
@@ -629,19 +629,6 @@ async function copyCodeBlock(pre, btn) {
   toast("Code copied");
 }
 
-/// Is this already-normalized absolute path inside the open repo root?
-///
-/// A bare `startsWith(repoRoot)` is *not* containment: with a root of
-/// `/w/notes` it also accepts `/w/notes-private/secret.md`, because the check
-/// never reaches a path separator. The boundary has to be the separator, so
-/// the test is "equal to the root, or under root + `/`". With no repo open
-/// nothing is inside, which is what the image handler has always done.
-function insideRepo(abs) {
-  if (!repoRoot) return false;
-  const root = repoRoot.replace(/\/+$/, "");
-  return abs === root || abs.startsWith(root + "/");
-}
-
 /// Scroll to an element by id within #content, returning whether it was found.
 ///
 /// Shared by same-document `#anchor` links and the fragment half of a
@@ -659,14 +646,8 @@ function scrollToFragment(frag) {
   return !!t;
 }
 
-function normalizePath(p) {
-  const parts = [];
-  for (const seg of p.split("/")) {
-    if (seg === "..") parts.pop();
-    else if (seg !== "." && seg !== "") parts.push(seg);
-  }
-  return "/" + parts.join("/");
-}
+// `normalizePath` and `insideRepo` live in `paths.js` — the tenet-4 guard for
+// relative links and images, split out so `ui/paths.test.mjs` can drive it.
 
 // ---- highlights ----------------------------------------------------------
 // Above this many placeable highlights, flattening the document once beats
