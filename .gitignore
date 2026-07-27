@@ -9,6 +9,10 @@
 /perf/harness/node_modules
 *.trace
 *.svg
+# …except the two that are *source*, not output. `website/.gitignore` re-includes
+# the favicon by the same trick; this one is the macOS app icon's grid, and
+# without it a fresh clone could not regenerate `icon.icns`.
+!/src-tauri/icons/macos.svg
 token_expiry.md
 
 # agent worktrees, transient
