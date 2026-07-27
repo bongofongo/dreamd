@@ -90,6 +90,20 @@ copy it. `tauri-bundler` has **no pacman backend**, which is why Arch goes
 through a hand-written `PKGBUILD.tmpl` instead of a fourth `--bundles` entry.
 Nothing on Linux is signed; the `.sha256` files are the integrity story.
 
+The desktop entry is **not** the bundler's default — `bundle.linux.deb.desktopTemplate`
+points at `packaging/dreamd.desktop`, which adds `MimeType` and the `%f` field
+code (without both, dreamd never appears under "Open With" for a `.md` file).
+It reaches all three artifacts because the AppImage's AppDir comes from
+`debian::generate_data` and the tarball is that staged tree. `bundle.icon` is
+likewise the literal hicolor size list on Linux; see `src-tauri/icons/README.md`.
+
+**Building the Linux artifacts locally needs `NO_STRIP=1`** on any distro new
+enough to emit `SHT_RELR`. linuxdeploy's bundled `strip` cannot parse
+`.relr.dyn` and fails on every system library it copies in, and Tauri swallows
+its stderr, so the only symptom is `failed to run linuxdeploy`. `ubuntu-22.04`
+predates it, so `release.yml` is unaffected and must not set it. A rerun after a
+failure needs the `bundle/` directory deleted first.
+
 **Releases are signed and notarized.** Turned on 2026-07-26; `packaging/SIGNING.md`
 is the runbook, including rotation and back-out. The identity is
 `Developer ID Application: OLIVER ONSTOTT FONG (34VGHNCG6J)`, the six `APPLE_*`

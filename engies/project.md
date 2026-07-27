@@ -235,6 +235,27 @@ causes were wrong.
 
 ## Recent updates
 
+- **2026-07-27** — **The Linux version was run on a real Linux machine for the
+  first time, and three things were wrong.** The entry below describes making
+  Linux a supported platform; that work had been written and checked
+  automatically, but never actually installed and used by a person. Doing so
+  found problems that automatic checks are not shaped to catch, because they only
+  appear once the program is packaged and put on a desktop:
+
+  Right-clicking a markdown file and choosing "Open with" never offered dreamd —
+  for a program whose entire job is reading markdown, that is the one place
+  people would look for it. It now appears there, and opens the file you picked.
+  It was also shipping its icon in the wrong sizes, so it appeared blurry in
+  menus and app grids; the missing size has been added. And building the Linux
+  download on an up-to-date Linux machine failed outright, with a one-line error
+  that explained nothing — the cause was a stale tool buried inside the packaging
+  software, and the workaround is now written down in the three places somebody
+  hitting it would actually look.
+
+  Everything the automatic checks cover passed on Linux unchanged, which is the
+  reassuring half of the result. The useful half is that "the checks pass" and
+  "a person can install it and use it" turned out to be different questions.
+
 - **2026-07-27** — **dreamd runs on Linux now, not just on a Mac.** It always
   *could* in principle — the engine underneath was written to work on both — but
   in practice the program had stopped compiling there months ago and nobody

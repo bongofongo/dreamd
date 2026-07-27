@@ -1,0 +1,36 @@
+{{!--
+  dreamd's desktop entry: a handlebars template, rendered by tauri-bundler.
+
+  Pointed at by `bundle.linux.deb.desktopTemplate`, but it is not deb-only — the
+  AppImage's AppDir is built by `debian::generate_data` into `bundle/appimage_deb`
+  and the `.tar.gz` is that same staged tree, so all three Linux artifacts carry
+  the entry rendered from this one file.
+
+  It exists for the two lines the bundler's default template cannot express:
+
+    MimeType  without it dreamd never appears under "Open With" for a markdown
+              file on any desktop, which for a markdown reader is the whole
+              integration. `text/markdown` is RFC 7763; `text/x-markdown` is the
+              pre-RFC name still emitted by older shared-mime-info.
+    %f        the field code that passes the chosen path. MimeType without it
+              registers dreamd as a handler that then launches with no argument.
+
+  `%f` and not `%F`: `Cli::path` is a single `Option<PathBuf>`, so a multi-select
+  would hand clap several paths and it would refuse them. `%f` makes the launcher
+  spawn one dreamd per file instead, which is the behaviour that actually works.
+
+  This block is a *handlebars* comment, not a `#` one, so it is stripped at
+  render time — the rationale stays here and never ships to /usr/share.
+--}}
+[Desktop Entry]
+Categories={{categories}}
+{{#if comment}}
+Comment={{comment}}
+{{/if}}
+Exec={{exec}} %f
+StartupWMClass={{exec}}
+Icon={{icon}}
+Name={{name}}
+Terminal=false
+Type=Application
+MimeType=text/markdown;text/x-markdown;

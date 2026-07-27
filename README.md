@@ -77,9 +77,12 @@ bound to the stack panel inside the window.
 - **Linux only:** the WebKitGTK runtime and the GTK3 toolkit. macOS uses the
   system WKWebView and needs no extra deps.
   - Debian/Ubuntu: `libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libssl-dev
-    libxdo-dev patchelf`
+    patchelf`
   - Arch: `webkit2gtk-4.1 gtk3 librsvg openssl patchelf`
   - Fedora: `webkit2gtk4.1-devel gtk3-devel librsvg2-devel openssl-devel patchelf`
+- Optional, and only to build the **release artifacts** rather than the binary:
+  `dpkg` — `packaging/build.sh` shells out to `dpkg-deb`, which Debian and Ubuntu
+  have already and Arch and Fedora do not.
 - Optional: `tmux` — not required, but it upgrades send-to-Claude to zero-paste.
 
 ### If live reload stops working on Linux
@@ -93,6 +96,32 @@ save. Raise the budget:
 ```sh
 sudo sysctl fs.inotify.max_user_watches=524288   # persist in /etc/sysctl.d/
 ```
+
+### If the AppImage build fails on a recent distro
+
+`packaging/build.sh x86_64-unknown-linux-gnu` fails at the AppImage step with a
+bare `failed to run linuxdeploy` (Tauri swallows the tool's stderr, so that is
+all you get). Run it with `NO_STRIP` set:
+
+```sh
+NO_SIGN=1 NO_STRIP=1 packaging/build.sh x86_64-unknown-linux-gnu
+```
+
+linuxdeploy ships its own binutils `strip`, old enough that it cannot parse the
+`SHT_RELR` sections (`.relr.dyn`, type `0x13`) that distributions now emit when
+they build with packed relative relocations. It then fails on **every** system
+library it copies into the AppDir. `NO_STRIP=1` skips that pass, which costs
+some AppImage size and nothing else.
+
+CI never hits this: it builds on `ubuntu-22.04`, whose libraries predate the
+change. That is the same reason the release is built there — so the variable is
+a local-build convenience, not something `release.yml` needs.
+
+Rerunning after a failure needs a clean tree — `rm -rf
+target/x86_64-unknown-linux-gnu/release/bundle`. linuxdeploy's GTK plugin
+`ln -s`es into the AppDir and aborts on a symlink that already exists, so a
+second run over a half-populated AppDir fails for a different reason than the
+first.
 
 ## Run
 

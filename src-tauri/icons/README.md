@@ -7,7 +7,15 @@ hand-edit a PNG:
 ```sh
 cargo tauri icon website/public/favicon.svg -o src-tauri/icons   # from the repo root
 rm -rf src-tauri/icons/android src-tauri/icons/ios               # no mobile target
+rsvg-convert -w 48 -h 48 website/public/favicon.svg -o src-tauri/icons/48x48.png
 ```
+
+`48x48.png` needs the third line because `cargo tauri icon` does not emit that
+size — it generates 32, 64, 128 and 128@2x and stops. 48² is the size GNOME and
+XFCE reach for in panels and app grids, so on Linux its absence is visible; see
+the hicolor note below. librsvg is already a build dependency there, and it
+renders this SVG to within an absolute error of 1.2 over 4096 pixels of what
+`cargo tauri icon` produces at 64² — the same drawing, not a second one.
 
 (The repo root `.gitignore` ignores `*.svg` wholesale; `website/.gitignore`
 re-includes `public/favicon.svg` by negation, and the root re-includes
@@ -74,3 +82,18 @@ first, then confirm with:
 cargo build --release
 find target/release/build/dreamd-*/out -size +1M   # should find no icon blob
 ```
+
+## On Linux the array *is* the installed icon set
+
+Only the first `.png` is load-bearing for size. Every **other** `.png` in the
+array is copied by the deb bundler into `usr/share/icons/hicolor/<w>x<h>/apps/`,
+so the array is also the literal list of sizes a Linux desktop gets to choose
+from — and, since the AppImage's AppDir and the `.tar.gz` are built from that
+same staged tree, it is the list for all three artifacts. Adding a size to the
+array anywhere after the first entry is therefore free and has no effect on
+macOS.
+
+32, 48, 64, 128 and 128@2x are listed. `128x128@2x.png` lands in a directory the
+bundler names `256x256@2` — its own bug, since a `@2` directory named 256 means
+a 512px image and the file is 256px. Harmless (the unscaled sizes are what get
+picked) and not ours to fix.

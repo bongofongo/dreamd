@@ -35,6 +35,14 @@ case "$TARGET" in
     BUNDLES="app"
     ;;
   *-unknown-linux-gnu)
+    # If the AppImage step dies with a bare `failed to run linuxdeploy`, set
+    # NO_STRIP=1 and run it again. linuxdeploy carries its own binutils `strip`,
+    # too old to parse the SHT_RELR sections (`.relr.dyn`, type 0x13) that
+    # distributions now emit, so it fails on every system library it copies in.
+    # Tauri swallows linuxdeploy's stderr, which is why the error says nothing.
+    # NO_STRIP is read by linuxdeploy straight out of the environment, so it
+    # needs no plumbing here. ubuntu-22.04 predates RELR and never trips it,
+    # which is why release.yml does not set it.
     BUNDLES="appimage,deb"
     ;;
   *)

@@ -1,5 +1,118 @@
 # Session log
 
+## 2026-07-27 — the Linux pipeline, actually run
+
+The previous session wrote the Linux half and shipped it untested — CI was to be
+its first execution. This one ran it on a real Arch machine instead. Everything
+CI checks is green on Linux; the *packaging* pipeline was not, and four defects
+came out of running it that no amount of reading had found.
+
+### What happened
+
+1. **The environment first.** Arch, glibc 2.44, Wayland, rustc 1.93.0. The
+   README's Arch dependency line (`webkit2gtk-4.1 gtk3 librsvg openssl patchelf`)
+   turned out to be exactly right — it was tested as written rather than as a
+   superset, which is what surfaced the phantom in item 4. `dpkg` had to be added
+   for `dpkg-deb`; it is an artifact-only dependency and the README now says so.
+
+2. **Every CI gate passes on Linux.** fmt, clippy `-D warnings`, 205 tests
+   (including the real-pty ones), `config_check` 34, `theme_check` 10 families,
+   `mcp_check` 46, `marks_check` 75, `locate_check` over 611 fixtures,
+   `paths.test.mjs` 10, `ui-check.mjs` 108. Beyond the harnesses, checked by hand
+   what only a real kernel shows: the socket binds `0600` inside a `0700`
+   directory, and after `SIGTERM` the crash leftover is unlinked and rebound
+   rather than demoting the next launch to secondary. `dreamd mcp` answers
+   `initialize`/`tools/list` from the compiled-in schema with no GUI running.
+
+3. **The blocker: the AppImage cannot be built on a modern distro.**
+   `packaging/build.sh` died with a bare `failed to run linuxdeploy` — Tauri
+   discards the tool's stderr at default log level (`linuxdeploy.rs:207-213`), so
+   that string is the entire diagnostic. Running linuxdeploy by hand showed its
+   own bundled binutils `strip` failing on every system library with
+   `unknown type [0x13] section '.relr.dyn'`: it predates `SHT_RELR`, which
+   distributions now emit for packed relative relocations. `NO_STRIP=1` clears it
+   completely and the full pipeline exits 0.
+
+   `ubuntu-22.04` predates RELR, which is why CI never saw this and why
+   `release.yml` must *not* set the variable. Documented at three depths:
+   `packaging/build.sh`'s Linux `case` arm (where you land when it fails), a
+   README troubleshooting section beside the inotify one, and CLAUDE.md's
+   Packaging section — which had claimed local reproducibility unqualified.
+
+4. **`libxdo` is a phantom.** `libxdo-dev` was installed on both runners and
+   listed in the README's Debian line, but `libxdo` appears nowhere in
+   `Cargo.lock` and the build succeeds without it. The Arch and Fedora lines had
+   always omitted it and were the correct ones. Dropped from `ci.yml`,
+   `release.yml` and the README, with a comment in `ci.yml` recording that
+   removing it changed nothing so it does not come back on a hunch.
+
+5. **The desktop entry could not open markdown.** The bundler's default template
+   emits neither a `MimeType` nor a field code, so dreamd never appeared under
+   "Open With" for a `.md` file on any desktop — for a markdown reader, the whole
+   integration. Added `packaging/dreamd.desktop` and pointed
+   `bundle.linux.deb.desktopTemplate` at it. One template covers all three
+   artifacts: the AppImage's AppDir comes from `debian::generate_data` and the
+   `.tar.gz` is that same staged tree.
+
+   `%f` and not `%F`, deliberately: `Cli::path` is a single `Option<PathBuf>`, so
+   a multi-select would hand clap several paths and it would refuse them. The
+   rationale is a handlebars `{{!-- --}}` comment rather than `#` lines, because
+   `#` comments are valid in a Desktop Entry and would therefore ship into every
+   user's `/usr/share/applications`.
+
+   Checked the case this newly enables rather than assuming it: a file-manager
+   launch means cwd `/`, and `resolve_target` (`lib.rs:73-93`) roots a file
+   argument at the *cwd's* repo with `has_repo=false`, so dreamd opens the
+   document beside an empty sidebar instead of walking the filesystem. Confirmed
+   by launching from `/`.
+
+6. **The icon set was missing the size Linux uses most.** `bundle.icon` fed
+   hicolor `32`, `128` and `256@2` only. `cargo tauri icon` emits no 48², so
+   `48x48.png` is now rendered from the same `favicon.svg` with `rsvg-convert`
+   (validated against tauri's own renderer: absolute error 1.2 over 4096 pixels
+   at 64²). `64x64.png` already existed in the repo and had simply never been
+   listed. Both were added *after* the first array entry, so the baked window
+   icon is still `128x128.png` — confirmed by the single 65,536-byte
+   (`128 × 128 × 4`) blob in the codegen out directory.
+
+7. **Toolchain.** This machine's stable was 1.93.0 while `ci.yml` pins 1.97.1 —
+   the pin is meant to track the development machine, and there are now two.
+   `rustup update` brought it to 1.97.1 exactly, so no workflow bump was needed;
+   the whole suite was re-run on it.
+
+### Mistakes & deviations
+
+- Read `tauri-bundler`'s `debian.rs` and concluded the `.deb` would ship with no
+  `Depends:` at all — a real shipping bug if true. It was not: `tauri-cli`
+  pre-populates them (`rust.rs:1443-1444`) and the built package carries both,
+  duplicated. Corrected by building the thing and reading `dpkg-deb -I` instead
+  of trusting a source read one crate too far upstream.
+- Invoked `build.sh` as `build.sh … | tail`, so the pipeline reported the exit
+  code of `tail` and a *failed* build looked successful. The failure was caught
+  by reading the log, not the status.
+- After the first AppImage failure, a rerun died in the GTK plugin instead and
+  was briefly treated as a second, separate defect. It was the first run's
+  half-populated AppDir: the plugin `ln -s`es into it and aborts on a link that
+  already exists. A clean build from a wiped `bundle/` succeeded, and the rerun
+  trap is now documented alongside the fix.
+
+### State
+
+- `cargo build` passes; the full CI suite is green on Linux at rustc 1.97.1.
+- `NO_SIGN=1 NO_STRIP=1 packaging/build.sh x86_64-unknown-linux-gnu` exits 0 and
+  produces all three artifacts plus checksums. `desktop-file-validate` accepts
+  the entry as shipped in the `.deb`, the `.tar.gz` and the AppImage; the icon
+  set is 32/48/64/128/256@2 in all three; both channels launch and stay up.
+- `perf-pass` deliberately not run. No Rust changed — the diff is one config
+  file, one PNG, docs and CI — and `perf/run.sh` refuses a baseline comparison
+  off Darwin, so it would have produced uncomparable numbers rather than a
+  regression signal.
+- **The macOS arm of this diff is unverified here.** `bundle.icon`'s additions
+  and the new `linux` block are additive and leave the first PNG untouched, but
+  only CI's `macos-14` job will actually prove it.
+- Left alone, both known and both upstream: the `.deb`'s duplicated `Depends`,
+  and the absent `usr/share/doc/dreamd/copyright` despite `licenseFile` being set.
+
 ## 2026-07-27 — Linux as a shipping target
 
 Asked for three things at once: cloud sessions that can actually run CI/CD, full
