@@ -103,7 +103,13 @@ See `perf/README.md` for what each tier measures and how much to trust it.
 - **Open a file:** click it in the tree, or open the fuzzy palette.
 - **File options:** hover a file row and click `⋯` → **Copy path** or **Delete** (delete moves it to the OS Trash after a confirm).
 - **Collapse the tree:** press `Ctrl+B`, or click the `◀` arrow in the tree header; a floating `▶` at the left edge brings it back. The preview stays full-width.
-- **Top bar** (on the traffic-light row): contents, settings, highlighter, stack, and send — all icons.
+- **Top bar** (on the traffic-light row): the reading-position readout, then
+  contents, settings, highlighter, stack and send — all icons.
+- **Reading position:** a percentage in the top bar and a hairline rail along
+  the bottom edge of the document, both tracking how far through the open file
+  you are. It is a bookmark cue, not a control — the rail is not clickable, and
+  neither shows anything for a document that already fits on screen. View mode
+  keeps the rail and drops the percentage with the rest of the top bar.
 - **View mode:** `Ctrl+M` hides the top bar, the tree and both side panels at
   once, leaving just the document. `Ctrl+M` again or `Esc` brings the chrome
   back exactly as you left it — view mode never changes what you had collapsed

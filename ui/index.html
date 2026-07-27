@@ -69,6 +69,17 @@
       }
       body.mac #titlebar { padding-left: 78px; } /* clear the traffic lights */
       #tb-actions { margin-left: auto; display: flex; gap: 6px; align-items: center; }
+      /* Reading position readout. A *fixed* width, not `min-width`: the digits
+         change as the pane scrolls, and a box that cannot resize is what stops
+         each of those writes reflowing the titlebar around it. `contain` says
+         the same thing to the engine outright. Tabular figures so the number
+         does not shimmer between frames. */
+      #progress-pct {
+        flex: 0 0 42px; width: 42px; text-align: right;
+        font-size: 12px; opacity: 0.55; font-variant-numeric: tabular-nums;
+        user-select: none; -webkit-user-select: none;
+        contain: layout style;
+      }
       #btn-stack { position: relative; }
       #btn-stack .badge {
         position: absolute; top: -6px; right: -6px; display: none;
@@ -189,6 +200,32 @@
       button.code-copy[data-copied] .ic-copy { display: none; }
       button.code-copy[data-copied] .ic-check { display: block; }
 
+      /* reading progress rail — the ambient half of the indicator.
+         `z-index: 10` puts it under both side panels (20), which are opaque and
+         full-height: the rail belongs to the reading pane, so a panel covering
+         its own strip of it is right. `pointer-events: none` because this is a
+         bookmark cue, not a scrubber — clicking it must do nothing at all.
+         The track is `--border`, the same hairline as every other divider. */
+      #progress-rail {
+        position: absolute; left: 0; right: 0; bottom: 0; height: 3px;
+        z-index: 10; pointer-events: none;
+        background: var(--border, #2e2940);
+        opacity: 0; transition: opacity 0.2s ease;
+      }
+      #progress-rail.on { opacity: 1; }
+      /* `transform: scaleX`, never `width`: the compositor can do this one
+         without laying anything out, which is the whole reason the scroll path
+         is cheap. No transition on it — the fill must track the pane 1:1, and
+         an eased one would lag behind the text under the reader's eye.
+         `will-change` gives it its own layer up front so the first scroll of a
+         document does not pay for the promotion. */
+      #progress-fill {
+        height: 100%; width: 100%;
+        transform: scaleX(0); transform-origin: left center;
+        will-change: transform;
+        background: var(--accent, #a48cf5);
+      }
+
       /* contents / outline panel — same visual language as #stack-panel, but
          anchored left so both can be open at once. */
       #outline-panel {
@@ -242,7 +279,13 @@
          must stay *after* `body.nav-collapsed #btn-expand`, `#outline-panel.open`
          and `#stack-panel.open`: those tie on specificity and source order
          decides. Overlays (palette, settings, annotation) are `position: fixed`
-         above all of this and stay usable in view mode. */
+         above all of this and stay usable in view mode.
+
+         `#progress-rail` is absent from the list on purpose. View mode hides the
+         app's *controls*; a 3px progress hairline is not a control, it is the
+         reading aid a reader turned the chrome off to be alone with. So view
+         mode keeps the ambient rail and loses only the `#progress-pct` readout,
+         which goes with the titlebar it sits in. */
       body.view-mode #titlebar,
       body.view-mode #sidebar,
       body.view-mode #btn-expand,
@@ -414,6 +457,10 @@
   <body class="nav-collapsed">
     <div id="titlebar" data-tauri-drag-region>
       <div id="tb-actions">
+        <!-- Reading position readout. Chrome, so view mode hides it with the
+             rest of the titlebar; the rail at the foot of the reading pane is
+             the half that stays. See the `reading progress` section in app.js. -->
+        <span id="progress-pct" data-tip="Reading position"></span>
         <button id="btn-outline" class="icon" data-tip="Toggle contents" data-tip-key="toggle_outline">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h2"/><path d="M9 6h11"/><path d="M7 12h2"/><path d="M12 12h8"/><path d="M10 18h2"/><path d="M15 18h5"/></svg>
         </button>
@@ -450,6 +497,11 @@
           <div id="stale-rail"></div>
           <div id="content"><div class="empty">Select a markdown file from the tree, or open the search palette.</div></div>
         </div>
+
+        <!-- Reading progress rail: a hairline pinned to the foot of the reading
+             pane, filling left-to-right. Outside `#content-scroll` on purpose —
+             inside it, it would scroll away with the document. -->
+        <div id="progress-rail"><div id="progress-fill"></div></div>
 
         <!-- Left edge of the reading area, so it can sit open alongside the
              stack panel on the right rather than fighting it for the slot. -->

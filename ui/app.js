@@ -428,6 +428,7 @@ async function renderCurrent({ preserveScroll, reanchor }) {
   } catch (e) {
     contentEl.innerHTML = `<div class="empty">${escapeHtml(String(e))}</div>`;
     refreshOutline();
+    measureProgress();
     return;
   }
   perf.span("ipc_render_markdown", t0);
@@ -457,6 +458,9 @@ async function renderCurrent({ preserveScroll, reanchor }) {
   refreshOutline();
 
   scrollEl.scrollTop = prevScroll;
+  // Free, in practice: writing `scrollTop` on the line above already forced the
+  // layout this reads, so `progMax` costs nothing extra here.
+  measureProgress();
   perf.span("render_total", t0);
 }
 
@@ -970,6 +974,83 @@ function exitView() { document.body.classList.remove("view-mode"); }
 function jumpTop() { scrollEl.scrollTo({ top: 0 }); }
 function jumpBottom() { scrollEl.scrollTo({ top: scrollEl.scrollHeight }); }
 
+// ---- reading progress ----------------------------------------------------
+// Answers "how far am I", and nothing else. Getting *around* the document is
+// the contents panel's job, so this is deliberately not clickable and not a
+// scrubber — a bookmark, not a navigation surface.
+//
+// The two open questions, settled:
+//
+// **Percentage, not "section 3 of 12".** A section counter measures structure,
+// and structure is what the outline panel already lists — and it misreports
+// position on the documents dreamd is actually pointed at, where one heading
+// owns eight screens and the next owns two lines. Distance through the text is
+// what a physical bookmark tells you, and scroll offset is exactly that. The
+// heading-aware variant is designed rather than dropped; see
+// `docs/plans/reading-progress-indicator.md`.
+//
+// **Both surfaces, split by what each one is.** The number sits in the titlebar
+// with the rest of the chrome and goes when view mode does; the 3px rail is
+// pinned to the foot of the reading pane and *stays*. Ctrl+M hides controls,
+// and a progress rail is not a control.
+//
+// Cost. The scroll path is built to touch no layout:
+//
+//   * the listener is `{ passive: true }` and only schedules;
+//   * work is coalesced into one `requestAnimationFrame`, so a trackpad burst
+//     that fires the event twenty times draws once;
+//   * `scrollHeight`/`clientHeight` are cached in `progMax` and refreshed from
+//     a `ResizeObserver`, whose callback runs *after* layout where the read is
+//     free — so the per-frame work is a single `scrollTop` read;
+//   * the fill moves by `transform: scaleX()` on its own layer, never `width`;
+//   * the readout is written only when the whole-number percent changes, into a
+//     fixed-width `contain: layout style` box, so a full-document scroll costs
+//     at most 100 text writes and none of them reflows anything outside it.
+//
+// None of that was measured — see the idea log. It is written for the case
+// where it cannot be.
+const railEl = $("progress-rail");
+const fillEl = $("progress-fill");
+const pctEl = $("progress-pct");
+
+let progFrame = 0;    // pending rAF handle; 0 = idle
+let progMax = 0;      // cached scrollHeight - clientHeight
+let progShown = -1;   // last integer written; -1 means "nothing"
+
+function scheduleProgress() {
+  if (progFrame) return;
+  progFrame = requestAnimationFrame(drawProgress);
+}
+
+function drawProgress() {
+  progFrame = 0;
+  // Nothing open, or a document that already fits on screen: there is no "how
+  // far" to answer, so the indicator says nothing rather than claiming 100%.
+  if (!currentFile || progMax <= 0) {
+    railEl.classList.remove("on");
+    if (progShown !== -1) { progShown = -1; pctEl.textContent = ""; }
+    return;
+  }
+  railEl.classList.add("on");
+  // Clamped: rubber-band overscroll reports past both ends.
+  const frac = Math.min(1, Math.max(0, scrollEl.scrollTop / progMax));
+  fillEl.style.transform = `scaleX(${frac})`;
+  const pct = Math.round(frac * 100);
+  if (pct !== progShown) { progShown = pct; pctEl.textContent = `${pct}%`; }
+}
+
+/// Re-measure the scrollable extent, then repaint. Call after anything that can
+/// change the document's height or the pane's; a stale `progMax` is the only
+/// way this can be wrong.
+function measureProgress() {
+  progMax = scrollEl.scrollHeight - scrollEl.clientHeight;
+  // Draw now rather than scheduling, so the new extent lands in the same frame
+  // as the content that changed it. Dropping any frame already queued keeps
+  // that from becoming two draws.
+  if (progFrame) { cancelAnimationFrame(progFrame); progFrame = 0; }
+  drawProgress();
+}
+
 // ---- contents / outline panel --------------------------------------------
 // Built by walking the rendered DOM rather than as a side channel from Rust:
 // the headings are already in the tree the render just produced, and they
@@ -1172,6 +1253,7 @@ function wireEvents() {
       contentEl.innerHTML = `<div class="empty">File removed.</div>`;
       staleRail.innerHTML = "";
       refreshOutline();
+      measureProgress();
     }
   });
   listen("theme-reloaded", () => loadTheme());
@@ -1193,6 +1275,7 @@ function wireEvents() {
         contentEl.innerHTML = `<div class="empty">Select a markdown file from the tree, or open the search palette.</div>`;
         staleRail.innerHTML = "";
         refreshOutline();
+        measureProgress();
       }
     } catch (err) { console.error(err); }
   });
@@ -1227,6 +1310,22 @@ function wireUi() {
     const m = e.target.closest && e.target.closest("mark.hl");
     if (m && contentEl.contains(m)) { e.preventDefault(); openEditHighlight(Number(m.dataset.id)); }
   });
+
+  // Reading progress. Passive so it can never block the compositor, and the
+  // handler itself only sets a flag and asks for a frame.
+  scrollEl.addEventListener("scroll", scheduleProgress, { passive: true });
+  // Two sources of a stale `progMax`, one observer. `#content` changes height
+  // when a render lands, when an image finishes loading, and when the content
+  // width or font changes; `#content-scroll` changes height when the window
+  // does. A `ResizeObserver` callback runs after layout, so measuring there is
+  // free — and nothing `measureProgress` writes (a transform on an element
+  // outside both, text inside a fixed-width box outside both) can resize either
+  // observed element, so it cannot feed itself.
+  if (window.ResizeObserver) {
+    const ro = new ResizeObserver(measureProgress);
+    ro.observe(scrollEl);
+    ro.observe(contentEl);
+  }
 
   $("btn-outline").onclick = toggleOutline;
   $("outline-close").onclick = () => $("outline-panel").classList.remove("open");
