@@ -1,5 +1,176 @@
 # Session log
 
+## 2026-07-27 — twelve ideas processed unattended, on a branch, with no perf run
+
+An overnight batch over `ideas/`: one subagent per idea, strictly sequential in a
+single checkout, each deciding for itself whether its idea was cheap enough to
+build or big enough to only plan. Twelve ideas in, twelve commits out, no
+failures. Two deliberate departures from house style, both because nobody was
+watching: everything landed on `claude/overnight-ideas-2026-07-27` for review
+rather than straight to `main`, and **no perf tier was run at any point**.
+
+### What happened
+
+Nine implemented, three of those splitting off a plan for the risky half; two
+implemented-plus-planned-refinements; one plan-only. Ordered as they landed.
+
+1. **`contents-outline-panel` — implemented** (`790a883`). Headings now get
+   GitHub-style slug `id`s in `markdown::render_with`, via a new `pub`
+   `markdown::Slugger` (repeats get `-1`, `-2`, with the numbered candidate itself
+   checked for clashes, so uniqueness is a guarantee rather than a near-certainty).
+   On top of that a `#outline-panel` built by walking the rendered DOM — no extra
+   IPC — with `toggle_outline` on `Ctrl+I`. Sequenced first on purpose: two other
+   ideas needed heading ids. The open question is answered *both* ways — an open
+   panel tracks `file-changed`, a closed one just sets a dirty flag.
+   It also fixed a latent bug: `interceptLinks` did `querySelector(href)`, and
+   `## 1. Intro` slugs to `1-intro` — a valid *id* but an invalid *id selector*,
+   so the very first numbered heading would have thrown.
+2. **`file-and-section-links` — split** (`7d3224c`). Implemented the containment
+   gap the idea file flagged: the file-link handler never confirmed the resolved
+   path stayed inside the repo root the way the image handler did. Factoring the
+   two together tightened both — `startsWith(repoRoot)` never reaches a path
+   separator, so a root of `/w/notes` was also admitting `/w/notes-private/`.
+   Cross-file `other.md#heading` now jumps, too. Jump-back went to
+   `docs/plans/file-and-section-links.md`: both keys the idea proposed (`Ctrl+O`,
+   `Ctrl+I`) were already bound, making the default a muscle-memory call rather
+   than something to guess at unattended.
+3. **`hide-file-tree-keybind` — implemented** (`1895e69`). `toggle_tree` on
+   `Ctrl+B`, rebindable, with `data-tip-key` so the existing buttons show it.
+4. **`view-mode-keybind` — implemented** (`308bb46`). `Ctrl+M` (for "minimal";
+   `Ctrl+\` was rejected for needing escaping in a TOML basic string). `body.view-mode`
+   is purely *additive* — it never writes `nav-collapsed` or a panel's `open`
+   class, only out-ranks them — so exiting restores exactly the chrome you had and
+   nothing can be stranded. The cost is that CSS source order is now load-bearing,
+   commented in place.
+5. **`jump-top-bottom-keybind` — split** (`1f724a2`). `Home`/`End` as ordinary
+   rebindable actions; `gg`/`G` planned. This is where the batch's most reused
+   finding came from: **chord support does not exist anywhere**. `matchCombo` is
+   fully stateless and `onRecordKey` captures exactly one keydown, which settles
+   the same open question in two idea files.
+6. **`next-prev-file-keybind` — implemented** (`3b8be57`). `]`/`[`. The ordering
+   is read from the sidebar DOM rather than re-derived in Rust, which is what the
+   idea file's "don't invent a second ordering" warning was actually asking for:
+   there is now only one ordering in the system, and it follows watcher rebuilds
+   and File ▸ Open for free. Wraps at the ends, because stopping is
+   indistinguishable from a dead key.
+7. **`code-copy` — implemented** (`558feae`). Needed no Rust: `copy_to_clipboard`
+   was already registered. The button carries **zero text nodes** — SVGs, wording
+   on `aria-label`, confirmation via the toast outside `#content` — so injected
+   chrome cannot leak into `getSelection().toString()` and corrupt a highlight
+   quote.
+8. **`reading-progress-indicator` — split** (`5e2cad1`). Percentage, not heading
+   count: heading sizes are wildly uneven, so "section 3 of 12" is confidently
+   wrong as a *position*, and structure already has a home in the outline panel.
+   Two surfaces split by kind — a `#progress-pct` readout in the titlebar
+   (chrome), a 3px `#progress-rail` at the foot of the reading pane (ambient).
+   View mode keeps the rail and drops the readout. Built for no perf feedback:
+   passive listener, one rAF per frame, metrics cached off a `ResizeObserver`,
+   composited `transform` rather than `width`.
+9. **`stack-panel-polish` — implemented, both halves** (`e8e7043`). `refreshStack()`
+   keyed-reconciles instead of wiping `innerHTML`, with snap-in/snap-out motion
+   gated on `prefers-reduced-motion`, view mode, and a closed panel. The hazard
+   found on the way is the important part: `send_stack` resolves ids through
+   `Store::selected_pairs`, which looks up the **highlight** list rather than the
+   stack — so a checkbox outliving its card's ~170ms exit would have sent a pair
+   the reader had just removed. Guarded twice (the checkbox is deleted the instant
+   a card is marked `.leaving`, and `checkedIds()` filters `.leaving` as well),
+   plus a `stackSeq` guard because stable keys let a late `get_stack` reply
+   resurrect a gone card in a way the old teardown could not.
+10. **`md-to-pdf-export` — implemented, refinements planned** (`3218fdf`). The
+    idea's core recommendation held — no PDF crate, no dependency, no CSP change —
+    but its trigger was wrong: **`window.print()` is a silent no-op in WKWebView**,
+    because WebKit routes it to the UI delegate and wry's `WKUIDelegate` doesn't
+    implement `_webView:printFrame:`. Shipped as literally described, the button
+    would have done nothing. So it's a six-line `print_document` calling
+    `WebviewWindow::print()`. The bulk is `#print-css`, deliberately the *last*
+    `<style>` in `<head>` so it beats the runtime-injected theme: it neutralises
+    the palette at variable level (the default theme is dark — otherwise the page
+    prints grey-on-white) and flattens `#content-scroll` out of its `100vh` column
+    so a document scrolled to 60% paginates in full rather than printing its
+    middle third. Content-only.
+11. **`vim-marks-bookmark-jump` — implemented** (`583a467`). Global marks, not
+    per-file: dreamd shows one document out of a whole repo, so the useful move is
+    cross-file by definition. The chord plan written in (5) over-estimated the cost
+    for *this* shape — the letter is an *argument*, not part of the binding, so
+    `set_mark`/`jump_mark` stay ordinary single combos and the rebind UI never
+    learns marks exist. That left one risk, the pending-prefix state machine, built
+    around a one-sentence invariant: it consumes only key repeats while a leader is
+    held and a bare alphanumeric within 1.5s; everything else cancels and falls
+    through **unprevented**, so a mark going wrong costs the mark, never the
+    keystroke. Jump defaults to `'` rather than the idea file's `` ` ``, which is a
+    dead key on several international layouts.
+12. **`vim-style-content-search` — plan only** (`2808e8f`). It paints the same DOM
+    highlight anchoring reads, spans five files across two languages, and none of
+    it is checkable without a webview or a perf tier; there is no useful narrow
+    slice, since a bar that finds but doesn't paint is worse than no bar. The plan
+    **overturns the idea file's central decision**: raw-source search assumes the
+    source is already resident in the frontend, and it never has been (every
+    `read_source` is Rust-side, `render_markdown` returns HTML), so it would need
+    new IPC — while the offset→DOM mapping the idea calls "the main hidden cost"
+    already exists and is already in use (`scanTextNodes`/`nodeIndexAt`, built for
+    `applyHighlights`). Searching flattened rendered text is simpler, no slower
+    where it counts, and drops both the syntax-noise and `te**s**t` blind spots the
+    idea file had conceded. It also recommends the CSS Custom Highlight API over
+    `<mark>` wrapping, which has a concrete corruption path: a hit partially
+    covering a `mark.hl` takes `wrapRange`'s `extractContents` fallback and leaves
+    two marks sharing one `data-id`.
+
+### Mistakes & deviations
+
+- **`cargo build` does not pass on Linux, and never did.** The container came
+  without the GTK/WebKit dev libraries (installed via apt), and even then the bin
+  target fails with 5 errors on a clean `origin/main`: `dreamd::menu` and
+  `open_target` are `#[cfg(target_os = "macos")]` but referenced un-gated at
+  `main.rs:863-865`. Pre-existing and not touched — changing the platform gating
+  was well outside what an unattended batch should decide. The gate became
+  two-part instead: `cargo build --lib` must pass outright, and the bin must
+  produce *exactly* those 5 errors and no more.
+- **That gate was initially mis-described as weaker than it is.** The first read
+  was that `main.rs` gets no compile check here. It was checked properly during
+  idea 10 and that is wrong: injecting a bogus method call took the count 5 → 7
+  and the gate failed, so `main.rs` **is** genuinely type-checked — the 5 errors
+  are name-resolution failures that don't stop the rest of the file being checked.
+  Every Rust change in this batch therefore did get a real compile check.
+- **No perf tier was run, by instruction** — see State.
+- **Two ideas were deliberately out of scope**: `file-import-to-markdown.md`
+  (blocked) and `live-file-tree-sync.md` (closed 2026-07-26; live sync works in
+  day-to-day use, and the "don't trust it, verify it" section still in that file
+  is superseded). Neither was implemented, planned, or otherwise touched.
+- No idea failed, and no agent left the tree broken, so the fallback path
+  (`git reset --hard` plus a failure log) was never used.
+- One consequence of the batch shape worth naming: twelve agents each judged their
+  own risk, so "implemented" here means *one* agent was confident, not that a
+  second reviewed it.
+
+### State
+
+- **Branch `claude/overnight-ideas-2026-07-27`, not `main`** — 12 idea commits
+  plus this one, opened as a PR for review.
+- **Perf was intentionally not run.** No `perf-quick`, `perf-pass`, `perf-deep`,
+  `perf/run.sh` or `cargo bench` at any point, because the harness is not
+  confirmed working on Linux or off the author's machine. `perf/baseline.json` is
+  untouched. **This is left entirely for the author to check locally** — and
+  several changes are exactly the kind that want it: the scroll-driven progress
+  indicator, the stack panel's new reconciliation and animation, `decorate_code`
+  (which adds a new `d:decorate_code` perf phase with no baseline entry), and the
+  heading-slug pass added to every render.
+- **Build**: `cargo build --lib` clean; bin at exactly the 5 pre-existing
+  macOS-gating errors after every commit. `cargo run --example config_check` 34/34
+  after each `Keymap` widening; `locate_check` 611 fixtures, 0 wrong/moved/
+  unresolved. `node --check` on every touched JS file.
+- **Nothing has been seen running.** No macOS, no Tauri window, and
+  `perf/harness/ui-check.mjs` could not run either — Playwright's Chromium
+  download is 403'd by this container's proxy. Its keymap fixtures and its
+  `rows === N` assertion were bumped by hand across five commits (now 19) and are
+  **unverified**; that is the single most likely thing to be wrong. No CSS in this
+  batch has ever been rendered.
+- **Six new keybinds**: `Ctrl+I` outline, `Ctrl+B` tree, `Ctrl+M` view mode,
+  `Home`/`End` document ends, `]`/`[` next/prev file, `m`/`'` marks.
+- **One deliberate behaviour change**: stack checkbox ticks now persist across
+  refreshes, a consequence of stable keys. One-line revert noted in the log.
+- Five plans are parked in `docs/plans/` for later: jump-back, `gg`/`G`,
+  heading-aware progress, print refinements, and content search.
+
 ## 2026-07-26 — signing on, v0.1.0 shipped, and a tap job that had never worked
 
 Same day as the entry below, and the reversal of it: a Developer ID certificate now

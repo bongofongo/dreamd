@@ -2,7 +2,7 @@
 
 *This page is the daily landing spot for everyone on the team. It's kept up to date
 automatically and written so that you can be away for a week, read this in five
-minutes, and know exactly where things stand. Last updated: 2026-07-26.*
+minutes, and know exactly where things stand. Last updated: 2026-07-27.*
 
 ## What we're building
 
@@ -227,6 +227,28 @@ causes were wrong.
 
 ## Recent updates
 
+- **2026-07-27** — **A batch of twelve small features was worked through overnight, and
+  is waiting to be reviewed.** These are the ideas that had been piling up in notes: a
+  contents panel listing a document's headings so you can jump around a long file, a
+  copy button on code blocks, a "print / save as PDF" option, a reading-position
+  percentage, vim-style bookmarks you can drop and jump back to, and six new keyboard
+  shortcuts (hide the file tree, hide *all* the app's furniture for distraction-free
+  reading, jump to the top or bottom, step to the next or previous file). The stack
+  panel also got tidier, with entries that slide in and out rather than the whole list
+  being rebuilt each time. Three of the bigger ideas were only *designed*, not built —
+  written up as plans so a person can decide on them later — and one, an in-document
+  text search, was judged too entangled with the highlighting system to attempt
+  unattended.
+  Two important caveats, both deliberate. First, this work sits on a **review branch,
+  not on the main line** — nothing here has shipped, and it is all one pull request
+  waiting for a human read. Normally dreamd's changes go straight to main; a batch this
+  large, written with nobody watching, was kept separate on purpose. Second, **none of
+  it has actually been seen running**: the machine it was written on isn't a Mac and
+  can't open the app's window, so while the code compiles and the logic was tested, no
+  button has been clicked and no page has been looked at. The **speed checks were also
+  deliberately skipped** and still need running on the author's own machine — a few of
+  these changes (the progress indicator, the stack animation) are exactly the sort that
+  could cost performance. Treat the whole batch as *drafted and checked, not verified*.
 - **2026-07-26 (later the same day)** — **dreamd 0.1.0 is out, and you can install it
   with Homebrew.** The certificate described in the entry below was bought and set up,
   which reverses that decision entirely: releases are now *signed* (stamped with an
