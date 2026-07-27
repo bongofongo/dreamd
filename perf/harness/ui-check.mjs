@@ -554,10 +554,31 @@ check("an exhausted trail says so rather than going silent",
 // --- find in document ---
 // `deep` appears three times in the fixture body — the two link labels and the
 // `<h2>` — and smart case makes a lowercase pattern find all of them. Scrolled
-// to the top first, because incremental search picks the first match at or
-// after where the reader is looking.
+// to the top first, because Enter picks the first match at or after where the
+// reader is looking.
 const findCount = () => nav.evaluate(() => document.getElementById("find-count").textContent);
+const findMode = () => nav.evaluate(() => document.getElementById("find-mode").textContent);
 const findCss = () => nav.evaluate(() => document.getElementById("find-css").textContent.length);
+// Counts *painted* ranges, not whether the registry entry exists. The entries
+// are registered once and mutated thereafter, so `get(...)` is truthy forever
+// after the first search — asking that question is what let a stale paint pass.
+const litCount = () => nav.evaluate(() => {
+  const h = CSS.highlights.get("dreamd-find");
+  return h ? h.size : 0;
+});
+// The painted ranges have to be *snapshotted before* the search is closed, or
+// there is nothing left to inspect: clearing empties the highlight either way,
+// so a check made afterwards passes whether or not the pixels were invalidated.
+// That is the hole the first version of this bug slipped through. Holding the
+// `Range` objects on `window` and asking afterwards whether they were collapsed
+// is what distinguishes "removed from the model" from "and repainted".
+const snapPainted = () => nav.evaluate(() => {
+  window.__painted = [...(CSS.highlights.get("dreamd-find") || [])];
+  return window.__painted.length;
+});
+const strayRanges = () =>
+  nav.evaluate(() => window.__painted.filter((r) => !r.collapsed).length);
+const barOpen = () => nav.locator("#find-bar.open").isVisible();
 await nav.keyboard.press("Home");
 await beat(150);
 // Merely *declaring* the paint rules costs +27% on the forced layout after a 2MB
@@ -566,65 +587,102 @@ await beat(150);
 check("the paint rules are absent until the feature is used", (await findCss()) === 0);
 await nav.keyboard.press("/");
 await beat(120);
-check("/ opens the find bar", await nav.locator("#find-bar.open").isVisible());
+check("/ opens the find bar", await barOpen());
 check("and installs the paint rules with it", (await findCss()) > 0);
 check("and focuses its input",
   await nav.evaluate(() => document.activeElement === document.getElementById("find-input")));
+
+// Typing must not search. Painting per keystroke flickered the highlight through
+// the prefixes of the word and yanked the pane mid-word; Enter is the trigger.
 await nav.fill("#find-input", "deep");
 await beat(250);
-check("it finds every match, case-insensitively", (await findCount()) === "1/3", await findCount());
+check("typing paints nothing and counts nothing",
+  (await litCount()) === 0 && (await findCount()) === "", await findCount());
+
+await nav.keyboard.press("Enter");
+await beat(200);
+check("Enter runs the search", (await findCount()) === "1/3", await findCount());
+check("and leaves the bar open", await barOpen());
 // The whole reason the Custom Highlight API was chosen over `<mark>` wrapping:
 // painting must not put a single node into the tree highlight anchoring reads.
-check("and paints them without touching the DOM",
+check("and paints the matches without touching the DOM",
   await nav.evaluate(() =>
     CSS.highlights.get("dreamd-find").size === 3 &&
     document.querySelectorAll("#content mark").length === 0));
+// Focus has to leave the input, or `n` types an `n`.
+check("and hands focus back to the document",
+  await nav.evaluate(() => document.activeElement !== document.getElementById("find-input")));
 
-await nav.keyboard.press("Enter");
-await beat(150);
-check("Enter closes the bar and keeps the matches live",
-  !(await nav.locator("#find-bar.open").isVisible()) && (await findCount()) === "1/3",
-  await findCount());
 await nav.keyboard.press("n");
 await beat(150);
-check("n steps with the bar closed", (await findCount()) === "2/3", await findCount());
+check("n steps with the bar still open", (await findCount()) === "2/3", await findCount());
 await nav.keyboard.press("Shift+N");
 await beat(150);
 check("Shift+N steps back", (await findCount()) === "1/3", await findCount());
 
-// vim's `:nohlsearch`. Enter leaves the bar closed with the matches still lit,
-// and Escape there has to put them out rather than fall through to view mode.
-const lit = () => nav.evaluate(() => !!CSS.highlights.get("dreamd-find"));
-check("Enter leaves the matches painted", await lit());
+// Esc is the only exit, and it takes the search with it.
+check("there are painted ranges to lose", (await snapPainted()) === 3);
 await nav.keyboard.press("Escape");
 await beat(150);
-check("Esc with the bar closed unlights the matches", !(await lit()));
+check("Esc closes the bar", !(await barOpen()));
+check("and removes every trace of the search",
+  (await litCount()) === 0 && (await findCount()) === "", await findCount());
+// The regression these two guard: the matches left the model but stayed on
+// screen, going one at a time as clicks and scrolling repainted each strip —
+// and after the first fix, one fragment could still linger a line from its word.
+// Withdrawing the rules is what repaints; the collapse is the belt.
+check("by withdrawing the paint rules, not just the matches", (await findCss()) === 0,
+  `${await findCss()} chars of css`);
+check("and leaving no uncollapsed range behind either", (await strayRanges()) === 0,
+  `${await strayRanges()} stray`);
 check("and does not leak through to view mode",
   !(await nav.evaluate(() => document.body.classList.contains("view-mode"))));
-// Non-destructive: the pattern and the match set survive, so stepping relights.
-await nav.keyboard.press("n");
-await beat(150);
-check("n after unlighting steps and relights", (await lit()) && (await findCount()) === "2/3",
-  await findCount());
-await nav.keyboard.press("Escape");
-await beat(150);
 
+// No regex toggle: the pattern is read literally, and as a regex only where the
+// literal finds nothing. A lone `(` is not valid regex at all, so it is a
+// literal and simply finds nothing — there is no error state left to flag.
 await nav.keyboard.press("/");
 await beat(120);
-await nav.locator("#find-regex").click();
-await beat(200);
 await nav.fill("#find-input", "(");
-await beat(250);
-check("a half-typed regex is flagged, not thrown",
-  (await findCount()) === "bad pattern" &&
-  (await nav.locator("#find-bar.invalid").count()) === 1,
-  await findCount());
+await nav.keyboard.press("Enter");
+await beat(200);
+check("an unclosed group is a literal, not an error",
+  (await findCount()) === "0/0" && (await findMode()) === "", await findCount());
+// The sharpest case for "literal first". The `<h1>` renders the file path, so a
+// single `.` occurs literally in the document exactly once — while `.` read as a
+// regex would match every character and hit the 2000 cap. Literal must win.
+await nav.fill("#find-input", ".");
+await nav.keyboard.press("Enter");
+await beat(200);
+check("a literal match beats the regex reading",
+  (await findCount()) === "1/1" && (await findMode()) === "",
+  `${await findCount()} ${await findMode()}`);
+// Nothing matches `de.p` literally, so it falls through to being the regex the
+// reader plainly meant — and says so.
+await nav.fill("#find-input", "de.p");
+await nav.keyboard.press("Enter");
+await beat(200);
+check("and falls back to regex when the literal finds nothing",
+  (await findCount()) === "1/3" && (await findMode()) === "regex",
+  `${await findCount()} ${await findMode()}`);
+
+// The ✕ button is the same exit as Esc.
+await nav.locator("#find-close").click();
+await beat(150);
+check("the close button clears the search too",
+  !(await barOpen()) && (await litCount()) === 0 && (await findCount()) === "");
+check("and withdraws the paint rules the same way Esc does", (await findCss()) === 0,
+  `${await findCss()} chars of css`);
+// Re-opening has to put them back, or the next search paints nothing at all.
+await nav.keyboard.press("/");
+await beat(120);
+check("re-opening reinstalls them", (await findCss()) > 0);
+await nav.fill("#find-input", "deep");
+await nav.keyboard.press("Enter");
+await beat(200);
+check("and a second search still paints", (await litCount()) === 3, `${await litCount()}`);
 await nav.keyboard.press("Escape");
 await beat(150);
-check("Esc closes find and clears the paint",
-  !(await nav.locator("#find-bar.open").isVisible()) &&
-  (await findCount()) === "" &&
-  (await nav.evaluate(() => !CSS.highlights.get("dreamd-find"))));
 
 await browser.close();
 console.log(results.join("\n"));

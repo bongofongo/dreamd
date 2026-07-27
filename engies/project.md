@@ -227,23 +227,37 @@ causes were wrong.
 
 ## Recent updates
 
-- **2026-07-27** — **You can now search inside the document you're reading, and one CSS
-  rule turned out to be quietly taxing every page load.** Pressing `/` opens a search bar
-  at the foot of the reading pane; matches light up as you type, `n` and `N` step through
-  them, and `Esc` puts the highlight out the way vim does without forgetting what you
-  searched for. It searches the document *as you see it*, not the raw markdown behind it —
-  so a phrase running through a bit of **bold** is found normally, and the markdown
-  punctuation itself never matches. This is one file at a time; searching every file in
-  the repo by content is still not built.
-  The interesting part was the cost. Matches are drawn using a browser feature that
-  colours text without touching the page's structure — chosen deliberately, because the
-  obvious alternative (wrapping each match in a tag) can split one of the reader's own
-  highlights in two and corrupt it invisibly. But simply *declaring* the rule that gives
-  those matches a colour made the browser do extra work over every word in the document
-  on every render — a **27% slowdown**, on documents where nobody had ever searched for
-  anything. Measured, isolated to those two lines, and fixed by not installing them until
-  the first time you press `/`. It is a good reminder that "I only added a style rule" is
-  not the same as "I added nothing".
+- **2026-07-27** — **You can now search inside the document you're reading — and the
+  interesting parts were a style rule that taxed every page load, and a highlight that
+  would not go away.** Pressing `/` opens a search bar at the foot of the reading pane.
+  You type, press `Enter`, and the matches light up; `n` and `N` step through them. The
+  bar staying open is exactly what keeps the highlights visible, so `Esc` or the `✕`
+  clears the whole search in one action. It searches the document *as you see it*, not the
+  raw markdown behind it — so a phrase running through a bit of **bold** is found
+  normally, and the markdown punctuation itself never matches. One file at a time;
+  searching every file in the repo by content is still not built.
+  There is deliberately **no regex switch**. Your pattern is searched literally, and only
+  re-read as a regular expression if the literal finds nothing — so `app.js` finds
+  `app.js` instead of quietly also matching `appXjs`, while something like `\bword\b` does
+  what you obviously meant. The reason for the rule is that the obvious alternative can be
+  wrong without ever telling you, which is the failure mode worth designing against.
+  **The cost nobody would have predicted.** Matches are drawn with a browser feature that
+  colours text without touching the page's structure — chosen because the obvious
+  alternative (wrapping each match in a tag) can split one of the reader's own highlights
+  in two and corrupt it invisibly. But simply *declaring* the rule that gives those
+  matches a colour made the browser do extra work over every word in the document on every
+  render: a **27% slowdown**, on documents where nobody had ever searched for anything.
+  Measured, isolated to two lines, and fixed by only installing them while a search is
+  actually running. "I only added a style rule" is not the same as "I added nothing".
+  **And a bug that took three tries**, all of it caught by the author using the real app.
+  Matches kept their colour after the search closed, then vanished one at a time as the
+  cursor or a scroll happened to redraw that patch of the page. The matches were genuinely
+  gone — only the pixels were stale. Two fixes aimed at the wrong layer, both of which
+  looked correct and passed the tests, before the right one: take the *colour rule* away
+  while the browser still knows where the matches are, so it redraws exactly those spots,
+  and only then forget them. The tests could not see any of this, because they were
+  checking what the page *knew* rather than what it was *showing* — worth remembering the
+  next time a visual bug passes a green suite.
   The reading-progress indicator added yesterday — the percentage in the top bar and the
   hairline along the bottom — was **removed** at the author's request. No fault found; it
   simply wasn't wanted.

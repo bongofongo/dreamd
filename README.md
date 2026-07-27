@@ -113,13 +113,17 @@ See `perf/README.md` for what each tier measures and how much to trust it.
   the export is meant to be the document. dreamd chooses no filename and writes
   nothing itself; the save is entirely your dialog's.
 - **Find in the document:** `/` opens a search bar at the foot of the reading
-  pane, and matches highlight as you type. `n` and `N` step forward and back —
-  including after `Enter`, which closes the bar but keeps the matches lit, the
-  way vim does. `Esc` in the bar closes it and clears the matches; `Esc` once
-  the bar is closed just puts the highlight out, like `:nohlsearch` — `n` steps
-  on from where you left off and lights it again. Lowercase searches ignore case, a
-  capital anywhere makes it exact (vim's `smartcase`), and the `.*` button
-  switches the pattern to a regular expression. It searches the document as
+  pane. Type, then press `Enter` — nothing highlights until you do, so the page
+  stays still while you type. `Enter` jumps to the first match from where you
+  are and leaves the bar open; `n` and `N` step forward and back from there.
+  **The bar being open is exactly what makes the highlights visible**, so `Esc`
+  or the `✕` button closes it and clears every trace of the search in one go.
+  Lowercase searches ignore case, a capital anywhere makes it exact (vim's
+  `smartcase`). There is no regex switch: your pattern is searched literally,
+  and only re-read as a regular expression if the literal finds nothing — so
+  `app.js` finds `app.js` rather than quietly also matching `appXjs`, while
+  `\bread\b` or `(one|two)` do what you obviously meant. When it does fall back,
+  the bar says `regex` so you can see it happened. It searches the document as
   rendered, so a match spanning `**bold**` is found the way you see it, and
   markdown syntax never matches. One file at a time — searching the whole repo's
   contents is not built; the palette finds files by *name*.

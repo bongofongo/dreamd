@@ -203,10 +203,6 @@
         border-left: 3px solid transparent;
       }
       #find-bar.open { display: flex; }
-      /* An invalid regex is a state the reader is mid-keystroke in, so it gets
-         a colour and no dialog: `--stale` is already this app's "this does not
-         resolve" red. */
-      #find-bar.invalid { border-left-color: var(--stale, #ef6a7d); }
       #find-bar .find-sigil {
         font-family: var(--font-mono, ui-monospace, Menlo, monospace);
         opacity: 0.55; user-select: none; -webkit-user-select: none;
@@ -223,12 +219,11 @@
         user-select: none; -webkit-user-select: none;
         contain: layout style;
       }
-      #find-regex {
-        font-family: var(--font-mono, ui-monospace, Menlo, monospace); font-size: 12px;
-        opacity: 0.6;
-      }
-      #find-regex[aria-pressed="true"] {
-        opacity: 1; background: var(--accent-dim, #2b2447); border-color: var(--accent, #a48cf5);
+      /* Empty unless the pattern was read as a regex, so it takes no room in the
+         common case — no fixed width, unlike the count beside it. */
+      #find-mode {
+        font-family: var(--font-mono, ui-monospace, Menlo, monospace); font-size: 11px;
+        opacity: 0.5; user-select: none; -webkit-user-select: none;
       }
 
       /* The `::highlight()` rules that paint matches are deliberately NOT here.
@@ -749,7 +744,10 @@
           <span class="find-sigil">/</span>
           <input id="find-input" autocomplete="off" spellcheck="false"
                  aria-label="Find in document" placeholder="Find in document…" />
-          <button id="find-regex" class="icon" data-tip="Regular expression" aria-pressed="false">.*</button>
+          <!-- Reads "regex" only when the pattern was taken as one, which
+               happens when it has metacharacters and no literal match. There is
+               no toggle to get wrong; see `findSpans` in app.js. -->
+          <span id="find-mode" aria-live="polite"></span>
           <span id="find-count" aria-live="polite"></span>
           <button id="find-prev" class="icon" data-tip="Previous match" data-tip-key="find_prev">‹</button>
           <button id="find-next" class="icon" data-tip="Next match" data-tip-key="find_next">›</button>

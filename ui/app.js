@@ -1332,30 +1332,20 @@ function forgetAllPositions() {
 // corrupt session state the reader cannot see. Nothing here mutates the DOM.
 const FIND_ALL = "dreamd-find";
 const FIND_CUR = "dreamd-find-current";
-// Bounds a pattern like `.` over a 2MB document. A guess, like the debounce.
+// Bounds a pattern like `.` over a 2MB document. A guess.
 const FIND_MAX_HITS = 2000;
-// Below the threshold where typing feels laggy, and it collapses a burst of
-// keystrokes into one scan of what may be a megabyte. Also a guess — the first
-// thing to check on a real machine against the harness's large corpus.
-const FIND_DEBOUNCE_MS = 60;
 
 const findBar = $("find-bar");
 const findInput = $("find-input");
 const findCountEl = $("find-count");
+const findModeEl = $("find-mode");
 
 let findIndex = null;    // { nodes, starts, text } | null — rebuilt per render
-let findQuery = "";
-let findRegex = false;   // the `.*` toggle; in memory only, see the plan's §9
+let findQuery = "";      // the last *committed* pattern, not what is in the box
 let findRanges = [];     // Range[], in document order
 let findCurrent = -1;
 let findCapped = false;  // the scan hit FIND_MAX_HITS
-let findTimer = null;
 let findWarned = false;  // the no-paint toast is shown once per session
-// Whether matches are painted *right now*, which is not the same as having a
-// match set: vim's `:nohlsearch` puts the highlight out while leaving `n` and
-// `N` armed to bring it back. Escape with the bar closed is that command here,
-// so this is what tells it whether there is anything to claim the key for.
-let findLit = false;
 
 // Safari 17.2 / WebKitGTK 2.44. Without it the bar still opens, still counts,
 // and n/N still step — the search works, it is just not painted. Deliberately
@@ -1364,62 +1354,80 @@ let findLit = false;
 const findPaints = () =>
   typeof Highlight === "function" && !!(window.CSS && CSS.highlights);
 
-/// Install the two `::highlight()` rules, once, on first use.
+/// The two `::highlight()` rules, present in `#find-css` only while a search is.
 ///
 /// They are not in index.html's stylesheet because declaring them there is not
 /// free: a `::highlight()` rule in the sheet made Chromium resolve highlight
 /// styles across every text node, costing +27% on the forced layout after a 2MB
 /// render with nothing ever registered (291ms -> 369ms; deleting just these two
 /// rules restored it to 295ms — Chromium harness, relative signal only). A
-/// reader who never presses `/` should not pay that on every render. Same
-/// reasoning as the lazy `findIndex`, and the one-off style recalc this forces
-/// lands on the keystroke that was going to flatten the document anyway.
+/// reader who is not searching should not pay that on every render.
 ///
 /// Both rules set a foreground as well as a background: this is the one place
 /// in the app whose colours cannot come from the palette's own light/dark
 /// blocks, so they have to be legible on either. `--find` / `--find-cur` let a
 /// palette say otherwise, and the fallbacks mean one that has never heard of
 /// them still renders (tenet 5).
-let findCssInstalled = false;
-function installFindCss() {
-  if (findCssInstalled) return;
-  findCssInstalled = true;
-  $("find-css").textContent =
-    "::highlight(dreamd-find) { background: var(--find, #3a5a8c); color: var(--find-text, #ffffff); }\n" +
-    "::highlight(dreamd-find-current) { background: var(--find-cur, var(--hl, #f2d16b)); color: var(--hl-text, #1a1a1a); }";
-}
+const FIND_CSS =
+  "::highlight(dreamd-find) { background: var(--find, #3a5a8c); color: var(--find-text, #ffffff); }\n" +
+  "::highlight(dreamd-find-current) { background: var(--find-cur, var(--hl, #f2d16b)); color: var(--hl-text, #1a1a1a); }";
+
+function findCssOn() { $("find-css").textContent = FIND_CSS; }
+
+/// Take the paint rules away. **Call this while the ranges are still
+/// registered** — that is the entire point, see `closeFind`.
+function findCssOff() { $("find-css").textContent = ""; }
 
 function openFind() {
   if (!currentFile) { toast("Nothing open to search"); return; }
-  installFindCss();
+  findCssOn();
   findBar.classList.add("open");
   findInput.focus();
+  // The last pattern is left in the box as a convenience — `/` then Enter
+  // repeats the previous search — but selected, so typing replaces it. It is
+  // *not* re-run here: nothing paints until Enter.
   findInput.select();
   if (!findPaints() && !findWarned) {
     findWarned = true;
     toast("This webview cannot paint matches — the count and next/previous still work");
   }
-  // Re-run whatever is still in the box: vim keeps the last pattern, and
-  // re-opening on an empty count would read as the search having been lost.
-  if (findInput.value) { findQuery = findInput.value; findRecompute(true); }
 }
 
-/// Close the bar. `keep` is the Enter path — vim commits the search and leaves
-/// `n`/`N` live, so the match set and the paint survive. Escape does not.
-function closeFind({ keep } = {}) {
-  clearTimeout(findTimer); findTimer = null;
+/// Close the bar and take the search with it.
+///
+/// The bar being open is exactly the condition for matches being painted, and
+/// this is the only way out of it: Escape and the ✕ button both land here. That
+/// equivalence is the whole navigation model — there is no state where a reader
+/// is looking at highlights with no visible sign of what produced them, and no
+/// second command to learn for putting them out.
+function closeFind() {
+  // **Order is load-bearing, and this is the fix for a bug that survived two
+  // attempts.** Removing the matches from the model — by `CSS.highlights.delete`
+  // first, then by collapsing their ranges — left colour on screen that only
+  // went when something else repainted that strip, so matches disappeared under
+  // the cursor one at a time and a fragment could linger a line away from the
+  // word it belonged to. Both of those ask the engine to derive a dirty region
+  // from a *geometry* change, and it does not do so reliably.
+  //
+  // Withdrawing the style instead does not have to be derived: the ranges are
+  // still registered and still painted, their style just became "no highlight",
+  // which is the same path a theme switch takes and repaints exactly the regions
+  // that were coloured. Only then is the model torn down — the dirty regions are
+  // already recorded, so clearing afterwards cannot un-record them.
+  findCssOff();
   findBar.classList.remove("open");
   // Focus has to leave the input or every bare-letter binding stays behind the
   // `isEditable` guard and the reader's next `n` types an `n`.
   findInput.blur();
-  if (keep) return;
+  // Paint first, references after: `clearFindPaint` mutates the ranges the
+  // engine is still tracking, so it has to run while they are still ours.
+  clearFindPaint();
   findQuery = "";
   findRanges = [];
   findCurrent = -1;
   findCapped = false;
-  clearFindPaint();
   findCountEl.textContent = "";
-  findBar.classList.remove("invalid");
+  findModeEl.textContent = "";
 }
 
 /// Everything gone, bar included. For the paths where the document itself is
@@ -1429,11 +1437,41 @@ function resetFind() {
   closeFind();
 }
 
+/// The two `Highlight` objects, registered once and thereafter *mutated*.
+///
+/// Not `CSS.highlights.set(...)` / `.delete(...)` per search, which is what this
+/// shipped as first. Deleting the registry entry took the matches out of the
+/// model but did not invalidate the pixels they had painted: after the bar
+/// closed the blue stayed on screen and then vanished a match at a time, as a
+/// click or a scroll happened to repaint that strip. Mutating a registered
+/// highlight is the change the engine is obliged to notice.
+let hlAll = null;
+let hlCur = null;
+
+function findHighlights() {
+  if (hlAll) return true;
+  if (!findPaints()) return false;
+  hlAll = new Highlight();
+  hlCur = new Highlight();
+  CSS.highlights.set(FIND_ALL, hlAll);
+  CSS.highlights.set(FIND_CUR, hlCur);
+  return true;
+}
+
+/// Empty the match set. Kept as a *belt* to `findCssOff`, not as the mechanism:
+/// collapsing each range asks the engine to derive a dirty region from a
+/// geometry change, which cleared most matches but reproducibly left the odd
+/// fragment behind. Withdrawing the style is what actually repaints; this runs
+/// second and costs nothing, since the ranges are being discarded anyway.
+///
+/// Safe to call with the rules still installed — that is the mid-search path,
+/// where a new Enter replaces the match set and the engine repaints on the
+/// highlight-contents change, which it has always done correctly.
 function clearFindPaint() {
-  findLit = false;
-  if (!findPaints()) return;
-  CSS.highlights.delete(FIND_ALL);
-  CSS.highlights.delete(FIND_CUR);
+  if (!hlAll) return;
+  for (const r of hlAll) r.collapse(true);
+  hlAll.clear();
+  hlCur.clear();
 }
 
 /// Drop everything that points into the DOM. Called at the top of
@@ -1442,25 +1480,59 @@ function clearFindPaint() {
 /// is a dead `n` rather than an error. `findCurrent` deliberately survives, so
 /// a re-render under an open bar can clamp back to roughly where it was.
 function invalidateFind() {
+  clearFindPaint();
   findIndex = null;
   findRanges = [];
-  clearFindPaint();
 }
 
-/// One code path for the literal and regex cases. Escaping the literal into a
-/// `RegExp` rather than using `indexOf` + `toLowerCase()` is deliberate:
-/// case-folding both haystack and needle can change string *length* for some
-/// Unicode (`İ`), which silently corrupts every offset after it. The regex
-/// engine indexes the original string, so offsets are always sound.
+/// Compile a pattern to a `RegExp`. `literal` escapes every metacharacter, and
+/// therefore cannot throw; the regex form can, and `findSpans` is what catches.
 ///
-/// Throws on a half-typed pattern — `(`, `[`, `*` — which is every other
-/// keystroke while a regex is being typed. Callers catch.
-function findCompile(q, regex) {
-  const src = regex ? q : q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  // Smart case: an all-lowercase pattern is case-insensitive, any uppercase
-  // makes it exact. Vim's `smartcase`, and the right default for a reader.
+/// Smart case either way: an all-lowercase pattern is case-insensitive, any
+/// uppercase makes it exact. Vim's `smartcase`, and the right default here.
+///
+/// Escaping the literal into a `RegExp` rather than using `indexOf` +
+/// `toLowerCase()` is deliberate: case-folding both haystack and needle can
+/// change string *length* for some Unicode (`İ`), which silently corrupts every
+/// offset after it. The regex engine indexes the original string, so offsets
+/// are always sound.
+function findCompile(q, literal) {
+  const src = literal ? q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") : q;
   const flags = "g" + (/[A-Z]/.test(q) ? "" : "i");
   return new RegExp(src, flags);
+}
+
+const FIND_META = /[.*+?^${}()|[\]\\]/;
+
+/// Find the spans for `q`, deciding for the reader whether it is a literal or a
+/// regular expression. There is no toggle button, and this is why there does not
+/// need to be one.
+///
+/// **Literal first; regex only where the literal finds nothing.** The rule is
+/// chosen because it cannot silently give a wrong answer in either direction:
+///
+///   * `app.js` finds the literal `app.js` when the document contains it,
+///     rather than quietly also matching `appXjs` — a plain-regex reading gets
+///     that wrong, and the reader has no way to see that it did.
+///   * `\bread\b`, `(one|two)` and `^#` occur literally in almost no prose, so
+///     they fall through to being the regular expression the reader plainly
+///     meant by typing them.
+///   * A pattern that is not valid regex at all — a lone `(`, a stray `[` — is
+///     simply a literal. There is no error state to design for, which is what
+///     lets the bar drop the red "bad pattern" branch entirely.
+///
+/// The cost is one extra scan of the haystack for a pattern that turns out to
+/// be a regex, which happens once per Enter rather than once per keystroke.
+/// Which reading was used is reported in `#find-mode`, so the fallback is never
+/// silent.
+function findSpans(q, text) {
+  const literal = findScan(findCompile(q, true), text);
+  if (literal.length || !FIND_META.test(q)) return { spans: literal, mode: "" };
+  try {
+    return { spans: findScan(findCompile(q, false), text), mode: "regex" };
+  } catch (_) {
+    return { spans: literal, mode: "" }; // not a regex either — the 0 hits stand
+  }
 }
 
 /// Every match as an `[start, end)` pair of offsets into the flattened text.
@@ -1491,51 +1563,41 @@ function findRange(idx, start, end) {
 
 /// Rebuild the match set for `findQuery` against the DOM as it stands now.
 ///
-/// `move` separates the two callers. Typing (and toggling `.*`) is incremental
-/// search: re-pick the current match from where the reader is looking and
-/// scroll to it. A re-render under an open bar is not — the reader asked for
-/// nothing, so the index is rebuilt, the current match clamped, and the pane
-/// left exactly where `renderCurrent` put it.
+/// `move` separates the two callers. Enter is a search: pick the match from
+/// where the reader is looking and scroll to it. A re-render under an open bar
+/// is not — the reader asked for nothing, so the index is rebuilt, the current
+/// match clamped, and the pane left exactly where `renderCurrent` put it.
 function findRecompute(move) {
   const prev = findCurrent;
   clearFindPaint();
   findRanges = [];
   findCurrent = -1;
   findCapped = false;
-  findBar.classList.remove("invalid");
+  findModeEl.textContent = "";
   if (!findQuery) { findCountEl.textContent = ""; return; }
-
-  let re;
-  try {
-    re = findCompile(findQuery, findRegex);
-  } catch (_) {
-    // No toast: the reader is mid-keystroke and one per character is noise.
-    findBar.classList.add("invalid");
-    findCountEl.textContent = "bad pattern";
-    return;
-  }
 
   // Lazily, so a session that never presses `/` pays nothing for the flatten.
   if (!findIndex) findIndex = scanTextNodes(contentEl);
-  const spans = findScan(re, findIndex.text);
+  const { spans, mode } = findSpans(findQuery, findIndex.text);
   findCapped = spans.length >= FIND_MAX_HITS;
+  findModeEl.textContent = mode;
   findRanges = spans.map(([a, b]) => findRange(findIndex, a, b));
   if (!findRanges.length) { findCountEl.textContent = "0/0"; return; }
 
   findCurrent = move
     ? findFirstBelow()
     : Math.min(Math.max(prev, 0), findRanges.length - 1);
-  paintFind();
+  paintFind(true);
   if (move) scrollToMatch();
 }
 
-/// The first match at or after the top of the visible pane — vim's `incsearch`
-/// starting point — falling back to the first match in the document.
+/// The first match at or after the top of the visible pane, falling back to the
+/// first match in the document — so Enter moves you forward from where you are
+/// reading rather than throwing you back to the top of the file.
 ///
 /// Binary, not linear: the ranges come out of a forward scan of the flattened
 /// text, so they are in document order and their vertical positions are
-/// monotonic. That turns up to `FIND_MAX_HITS` layout reads per keystroke into
-/// about eleven.
+/// monotonic. That turns up to `FIND_MAX_HITS` layout reads into about eleven.
 function findFirstBelow() {
   const top = scrollEl.getBoundingClientRect().top;
   let lo = 0, hi = findRanges.length - 1, best = -1;
@@ -1547,13 +1609,44 @@ function findFirstBelow() {
   return best < 0 ? 0 : best;
 }
 
-function paintFind() {
+/// `rebuildAll` is false when only the current match moved — `n` and `N` change
+/// which range is yellow and nothing else, so re-adding all 2000 blue ones on
+/// every step would be pure waste.
+function paintFind(rebuildAll) {
   findCountEl.textContent =
     `${findCurrent + 1}/${findRanges.length}${findCapped ? "+" : ""}`;
-  if (!findPaints()) return;
-  CSS.highlights.set(FIND_ALL, new Highlight(...findRanges));
-  CSS.highlights.set(FIND_CUR, new Highlight(findRanges[findCurrent]));
-  findLit = true;
+  if (!findHighlights()) return;
+  if (rebuildAll) {
+    hlAll.clear();
+    for (const r of findRanges) hlAll.add(r);
+  }
+  hlCur.clear();
+  hlCur.add(findRanges[findCurrent]);
+}
+
+/// Commit what is in the box. **The only thing in this file that searches.**
+///
+/// Nothing runs on `input`. Painting every keystroke meant the highlight
+/// flickered through the prefixes of the word being typed and the pane was
+/// yanked to a new match mid-word — and the same accumulating-input path is
+/// where the reported glitches lived. Searching on Enter makes the bar an
+/// ordinary text field until the reader says otherwise, and deletes the
+/// debounce, the per-keystroke scan and their two guessed constants with it.
+///
+/// Re-committing an unchanged pattern steps instead of re-searching, so holding
+/// Enter walks the matches the way `n` does.
+function commitFind(dir) {
+  const q = findInput.value;
+  if (q !== findQuery) {
+    findQuery = q;
+    findRecompute(true);
+  } else if (findRanges.length) {
+    stepFind(dir);
+  }
+  // Hand focus back to the document so `n` and `N` are keys again rather than
+  // letters. The bar stays open: it is the visible sign that a search is live,
+  // and closing it is what puts the highlights out.
+  findInput.blur();
 }
 
 /// Step to the next/previous match, wrapping — the same choice `stepFile` makes,
@@ -1566,7 +1659,7 @@ function stepFind(d) {
   }
   if (!findRanges.length) { toast("No matches"); return; }
   findCurrent = (findCurrent + d + findRanges.length) % findRanges.length;
-  paintFind();
+  paintFind(false);
   scrollToMatch();
 }
 
@@ -1585,30 +1678,13 @@ function scrollToMatch() {
 }
 
 function wireFind() {
-  findInput.oninput = () => {
-    findQuery = findInput.value;
-    clearTimeout(findTimer);
-    findTimer = setTimeout(() => { findTimer = null; findRecompute(true); }, FIND_DEBOUNCE_MS);
-  };
   findInput.onkeydown = (e) => {
     // Bare and Shift only. `Ctrl+Enter` is `send_stack` and must not be
     // shadowed here; Escape is left to the global handler, which knows the
     // ordering against view mode.
     if (e.key !== "Enter" || e.ctrlKey || e.metaKey || e.altKey) return;
     e.preventDefault();
-    // Flush a pending debounce, so Enter acts on what is in the box rather than
-    // on the match set from 60ms ago.
-    if (findTimer) { clearTimeout(findTimer); findTimer = null; findRecompute(true); }
-    // Commit, vim-style: the bar goes, the match set and the paint stay, and
-    // `n`/`N` carry on from here.
-    if (e.shiftKey) stepFind(-1);
-    else closeFind({ keep: true });
-  };
-  $("find-regex").onclick = () => {
-    findRegex = !findRegex;
-    $("find-regex").setAttribute("aria-pressed", String(findRegex));
-    findRecompute(true);
-    findInput.focus();
+    commitFind(e.shiftKey ? -1 : 1);
   };
   $("find-next").onclick = () => stepFind(1);
   $("find-prev").onclick = () => stepFind(-1);
@@ -1995,20 +2071,17 @@ function wireKeys() {
       // a literal slash into the pattern work with no new code. Being here is
       // only what stops Escape-out-of-find also leaving view mode.
       //
-      // `findLit` extends that to the state Enter leaves behind: the bar closed
-      // but the matches still painted. Escape there is vim's `:nohlsearch` —
-      // put the highlight out, keep the search — so it has to claim the key the
-      // same way an open panel does.
+      // One line covers the whole feature, because the bar being open is
+      // exactly the condition for matches being painted: Escape closes the bar
+      // and the highlights go with it. There is no separate `:nohlsearch` state
+      // to arbitrate, and no way to be left looking at highlights with nothing
+      // on screen to explain them.
       const claimed = ["palette-overlay", "annot-overlay", "confirm-overlay",
                        "settings-overlay", "file-menu", "find-bar"]
-        .some((id) => $(id).classList.contains("open")) || findLit;
+        .some((id) => $(id).classList.contains("open"));
       closePalette();
       closeFileMenu();
       if (findBar.classList.contains("open")) closeFind();
-      // `:nohlsearch`, not `:let @/ = ""`. The match set and the pattern
-      // survive, so `n` and `N` step on from here and light it back up — which
-      // is exactly what vim does, and what makes this Escape non-destructive.
-      else if (findLit) clearFindPaint();
       if ($("annot-overlay").classList.contains("open")) cancelAnnot();
       if ($("confirm-overlay").classList.contains("open")) closeConfirm();
       if ($("settings-overlay").classList.contains("open")) closeSettings();

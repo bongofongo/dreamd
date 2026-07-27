@@ -1,5 +1,107 @@
 # Session log
 
+## 2026-07-27 — find reshaped around Enter, the regex toggle deleted, and three goes at one stale-paint bug
+
+Follow-up to the session below, all of it driven by the author using the feature
+in the real app. The search model changed shape, the regex button came out, and a
+lingering-highlight bug took three attempts because the first two were fixing the
+wrong layer.
+
+### What happened
+
+1. **Nothing searches until Enter.** The `input` handler, the 60ms debounce and
+   its guessed constant are gone; `commitFind` is now the only function in
+   `app.js` that searches. Painting per keystroke flickered the highlight
+   through the prefixes of the word being typed and yanked the pane to a new
+   match mid-word — and it was where the author's reported glitches lived. The
+   fix deletes the code path rather than patching it. `findQuery` now means "the
+   last *committed* pattern", which is what lets the box be edited freely
+   without disturbing a live search.
+
+2. **Enter keeps the bar open and blurs the input.** Previously it closed the
+   bar. The blur is load-bearing: focus in the input means `isEditable` swallows
+   every bare-letter binding, so `n` would type an `n`. Re-committing an
+   unchanged pattern steps instead of re-searching.
+
+3. **Bar visible ⇔ highlights visible, as one rule.** Escape and the ✕ button are
+   the same exit and both clear pattern, match set and paint. The `:nohlsearch`
+   state added earlier in the day — bar closed, matches still lit — is gone with
+   `findLit`. There is no longer a way to be looking at highlights with nothing
+   on screen explaining them, and no second command to learn.
+
+4. **The `.*` toggle is deleted; the pattern is interpreted instead.** Literal
+   first, re-read as a regex only where the literal finds nothing. Chosen over
+   plain-regex because plain-regex has a silent-wrong-answer mode: `app.js`
+   would also match `appXjs` with nothing on screen admitting it. Under this
+   rule `.` finds the one literal dot rather than all 2000 characters, while
+   `\bread\b` and `(one|two)` fall through to the regex the reader plainly
+   meant. A lone `(` is simply a literal, so **the invalid-pattern state stopped
+   existing** and the red `.invalid` border and "bad pattern" branch came out
+   with it. `#find-mode` shows `regex` when the fallback fires, so it is never
+   silent.
+
+5. **The stale-paint bug, in three attempts.** Matches stayed on screen after the
+   bar closed and vanished one at a time as clicks and scrolling repainted each
+   strip.
+
+   - *First attempt:* `CSS.highlights.delete()` was already being called and the
+     model was verifiably empty. Replaced delete/re-set with two `Highlight`
+     objects registered once and mutated thereafter. Better API usage, and it
+     helped, but not enough.
+   - *Second attempt:* collapse every range before clearing, on the reasoning
+     that a live `Range` inside a `Highlight` is tracked by the engine. Cleared
+     most matches — and the author came back with a photo of one fragment
+     lingering a line away from its word.
+   - *Third, and the actual fix:* both earlier attempts ask the engine to derive
+     a dirty region from a **geometry** change, which it does unreliably; the
+     displaced fragment was the tell. Now `#find-css` is emptied **while the
+     ranges are still registered and painted**, so their style becomes "no
+     highlight" — the path a theme switch takes, which repaints exactly the
+     regions the engine already knows it coloured. The model is torn down after,
+     since the dirty regions are recorded by then. The collapse stays as a belt,
+     demoted and commented as such.
+
+   Falling out of it: the `::highlight()` rules now exist only *while a search is
+   live* rather than from the first `/` to the end of the session, so the +27%
+   per-render cost found in the session below is avoided in more cases than
+   before.
+
+### Mistakes & deviations
+
+- **Two failed fixes before the right one, both at the wrong layer.** Worth
+  recording precisely because both were locally reasonable and both were
+  confirmed working by the test suite. Geometry-derived invalidation is the
+  wrong lever; style withdrawal is the right one.
+
+- **The harness assertion could not see the bug, and the first replacement could
+  not either.** It asked whether the registry entry existed — the one question
+  that returns "clean" while stale pixels are on screen. The first rewrite asked
+  whether any uncollapsed range remained *after* closing, which is also blind:
+  clearing empties the highlight either way, so there is nothing left to inspect.
+  The version that works snapshots the painted `Range` objects onto `window`
+  **before** closing and asks afterwards whether they were collapsed. Both new
+  guards were then verified to fail against the code they replaced — `3 stray`
+  for the collapse, `214 chars of css` for the style withdrawal.
+
+- **One test expectation was wrong rather than the code:** `findSpans("a.c", "abc
+  abd")` was asserted to find two regex matches. `a.c` does not match `abd`.
+  Corrected the fixture, not the implementation.
+
+### State
+
+`perf/harness/ui-check.mjs` **79 passed, 0 failed**, up from 73 across the
+session. The pure-function harness is 15/15 and now covers the literal-first rule
+directly, including the `.`-must-not-be-a-wildcard case. No Rust changed this
+round, so no `cargo build` gate; perf tiers skipped at the author's request.
+
+The stale-paint fix is **verified only in Chromium, where the bug never
+reproduced** — it is a WKWebView invalidation gap, and the author confirmed the
+final version works in the real app. That confirmation is the only evidence for
+it that exists; nothing in this repo can regression-test it.
+
+Still open from the session below: `FIND_MAX_HITS = 2000` is a guess, and placing
+a highlight over a painted match has not been checked by hand.
+
 ## 2026-07-27 — reading progress cut, `/` content search built, and a CSS rule that cost 27% by existing
 
 The reading-position indicator came out at the author's request, and
