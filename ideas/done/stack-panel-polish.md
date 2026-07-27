@@ -1,5 +1,11 @@
 # Stack panel: visual polish + push/pop motion
 
+**Status: done — shipped in e8e7043 (2026-07-26).** Both decisions below were
+built as written: `refreshStack()` reconciles against the previous list keyed
+by highlight `id` instead of wiping `innerHTML`, which is what gave the cards a
+stable identity to animate against, and pairs snap in and out toward the panel
+edge. The `style.marginTop` hack is gone in favour of the shared button classes.
+
 Better-looking stack entries, plus animation that reads as "pushing" or
 "popping" (not necessarily literal top-of-stack only — just that motion
 language).

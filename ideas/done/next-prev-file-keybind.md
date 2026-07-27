@@ -1,5 +1,9 @@
 # Keybind: next/previous file
 
+**Status: done — shipped in 3b8be57 (2026-07-26).** `next_file` / `prev_file`
+bound to bare `]` / `[` — the convention the open question favoured — stepping
+through the sidebar's own depth-first order rather than a second invented one.
+
 Move through the repo's markdown files by keybind, without touching the file
 tree — same traversal feel as the `/` search idea.
 

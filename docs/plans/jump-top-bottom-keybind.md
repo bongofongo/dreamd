@@ -1,13 +1,13 @@
 # Plan: two-key chord bindings (`gg`, and the leader keys after it)
 
-Companion to the shipped half of `ideas/jump-top-bottom-keybind.md`. The jump
+Companion to the shipped half of `ideas/done/jump-top-bottom-keybind.md`. The jump
 itself landed as `jump_top` / `jump_bottom`, defaulting to `Home` / `End`. This
 document covers the part that was *not* built: the plumbing that would let a
 binding be a sequence of keystrokes rather than one combo, so `gg` (and later
 `m{letter}`) become expressible.
 
 Written to be read by whoever picks this up next — including the agent on
-`ideas/vim-marks-bookmark-jump.md`, whose `m{letter}` binding needs the same
+`ideas/done/vim-marks-bookmark-jump.md`, whose `m{letter}` binding needs the same
 machinery in a slightly different shape. See "Two shapes, one prefix" below
 before assuming this plan covers that case.
 

@@ -1,9 +1,14 @@
 # Import/convert another file type to markdown
 
-**Status: blocked, on hold.** The tenet-1 conflict below is real enough that
-this isn't worth designing further right now. Revisit once there's an
-explicit decision on how (or whether) to reconcile it — export-only work
-(`ideas/md-to-pdf-export.md`) is the current focus instead.
+**Status: on hold — unchanged, and still the only idea in this batch nobody
+built.** The tenet-1 conflict below is real enough that this isn't worth
+designing further right now. Two blockers, neither resolved: which source
+format(s) this actually means, and whether an importer may write inside the
+repo root at all. Export-only work went ahead instead and is now done
+(`ideas/done/md-to-pdf-export.md`, shipped 3218fdf) — that's evidence for the
+"write outside the repo / separate CLI" options below rather than against them,
+since print-to-PDF sidestepped the tenet entirely and cost one stylesheet.
+Revisit only with an explicit decision on the tenet question.
 
 A button to bring an easily-transferable file type in as markdown — the
 dictation trailed off before naming the specific source format(s), worth

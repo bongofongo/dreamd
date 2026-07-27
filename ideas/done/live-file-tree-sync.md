@@ -1,5 +1,12 @@
 # Auto-update on .md add/edit/remove
 
+**Status: done — nothing to build.** The feature already existed in
+`watcher.rs` + `ui/app.js`, and the suspected fault didn't reproduce (see the
+addendum). Filed here as closed rather than implemented. The "don't trust it,
+verify it" section below — a `watcher_check` example harness — is a
+someday-maybe, not a task; if the watcher does misbehave later, that's a bug
+report against existing code, not this idea reopening.
+
 ## ADDENDUM
 Not sure why it wasn't working before, but as of right now it seems to be working.
 

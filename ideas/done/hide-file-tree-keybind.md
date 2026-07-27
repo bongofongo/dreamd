@@ -1,5 +1,9 @@
 # Keybind: hide the file tree
 
+**Status: done — shipped in 1895e69 (2026-07-26).** `toggle_tree` in `Keymap`,
+default `Ctrl+B` (the answer to the open question below), rebindable from the
+settings panel like every other shortcut.
+
 A keyboard shortcut that hides/shows the sidebar file tree.
 
 ## Current state

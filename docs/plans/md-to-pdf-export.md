@@ -1,6 +1,6 @@
 # Plan — the rest of PDF export
 
-Source idea: `ideas/md-to-pdf-export.md`. Written during the overnight batch on
+Source idea: `ideas/done/md-to-pdf-export.md`. Written during the overnight batch on
 `claude/overnight-ideas-2026-07-27`, alongside the half that shipped.
 
 **The content-only export is built.** Printer icon in the top bar →

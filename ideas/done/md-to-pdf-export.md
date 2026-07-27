@@ -1,5 +1,23 @@
 # Export current document to PDF
 
+**Status: done — shipped in 3218fdf (2026-07-26), content-only as scoped.** A
+printer icon opens the OS print dialog; "Save as PDF" there is the export. No
+PDF crate, no new dependency, no CSP change — a stylesheet plus a six-line
+command. Two things the recommendation below got wrong or didn't know:
+
+- **`window.print()` does nothing in WKWebView.** WebKit routes it to the UI
+  delegate's `_webView:printFrame:`, which wry doesn't implement, so the JS
+  call silently prints nothing on the one platform dreamd targets. The trigger
+  goes through Rust — `WebviewWindow::print` reaches NSPrintOperation.
+- `#print-css` is the last `<style>` in `<head>`, after `#user-theme`, so it
+  wins equal-specificity ties against the runtime theme. It neutralises the
+  palette at the *variable* level, puts `#content-scroll` back into normal flow
+  so a scrolled document paginates in full, and hides chrome with `!important`
+  independent of view mode.
+
+Highlights/annotations are not folded in — content-only, as the open question
+scoped it. Design doc: `docs/plans/md-to-pdf-export.md`.
+
 A simple button: export the currently viewed markdown file as a PDF.
 
 ## Current state

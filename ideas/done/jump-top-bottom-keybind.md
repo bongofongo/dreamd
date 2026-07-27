@@ -1,5 +1,12 @@
 # Keybind: jump to top/bottom (gg/G)
 
+**Status: done — shipped in 1f724a2 (2026-07-26), with the open question
+resolved against `gg`.** The bindings are `Home` / `End`, not `gg` / `G`:
+single keys with the same effect, so the chord-recording plumbing the `gg`
+chord would have needed was never built. `jump_top` / `jump_bottom` are
+ordinary rebindable `Keymap` entries. Design doc:
+`docs/plans/jump-top-bottom-keybind.md`.
+
 Vim's `gg` (top) and `G` (bottom) for the document viewer.
 
 ## Current state

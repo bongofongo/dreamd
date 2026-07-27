@@ -10,7 +10,7 @@
 > marks were cut to one slot in the same pass, so the two features now share
 > the `{ path, top }` frame and `restoreFrame` exactly as §7 anticipated.
 
-Source idea: `ideas/file-and-section-links.md`. Written during the overnight
+Source idea: `ideas/done/file-and-section-links.md`. Written during the overnight
 batch on `claude/overnight-ideas-2026-07-27`.
 
 The idea bundles three things. Two of them are **already done** and are not in
@@ -197,7 +197,7 @@ need a new `#[tauri::command]`, that is a signal the design has drifted.
 - **Persisting the stack across runs.** Tenet 2. It dies with the process.
 - **A visible history UI** (a dropdown of recent positions). Bigger product
   surface; the keybind is the whole feature.
-- **Merging with `ideas/vim-marks-bookmark-jump.md`.** The idea file already
+- **Merging with `ideas/done/vim-marks-bookmark-jump.md`.** The idea file already
   argues these stay separate, and it is right: automatic per-navigation history
   and explicit `m{letter}` marks share a frame *shape* and nothing else. If
   both get built, share the `{ file, scroll }` frame and the `restore()`

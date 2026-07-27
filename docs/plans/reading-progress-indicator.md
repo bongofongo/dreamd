@@ -1,6 +1,6 @@
 # Plan: the heading-aware half of the reading progress indicator
 
-Companion to the shipped half of `ideas/reading-progress-indicator.md`. The
+Companion to the shipped half of `ideas/hold/reading-progress-indicator.md`. The
 scroll-position half landed: a `#progress-pct` readout in the titlebar and a
 `#progress-rail` hairline at the foot of the reading pane, both driven by one
 rAF-coalesced `scrollTop` read (see the `reading progress` section of

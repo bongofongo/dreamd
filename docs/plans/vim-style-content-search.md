@@ -1,6 +1,6 @@
 # Plan: vim-style `/` content search
 
-Companion to `ideas/vim-style-content-search.md`. **Nothing was built.** This is
+Companion to `ideas/done/vim-style-content-search.md`. **Nothing was built.** This is
 a design for the whole feature, written because the build is small in lines but
 wide in surface — it touches the rendered DOM that highlight anchoring reads,
 the one pending-prefix state machine in the keydown dispatcher, three keymap

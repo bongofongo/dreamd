@@ -1,5 +1,37 @@
 # Vim-style "/" content search
 
+**Status: done — shipped in 6daa0fb, revised in 42abd64 (2026-07-27). Two of
+the decisions below were overturned by building it.**
+
+- **Rendered text, not raw source.** The "Decision: raw source" section below is
+  wrong and was reversed in the plan (2808e8f). The source was never resident in
+  the frontend, and `scanTextNodes` + `nodeIndexAt` already do the offset-to-DOM
+  job. So `te**s**t` matches the way the reader sees it and `](` matches
+  nothing — the emphasis-splitting blind spot the section flagged as a "known
+  limitation" simply doesn't exist. Index built lazily, cached per render.
+- **The regex toggle is deleted.** A pattern is searched literally and re-read
+  as a regex only where the literal finds nothing. Plain regex was rejected as
+  silently wrong in a way the reader can't see (`app.js` would match `appXjs`);
+  the fallback can't mislead either way — `.` finds the one literal dot,
+  `\bread\b` falls through to what it obviously means, and a lone `(` is just a
+  literal, so the invalid-pattern state stopped existing.
+- **Nothing searches until Enter.** Painting per keystroke flickered through the
+  prefixes of the word being typed and yanked the pane mid-word; the input
+  handler and its debounce are gone rather than patched.
+
+Two implementation notes worth carrying forward: matches paint via the CSS
+Custom Highlight API rather than `<mark>` wrapping, because a wrap straddling an
+existing `mark.hl` leaves two elements sharing one `data-id` and nothing repairs
+that — there is no DOM-wrap fallback for old WebKit on purpose. And *declaring*
+a `::highlight()` rule cost 27% on the forced layout after a 2MB render with
+nothing highlighted, so the rules install into `#find-css` on first `/`; a
+session that never searches pays nothing. (Chromium harness, relative signal
+only.) That same sheet is emptied while ranges are still registered to force the
+stale-paint repaint — a WKWebView invalidation gap that never reproduced in
+Chromium and that nothing here can regression-test.
+
+Design doc: `docs/plans/vim-style-content-search.md`.
+
 Pressing `/` opens a basic in-document text search, with regex support,
 docked at the bottom of the screen the way vim's command line is.
 
