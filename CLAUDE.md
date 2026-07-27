@@ -210,7 +210,9 @@ highlights from a corpus fixture.
 - Commits go **straight to main** — no branches, no PRs.
 - `cargo build` must pass before any commit touching `src-tauri/`.
 - `.github/workflows/ci.yml` runs fmt + clippy (`-D warnings`) + test + build on
-  **macos-14** for every push and PR, plus `node --test ui/paths.test.mjs` on
+  **macos-14** for every push and PR, then `config_check`, `theme_check` and
+  `locate_check` (the last against a cached corpus), plus
+  `node --test ui/paths.test.mjs` and `ui-check.mjs` on
   ubuntu. macOS is not a preference: Tauri on Linux needs webkit2gtk, and the
   `#[cfg(target_os = "macos")]` paths compile nowhere else. Run those four
   commands locally before pushing — CI is the backstop, not the first check.

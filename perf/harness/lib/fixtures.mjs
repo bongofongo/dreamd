@@ -82,7 +82,9 @@ export function flatFiles(tree) {
 export function highlights(n, filePath) {
   const raw = JSON.parse(readFileSync(join(CORPUS, "highlights", `${n}.json`), "utf8"));
   return raw.map((h, i) => ({
-    id: i + 1,
+    // Ids are opaque `h` + 16 hex, not numbers — the DOM keys on them as
+    // strings, so the fixture has to hand over strings too.
+    id: `h${(i + 1).toString(16).padStart(16, "0")}`,
     file_path: filePath,
     line_start: 0,
     line_end: 0,
@@ -91,6 +93,8 @@ export function highlights(n, filePath) {
     suffix: "",
     state: "active",
     annotation: null,
+    origin: "human",
+    resolved: null,
   }));
 }
 

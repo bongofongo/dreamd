@@ -249,7 +249,7 @@ mod tests {
     fn pair(quote: &str, annotation: &str, line_start: usize, line_end: usize) -> Pair {
         Pair {
             highlight: Highlight {
-                id: 1,
+                id: "h0123456789abcdef".into(),
                 file_path: "/repo/docs/a.md".into(),
                 line_start,
                 line_end,
@@ -258,6 +258,7 @@ mod tests {
                 suffix: String::new(),
                 state: HighlightState::Active,
                 annotation: Some(annotation.into()),
+                ..Highlight::default()
             },
             annotation: annotation.into(),
         }

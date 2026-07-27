@@ -453,6 +453,9 @@ await nav.addInitScript(({ base }) => {
           case "render_markdown": return body((args && args.path) || "?");
           case "list_markdown_files": return tree;
           case "get_highlights": case "reanchor": case "get_stack": return [];
+          // An opaque `h` + 16 hex id, the shape the backend mints. The
+          // default null would let a numeric-id assumption pass unnoticed.
+          case "add_highlight": return "h0123456789abcdef";
           default: return null;
         }
       },

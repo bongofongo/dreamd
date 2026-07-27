@@ -71,14 +71,33 @@ jobs:
       # need nothing but the crate: config_check points XDG_CONFIG_HOME at a
       # scratch directory before it touches anything, and theme_check reads the
       # bundled palettes. Seconds each, against a tree cargo has already built.
-      #
-      # locate_check is deliberately not here. It wants the ~11MB generated
-      # corpus and a release build to run in reasonable time, which is a perf
-      # tier's job rather than a per-push one.
       - name: Correctness harnesses
         run: |
           cargo run --example config_check
           cargo run --example theme_check
+
+      # locate_check used to be excluded here as a perf tier's job. It isn't:
+      # it is the only check with an independent oracle for highlight
+      # anchoring, and anchoring now runs through `Store::add_anchored` rather
+      # than through code inlined in main.rs. 611 corpus fixtures across every
+      # document variant are what would catch that move — or any later change
+      # to `markdown::locate` — breaking it.
+      #
+      # The cache key covers gen.mjs as well as the manifest: a changed
+      # generator produces different fixtures for an unchanged manifest, and
+      # keying on the manifest alone would serve the old ones. On a hit,
+      # gen.mjs sees a matching manifest and exits without writing anything.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - uses: actions/cache@v4
+        with:
+          path: perf/corpus/generated
+          key: corpus-${{ hashFiles('perf/corpus/manifest.json', 'perf/corpus/gen.mjs') }}
+      - name: Anchoring harness
+        run: |
+          node perf/corpus/gen.mjs
+          cargo run --release --example locate_check
 
   # ubuntu, not macos-14: nothing the frontend is checked for is engine-specific,
   # and both of these run against a JS engine rather than against WKWebView.

@@ -1747,7 +1747,7 @@ function buildOutline() {
 // already deletes that checkbox; this is the second, cheaper guard.
 function checkedIds() {
   return [...document.querySelectorAll('#stack-list .pair:not(.leaving) input[type="checkbox"]:checked')]
-    .map((c) => Number(c.dataset.id));
+    .map((c) => c.dataset.id);
 }
 
 async function sendStack(ids) {
@@ -1999,7 +1999,7 @@ function wireUi() {
   // Click an existing highlight to edit / re-add / delete it.
   contentEl.addEventListener("click", (e) => {
     const m = e.target.closest && e.target.closest("mark.hl");
-    if (m && contentEl.contains(m)) { e.preventDefault(); openEditHighlight(Number(m.dataset.id)); }
+    if (m && contentEl.contains(m)) { e.preventDefault(); openEditHighlight(m.dataset.id); }
   });
 
   $("btn-print").onclick = printDocument;

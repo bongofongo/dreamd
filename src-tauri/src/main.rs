@@ -8,7 +8,7 @@
 //! (`src/lib.rs`) so benches and tests can drive it without a window.
 
 use clap::Parser;
-use dreamd::annotations::{Highlight, Pair, Store};
+use dreamd::annotations::{Highlight, Id, Origin, Pair, Store};
 use dreamd::catalog::Catalog;
 use dreamd::config::{Config, Keymap};
 use dreamd::fs_walk::FileNode;
@@ -202,30 +202,34 @@ fn add_highlight(
     quote: String,
     prefix: String,
     suffix: String,
-) -> Result<u64, String> {
+) -> Result<Id, String> {
     let source = read_source(&file_path)?;
-    let (line_start, line_end) = markdown::locate(&source, &prefix, &quote, &suffix)
-        .map_or((0, 0), |loc| (loc.line_start, loc.line_end));
-    Ok(state
-        .store
-        .lock()
-        .unwrap()
-        .add_highlight(file_path, line_start, line_end, quote, prefix, suffix))
+    // Anchoring lives in `Store::add_anchored`, not here: `main.rs` cannot be
+    // imported, so the (0, 0) fallback had no test, and the agent's
+    // `mark_passage` needs the same behaviour.
+    Ok(state.store.lock().unwrap().add_anchored(
+        file_path,
+        &source,
+        quote,
+        prefix,
+        suffix,
+        Origin::Human,
+    ))
 }
 
 #[tauri::command]
-fn set_annotation(state: State<AppState>, id: u64, text: String) -> bool {
-    state.store.lock().unwrap().set_annotation(id, text)
+fn set_annotation(state: State<AppState>, id: String, text: String) -> bool {
+    state.store.lock().unwrap().set_annotation(&id, text)
 }
 
 #[tauri::command]
-fn remove_highlight(state: State<AppState>, id: u64) {
-    state.store.lock().unwrap().remove(id);
+fn remove_highlight(state: State<AppState>, id: String) {
+    state.store.lock().unwrap().remove(&id);
 }
 
 #[tauri::command]
-fn remove_pair(state: State<AppState>, id: u64) {
-    state.store.lock().unwrap().remove_from_stack(id);
+fn remove_pair(state: State<AppState>, id: String) {
+    state.store.lock().unwrap().remove_from_stack(&id);
 }
 
 #[tauri::command]
@@ -234,8 +238,8 @@ fn get_highlights(state: State<AppState>, path: String) -> Vec<Highlight> {
 }
 
 #[tauri::command]
-fn get_highlight(state: State<AppState>, id: u64) -> Option<Highlight> {
-    state.store.lock().unwrap().get(id)
+fn get_highlight(state: State<AppState>, id: String) -> Option<Highlight> {
+    state.store.lock().unwrap().get(&id)
 }
 
 /// Re-read the file and re-anchor its highlights (Active/Stale). Called by the
@@ -253,7 +257,7 @@ fn get_stack(state: State<AppState>) -> Vec<Pair> {
 
 /// One-button send. `ids` empty/absent = send the whole stack.
 #[tauri::command]
-fn send_stack(state: State<AppState>, ids: Vec<u64>) -> Result<SendResult, String> {
+fn send_stack(state: State<AppState>, ids: Vec<Id>) -> Result<SendResult, String> {
     let pairs = {
         let store = state.store.lock().unwrap();
         if ids.is_empty() {
