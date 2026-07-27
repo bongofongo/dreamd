@@ -738,6 +738,36 @@ pane open. A cold-start regression means the pane is being constructed eagerly.
 **Abort point** — cuttable before it merges, cheap to revert after: one dep, one
 module, four commands, one div, one CSS block.
 
+## As built (2026-07-27)
+
+Four things the plan got wrong, all found by measuring:
+
+- **The signing spike passed.** `flags=0x10000(runtime)`, entitlements empty, and
+  a pty works from the signed `.app` — including from a session with no
+  controlling terminal, which is the Finder-launch shape and the one the plan
+  did not think to check. The notarized half was skipped for want of local
+  `APPLE_ID`/`APPLE_PASSWORD`; the notary ticket cannot change runtime
+  capability, only Gatekeeper admission.
+- **`resizing_a_dead_pty_is_an_error_not_a_panic` names the wrong outcome.** It
+  is not an error: the master fd is still open and the ioctl succeeds. Shipped
+  as `resizing_a_pty_whose_child_exited_is_not_a_panic`.
+- **The pane was a keyboard trap**, and the plan's guard would not have caught
+  it. xterm calls `stopPropagation` on every key it handles — measured with a
+  capture-phase probe — so `wireKeys` never sees a keystroke from the terminal
+  at all. Extending `isEditable` is therefore *unreachable* for those keys, and
+  `toggle_pane` pressed inside the pane did nothing. The fix is xterm's own
+  `attachCustomKeyEventHandler`; the `isEditable` clause stays as belt to its
+  braces.
+- **xterm.js is injected on first open, not declared in `index.html`.** A
+  `<script defer>` costs its parse on every launch, including the ones that
+  never open a terminal — which is the same argument the plan makes for not
+  constructing `portable-pty` at boot, applied to the 289 KB that would have
+  landed on first paint.
+
+Also unplanned: input is base64 too (a paste is arbitrary bytes), and the pane
+runs a **login** shell, because a `.app` from Finder inherits launchd's minimal
+`PATH` and would never find `claude`.
+
 ---
 
 # Thread map

@@ -56,7 +56,7 @@ await page.addInitScript(({ base, palettes }) => {
     find: "/", find_next: "n", find_prev: "Shift+N",
     next_file: "]", prev_file: "[",
     copy_stack: "Ctrl+C", settings: "Ctrl+,",
-    save_annotation: "Ctrl+Y",
+    save_annotation: "Ctrl+Y", toggle_pane: "Ctrl+T",
     quick_highlight: true,
   };
   const state = {
@@ -183,7 +183,7 @@ check("Ctrl+, opens settings", await page.locator("#settings-overlay.open").isVi
 
 // --- keys tab ---
 const rows = await page.locator("#st-keys .st-row").count();
-check("every action gets a row", rows === 24, `got ${rows}`);
+check("every action gets a row", rows === 25, `got ${rows}`);
 check(
   "a repo-shadowed key is flagged",
   (await page.locator("#st-keys .shadowed").count()) === 1,
@@ -848,6 +848,175 @@ await agent.evaluate(() => {
 });
 await agent.waitForTimeout(400);
 check("a burst of events settles to one correct overlay", (await hlCount()) === 4, `got ${await hlCount()}`);
+
+// --- the embedded Claude Code pane ----------------------------------------
+// A fifth page, because everything here is about a surface that does not exist
+// until a key is pressed, and the pages above assert on a boot that must never
+// touch it.
+//
+// What this can and cannot see: the terminal's *contents* are readable, because
+// xterm.js keeps a buffer model the DOM renderer paints from — so the
+// chunk-boundary assertion below is real. What it paints is not checked, here
+// or anywhere; `CLAUDE.md` is explicit that this harness asserts what the page
+// knows, not what it shows.
+const pane = await newPage();
+pane.on("pageerror", (e) => results.push("FAIL pageerror (pane): " + e.message));
+pane.on("console", (m) => {
+  if (m.type() === "error") results.push("FAIL console.error (pane): " + m.text());
+});
+await pane.addInitScript(({ base }) => {
+  const calls = [];
+  window.__CALLS__ = calls;
+  const listeners = new Map();
+  window.__EMIT__ = (name, payload) => {
+    for (const fn of listeners.get(name) || []) fn({ payload });
+  };
+  window.__TAURI__ = {
+    core: {
+      async invoke(cmd, args) {
+        calls.push({ cmd, args });
+        switch (cmd) {
+          case "perf_enabled": return false;
+          case "repo_info": return { root: "/repo", name: "repo", display: "~/repo" };
+          case "get_keymap": return {
+            palette: "Ctrl+F", highlight: "Ctrl+H", toggle_stack: "Ctrl+O",
+            toggle_outline: "Ctrl+I", toggle_tree: "Ctrl+B", toggle_view: "Ctrl+M",
+            toggle_pane: "Ctrl+T", find: "/", settings: "Ctrl+,",
+            quick_highlight: true,
+          };
+          case "get_theme": return { css: base, mode: "system", scheme: "dark", syntax_theme: null };
+          case "initial_file": return "/repo/doc.md";
+          case "render_markdown": return "<h1>doc</h1><p>alpha bravo</p>";
+          case "list_markdown_files": return {
+            name: "repo", is_dir: true, path: "/repo", rel: "",
+            children: [{ name: "doc.md", is_dir: false, path: "/repo/doc.md", rel: "doc.md", children: [] }],
+          };
+          case "get_highlights": case "reanchor": case "get_stack": return [];
+          // No process. This asserts the frontend's half of the contract;
+          // `src-tauri/src/pty.rs`'s tests own the process half.
+          case "pty_spawn": return true;
+          case "pty_write": case "pty_resize": case "pty_kill": return null;
+          default: return null;
+        }
+      },
+    },
+    event: {
+      async listen(name, fn) {
+        if (!listeners.has(name)) listeners.set(name, new Set());
+        listeners.get(name).add(fn);
+        return () => listeners.get(name).delete(fn);
+      },
+    },
+  };
+}, { base });
+await pane.goto(pathToFileURL(join(UI, "index.html")).href);
+await pane.waitForFunction(() => document.getElementById("content").textContent.includes("alpha bravo"));
+
+const called = (cmd) => pane.evaluate((c) => window.__CALLS__.filter((k) => k.cmd === c), cmd);
+const lastWrite = async () => {
+  const w = await called("pty_write");
+  return w.length ? w[w.length - 1].args.data : null;
+};
+
+// The perf contract, asserted rather than assumed: none of this loads at boot.
+check(
+  "boot loads no terminal vendor script",
+  await pane.evaluate(() => !document.querySelector('script[src*="xterm"]')),
+);
+check("boot starts no pane process", (await called("pty_spawn")).length === 0);
+check(
+  "the pane is display:none before it is opened",
+  (await pane.evaluate(() => getComputedStyle(document.getElementById("pty-pane")).display)) === "none",
+);
+
+await pane.keyboard.press("Control+t");
+// `pty` is a top-level `const` in a classic script: a lexical global, reachable
+// by name from an evaluate but never a property of `window`.
+await pane.waitForFunction(() => typeof pty !== "undefined" && !!pty.term, null, { timeout: 15000 })
+  .catch(() => {});
+await pane.waitForTimeout(600);
+
+check("the toggle key opens the pane", await pane.locator("#pty-pane.open").isVisible());
+check(
+  "and only then loads the vendored xterm.js",
+  await pane.evaluate(() => !!document.querySelector('script[src="vendor/xterm.js"]')),
+);
+const spawns = await called("pty_spawn");
+check("and starts one process, sized", spawns.length === 1 && spawns[0].args.rows > 0 && spawns[0].args.cols > 0,
+  JSON.stringify(spawns));
+
+// The hazard the plan names: bare-letter bindings must not fire while the
+// terminal has focus. `/` is `find`, and a find bar opening under a terminal
+// you are typing a path into is the visible form of the bug.
+await pane.keyboard.press("/");
+await pane.waitForTimeout(150);
+check("a keystroke in the pane does not reach the global keymap", !(await pane.locator("#find-bar.open").isVisible()));
+check("it reaches pty_write instead", (await lastWrite()) === btoa("/"), String(await lastWrite()));
+
+// Escape belongs to the child — it is how Claude Code is interrupted — so it
+// must neither close the pane nor leave view mode.
+await pane.keyboard.press("Escape");
+await pane.waitForTimeout(150);
+check("Escape in the pane goes to the child, not to the app", await pane.locator("#pty-pane.open").isVisible());
+check("and is written as ESC", (await lastWrite()) === btoa("\x1b"), String(await lastWrite()));
+
+// The way back out, and the check this feature shipped without at first: xterm
+// calls `stopPropagation` on every key it handles, so the toggle pressed
+// *inside* the pane never reaches `wireKeys` and the pane was a keyboard trap.
+// Remove `attachCustomKeyEventHandler` from `buildTerminal` and this goes red.
+await pane.keyboard.press("Control+t");
+await pane.waitForTimeout(200);
+check("the toggle key closes the pane from inside it", !(await pane.locator("#pty-pane.open").isVisible()));
+check("and is not also sent to the child", (await lastWrite()) === btoa("\x1b"), String(await lastWrite()));
+await pane.keyboard.press("Control+t");
+await pane.waitForTimeout(300);
+check("and reopens it", await pane.locator("#pty-pane.open").isVisible());
+
+// The reason output is base64 (`pty.rs`'s module docs). Two events, splitting a
+// 4-byte character 3/1: decoded per chunk this is two U+FFFDs.
+const seed = "🌱";
+const bytes = [...new TextEncoder().encode(seed)];
+const b64 = (arr) => Buffer.from(Uint8Array.from(arr)).toString("base64");
+await pane.evaluate((chunks) => {
+  window.__EMIT__("pty-data", chunks[0]);
+  window.__EMIT__("pty-data", chunks[1]);
+}, [b64(bytes.slice(0, 3)), b64(bytes.slice(3))]);
+await pane.waitForTimeout(200);
+check(
+  "a character split across two pty-data events is reassembled",
+  (await pane.evaluate(() => pty.term.buffer.active.getLine(0).translateToString(true))).includes("🌱"),
+  await pane.evaluate(() => pty.term.buffer.active.getLine(0).translateToString(true)),
+);
+
+// A dead child says so, in the header rather than only in the scrollback.
+await pane.evaluate(() => window.__EMIT__("pty-exit", 1));
+await pane.waitForTimeout(150);
+check("an exited child is reported", (await pane.textContent("#pty-status")) === "exited (1)",
+  await pane.textContent("#pty-status"));
+
+// ⟳ after an exit: kill the (already dead) session, then start a new one.
+await pane.locator("#pty-restart").click();
+await pane.waitForTimeout(300);
+check("restart kills and respawns", (await called("pty_kill")).length === 1 && (await called("pty_spawn")).length === 2,
+  `${(await called("pty_kill")).length} kills, ${(await called("pty_spawn")).length} spawns`);
+
+// Escape *outside* the terminal is the reading pane's, and closes the pane —
+// hiding it, not killing it, which is what makes reopening free.
+await pane.locator("#content").click();
+await pane.keyboard.press("Escape");
+await pane.waitForTimeout(150);
+check("Escape outside the pane closes it", !(await pane.locator("#pty-pane.open").isVisible()));
+check("closing does not kill the process", (await called("pty_kill")).length === 1);
+check(
+  "and view mode survives that Escape",
+  !(await pane.evaluate(() => document.body.classList.contains("view-mode"))),
+);
+
+// Reopening is a class flip: no second vendor load, no second process.
+await pane.keyboard.press("Control+t");
+await pane.waitForTimeout(300);
+check("reopening reuses the session", (await called("pty_spawn")).length === 2 &&
+  (await pane.evaluate(() => document.querySelectorAll('script[src="vendor/xterm.js"]').length)) === 1);
 
 await browser.close();
 console.log(results.join("\n"));

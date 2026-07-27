@@ -14,8 +14,8 @@ use dreamd::config::{Config, Keymap};
 use dreamd::fs_walk::FileNode;
 use dreamd::send::SendResult;
 use dreamd::{
-    cli, config, guard, home_relative, markdown, marks_file, mcp, notify, perf, read_source, send,
-    theme, watcher,
+    cli, config, guard, home_relative, markdown, marks_file, mcp, notify, perf, pty, read_source,
+    send, theme, watcher,
 };
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -99,6 +99,11 @@ struct AppState {
     /// re-reading the open document on every repaint. A mark created this
     /// session was anchored against these bytes and is never in here.
     pending_reanchor: Mutex<HashSet<String>>,
+    /// The embedded Claude Code pane's pty, or `None` while the pane has never
+    /// been opened — which is the overwhelmingly common case, and why this is
+    /// an `Option` created on first open rather than at boot. One per window:
+    /// the pane is a single dock, not a tab strip.
+    pty: Mutex<Option<pty::Pty>>,
 }
 
 impl AppState {
@@ -865,6 +870,83 @@ fn open_external(url: String) -> Result<(), String> {
     open::that(&url).map_err(|e| e.to_string())
 }
 
+// ---- the embedded Claude Code pane -----------------------------------------
+//
+// Four commands over `pty::Pty`, all under `core:default` — no plugin, no
+// capability entry. The pty is created here on the pane's *first open*, never at
+// boot: `portable-pty` costs nothing in a session that never opens a terminal,
+// and a cold-start regression would mean the pane is being constructed eagerly.
+//
+// These are the only commands that emit. Every other one in this file answers
+// with a return value, which is the frontend's truth for the mutation it asked
+// for (`notify`'s module docs are the long form). A terminal has no such shape:
+// its output arrives when the child feels like producing it, and there is no
+// call to hang it off. `marks-changed` is still the only *store* push.
+
+/// Event carrying a base64 chunk of the child's output.
+const PTY_DATA: &str = "pty-data";
+/// Event announcing the child is gone. Payload is its exit code, if it had one.
+const PTY_EXIT: &str = "pty-exit";
+
+/// Start the pane's process, or do nothing if it is already running.
+///
+/// Idempotent because the frontend calls it on every open and the pane's
+/// scrollback is meant to survive being hidden: closing the pane is
+/// `display: none`, not a kill.
+#[tauri::command]
+fn pty_spawn(
+    rows: u16,
+    cols: u16,
+    app: tauri::AppHandle,
+    state: State<AppState>,
+) -> Result<bool, String> {
+    let mut slot = state.pty.lock().unwrap();
+    if slot.is_some() {
+        return Ok(false);
+    }
+    let handle = app.clone();
+    let sink: pty::Sink = Arc::new(move |ev| match ev {
+        pty::PtyEvent::Data(chunk) => {
+            let _ = handle.emit(PTY_DATA, chunk);
+        }
+        pty::PtyEvent::Exit(code) => {
+            let _ = handle.emit(PTY_EXIT, code);
+        }
+    });
+    *slot = Some(pty::Pty::spawn(rows, cols, &state.root(), sink)?);
+    Ok(true)
+}
+
+/// Keystrokes from xterm.js, base64 so a paste of arbitrary bytes survives the
+/// JSON trip intact.
+#[tauri::command]
+fn pty_write(data: String, state: State<AppState>) -> Result<(), String> {
+    let bytes = pty::from_b64(&data)?;
+    match state.pty.lock().unwrap().as_mut() {
+        Some(p) => p.write(&bytes),
+        None => Err("the pane is not running".into()),
+    }
+}
+
+/// Called from the pane's `ResizeObserver`. A resize with no pane running is
+/// success, not an error: the postcondition — "the child, if any, knows its
+/// size" — already holds, and the observer fires during teardown.
+#[tauri::command]
+fn pty_resize(rows: u16, cols: u16, state: State<AppState>) -> Result<(), String> {
+    match state.pty.lock().unwrap().as_ref() {
+        Some(p) => p.resize(rows, cols),
+        None => Ok(()),
+    }
+}
+
+/// End the pane's process. Dropping the handle is what actually reaps it —
+/// `Pty::drop` kills — and clearing the slot is what lets the next open start a
+/// fresh session.
+#[tauri::command]
+fn pty_kill(state: State<AppState>) {
+    *state.pty.lock().unwrap() = None;
+}
+
 /// Frontend-side timing mark, forwarded into the same NDJSON stream as the Rust
 /// marks. A no-op unless built with `--features perf`; `console.log` inside
 /// WKWebView never reaches our stdout, so this is the only way to get webview
@@ -1082,6 +1164,7 @@ fn main() {
         persists: AtomicBool::new(persists),
         dirty: dirty.clone(),
         pending_reanchor: Mutex::new(pending_reanchor),
+        pty: Mutex::new(None),
     };
 
     tauri::Builder::default()
@@ -1118,6 +1201,10 @@ fn main() {
             print_document,
             delete_file,
             open_external,
+            pty_spawn,
+            pty_write,
+            pty_resize,
+            pty_kill,
             perf_mark,
             perf_enabled,
         ])
@@ -1222,6 +1309,10 @@ fn main() {
                 tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
             ) {
                 flush_marks(app);
+                // And take the pane's process with us. `Pty::drop` kills, but
+                // only if something drops it — a `claude` reparented to launchd
+                // would keep running with no window to show it.
+                *app.state::<AppState>().pty.lock().unwrap() = None;
             }
         });
 }

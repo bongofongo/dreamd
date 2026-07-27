@@ -50,7 +50,9 @@ dreamd --theme nord [path]           # one run, no config write
 `cargo test` covers the pure core and the security tenets: `guard` (scheme
 allowlist, repo-root containment), `markdown` (HTML escaping, slugs, `locate`'s
 three tiers), `theme` (`user_path` traversal, the CSS parser), `annotations`
-(`Store` semantics), `config` (`deep_merge`), `fs_walk::build_tree`, `is_markdown`.
+(`Store` semantics), `config` (`deep_merge`), `fs_walk::build_tree`, `is_markdown`,
+and `pty` (the base64 round trip, and a real pty driven with `/bin/sh` — never
+with `PANE_COMMAND`, so `cargo test` cannot start a Claude Code session).
 Nothing there touches `config_dir()` — that reads the real `~/.config/dreamd`,
 and sandboxing it is `config_check`'s job — and `mcp_check`'s and
 `marks_check`'s, whose socket and marks file live there too. The example
@@ -130,6 +132,10 @@ to the crate version, verified.
    anywhere else — a third thing that wants to persist needs its own decision.
 3. **No shell interpolation of user content.** Sent queries go through a temp file and
    a fixed `read @<file>` prompt. Highlighted text never enters a command line.
+   The pane's `$SHELL -l -c "exec claude"` is the second shell dreamd spawns and
+   obeys the same rule: `PANE_COMMAND` is a `const`, not a template, and a test
+   pins it. What the user then *types* into that terminal is theirs — they are
+   at a prompt, not having content interpolated on their behalf.
 4. **Escape, don't execute.** Raw HTML in markdown is escaped. External links are
    restricted to `http`/`https`/`mailto`; relative images must resolve inside the repo
    root.
@@ -148,7 +154,7 @@ to the crate version, verified.
 
 ## Architecture
 
-`src-tauri/src/main.rs` is a thin shell — CLI (clap), `AppState`, the ~23 `#[tauri::command]`
+`src-tauri/src/main.rs` is a thin shell — CLI (clap), `AppState`, the ~27 `#[tauri::command]`
 handlers, the builder. All logic lives in the `dreamd` **library** crate (`src/lib.rs` +
 modules) *because a `[[bin]]` target cannot be imported*: the split is what makes
 `src-tauri/benches/` possible. New logic goes in a module, not in `main.rs`.
@@ -166,6 +172,14 @@ blocked silently, which is why the pre-paint `data-mode` bootstrap lives at the 
 `index.html` loads `paths.js` before `app.js` — both classic scripts, `defer`, so
 they run in document order and share globals. That is the only split, and it
 exists so `node --test` can drive the containment guard without a browser.
+
+`ui/vendor/` is the **one** exception to "no build step" and the only vendored JS
+in the repo: xterm.js and its fit addon, the publishers' own prebuilt UMD
+bundles, for the pane. Vendoring is forced by the CSP — a CDN is blocked, WASM is
+blocked, inline is blocked silently. They are injected by `app.js` on the pane's
+**first open**, not declared in `index.html`, so a launch that never opens a
+terminal parses none of the 289 KB. `ui/vendor/README.md` is the provenance and
+the upgrade procedure.
 
 - `guard` — the two predicates deciding what a document may reach: `allowed_scheme`
   (http/https/mailto, case-folded) and `inside_root` (component-wise, so
@@ -221,13 +235,27 @@ exists so `node --test` can drive the containment guard without a browser.
   secondary; one that refuses is a crash leftover, unlinked and rebound.
   `adopt_root` retires and re-binds it, next to the watcher, because the socket
   is named after the root.
-- `notify` — the one event dreamd pushes unprompted, `marks-changed`. Emitted
-  **only** from the MCP layer, never from a command: a command's return value is
-  already the frontend's truth for its own mutation, and a second signal would
-  put two repaint paths in a race. That is also what keeps `save_to_paint` out
-  of the agent path entirely. The server takes a `Notifier` closure rather than
-  an `AppHandle`, which is what lets `mcp_check` drive the transport with no
-  window.
+- `notify` — `marks-changed`, the only *store* change dreamd pushes unprompted.
+  Emitted **only** from the MCP layer, never from a command: a command's return
+  value is already the frontend's truth for its own mutation, and a second
+  signal would put two repaint paths in a race. That is also what keeps
+  `save_to_paint` out of the agent path entirely. The server takes a `Notifier`
+  closure rather than an `AppHandle`, which is what lets `mcp_check` drive the
+  transport with no window. (`pty-data`/`pty-exit` are the other unprompted
+  events, and the exception that proves the rule: terminal output arrives when
+  the child feels like producing it, so there is no command return value to
+  carry it.)
+- `pty` — the embedded Claude Code pane's pseudo-terminal, one per window,
+  created on **first open** and never at boot. Output crosses to the frontend
+  **base64-encoded**: a 4 KiB read splits multi-byte characters, and only
+  `Terminal.write`'s stateful decoder is in a position to reassemble them.
+  Input is base64 for the mirror-image reason — a paste is arbitrary bytes. The
+  child is a **login** shell running a fixed `exec claude`, because a `.app`
+  launched from Finder inherits launchd's minimal `PATH` and would not find
+  `claude` at all. Takes a `Sink` closure rather than an `AppHandle`, the same
+  shape and for the same reason as `notify`'s. **A pty needs no entitlement**
+  under dreamd's hardened runtime — measured against a signed bundle before the
+  module was written; don't add an entitlements file for it.
 - `watcher` — `notify` thread emitting `file-changed` / `file-added` / `file-removed` /
   `theme-reloaded`; the frontend responds by re-rendering and calling `reanchor`. It
   watches the repo, the user themes directory, and an explicit `theme_css` path — changing

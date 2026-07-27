@@ -75,6 +75,7 @@ let keymap = {
   settings: "Ctrl+,",
   save_annotation: "Ctrl+Y",
   toggle_outline: "Ctrl+I",
+  toggle_pane: "Ctrl+T",
   toggle_tree: "Ctrl+B",
   toggle_view: "Ctrl+M",
   jump_top: "Home",
@@ -170,6 +171,10 @@ async function applyTheme(view) {
   // already done the cascade, the specificity, the quotes and any @media, and a
   // value it resolved cannot drift from `theme::custom_property` the way a
   // second implementation would.
+  // The terminal paints its own colours from a JS object, so a palette or
+  // appearance change has to be pushed into it — the CSS swap above cannot
+  // reach inside xterm's canvas. No-op until the pane has been opened once.
+  if (pty.term) pty.term.options.theme = terminalTheme();
   const syntax = appliedCssVar("--syntax-theme");
   const changed = appliedSyntaxTheme !== null && syntax !== appliedSyntaxTheme;
   appliedSyntaxTheme = syntax;
@@ -1980,6 +1985,223 @@ function onMarksChanged(payload) {
   }, MARKS_COALESCE_MS);
 }
 
+// ---- embedded Claude Code pane -------------------------------------------
+// A terminal docked under the reading pane, running `claude` in the repo the
+// window is open on — so the agent it talks to reaches this repo's MCP socket
+// and sees the same stack the badge is counting.
+//
+// Everything here is lazy. `xterm.js` is 289 KB of vendored script and
+// `portable-pty` is a process; a session that never presses the key pays for
+// neither. That is also the perf contract: a cold-start regression means
+// something below started running at boot.
+
+const pty = {
+  term: null,        // the xterm.js Terminal, once the vendor bundle is in
+  fit: null,         // its FitAddon
+  vendor: null,      // the in-flight (or settled) vendor-load promise
+  running: false,    // whether a child process is alive on the Rust side
+  listening: false,  // whether the pty-data / pty-exit listeners are attached
+};
+
+/// Inject the vendored bundles, once. Resolves when `Terminal` and
+/// `FitAddon` are on `window`.
+///
+/// Same-origin `<script src>`/`<link>` created at runtime, which the CSP
+/// (`script-src 'self'`) allows exactly as it allows the tags in index.html —
+/// what it forbids is inline script and remote origins, and this is neither.
+/// See `ui/vendor/README.md` for why the tags are not simply in the document.
+function loadTerminalVendor() {
+  if (pty.vendor) return pty.vendor;
+  pty.vendor = new Promise((resolve, reject) => {
+    const css = document.createElement("link");
+    css.rel = "stylesheet";
+    css.href = "vendor/xterm.css";
+    document.head.appendChild(css);
+
+    const load = (src) => new Promise((ok, no) => {
+      const s = document.createElement("script");
+      s.src = src;
+      s.onload = ok;
+      s.onerror = () => no(new Error(`could not load ${src}`));
+      document.head.appendChild(s);
+    });
+    // Sequential: the addon's UMD wrapper expects nothing of xterm at load
+    // time, but the order is free and a future addon may not be so relaxed.
+    load("vendor/xterm.js")
+      .then(() => load("vendor/addon-fit.js"))
+      .then(() => {
+        // Named rather than assumed. A vendored upgrade that changes the UMD
+        // shape fails here, on the first open, instead of somewhere deeper.
+        if (!window.Terminal || !window.FitAddon || !window.FitAddon.FitAddon) {
+          throw new Error("vendor/xterm.js loaded but exported no Terminal");
+        }
+        resolve();
+      })
+      .catch(reject);
+  });
+  return pty.vendor;
+}
+
+/// xterm paints its own colours, so hand it the palette's. Read from the
+/// *applied* variables rather than parsed out of the stylesheet, for the reason
+/// `applyTheme` gives: the engine has already done the cascade.
+function terminalTheme() {
+  const v = (name, fallback) => appliedCssVar(name) || fallback;
+  return {
+    background: v("--sidebar-bg", "#100e17"),
+    foreground: v("--fg", "#e8e4f3"),
+    cursor: v("--accent", "#a48cf5"),
+    selectionBackground: v("--hover", "#292435"),
+  };
+}
+
+/// UTF-8 ↔ base64. The wire is base64 in both directions: output because a
+/// 4 KiB read splits multi-byte characters (see `pty.rs`), input because a
+/// paste is arbitrary bytes and `btoa` alone throws on anything above U+00FF.
+const enc = new TextEncoder();
+function toB64(text) {
+  let s = "";
+  for (const b of enc.encode(text)) s += String.fromCharCode(b);
+  return btoa(s);
+}
+function fromB64(b64) {
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+function togglePane() {
+  if ($("pty-pane").classList.contains("open")) closePane();
+  else openPane();
+}
+
+/// Show the pane, building the terminal and starting the process the first
+/// time. Every later open is a class flip and a refit.
+async function openPane() {
+  const pane = $("pty-pane");
+  pane.classList.add("open");
+  try {
+    await loadTerminalVendor();
+    if (!pty.term) buildTerminal();
+    fitPane();
+    if (!pty.running) await startPaneProcess();
+    pty.term.focus();
+  } catch (e) {
+    console.error(e);
+    setPaneStatus(String(e.message || e));
+  }
+}
+
+/// Hide it. Deliberately *not* a kill: the scrollback and the conversation
+/// survive behind `display: none`, and view mode hides the pane the same way
+/// for the same reason.
+function closePane() {
+  $("pty-pane").classList.remove("open");
+  contentEl.focus({ preventScroll: true });
+}
+
+function buildTerminal() {
+  pty.term = new window.Terminal({
+    fontFamily: appliedCssVar("--font-mono") || "ui-monospace, Menlo, monospace",
+    fontSize: 12,
+    cursorBlink: true,
+    // The child is a long-lived agent session; 5000 lines is what makes
+    // scrolling back to what it did earlier useful rather than decorative.
+    scrollback: 5000,
+    theme: terminalTheme(),
+  });
+  pty.fit = new window.FitAddon.FitAddon();
+  pty.term.loadAddon(pty.fit);
+  pty.term.open($("pty-term"));
+  // The way back out. xterm calls `stopPropagation` on every key it handles —
+  // measured, in Chromium, with a capture-phase probe: `Escape`, `/`, `n`,
+  // `Ctrl+M` and `Ctrl+T` all reach the document in the capture phase and none
+  // of them in the bubble phase, which is where `wireKeys` listens. So the
+  // global handler is not merely out-ranked here, it is never called, and
+  // without this hook the pane would be a keyboard trap: the one key documented
+  // to close it would be swallowed by the thing it closes.
+  //
+  // Returning false is xterm's "I handled it" — it must not also go to the
+  // child, or `claude` would receive a stray ^T on the way out.
+  pty.term.attachCustomKeyEventHandler((e) => {
+    if (e.type === "keydown" && matchCombo(e, keymap.toggle_pane)) {
+      e.preventDefault();
+      togglePane();
+      return false;
+    }
+    return true;
+  });
+  pty.term.onData((d) => {
+    invoke("pty_write", { data: toB64(d) }).catch((e) => setPaneStatus(String(e)));
+  });
+
+  // The pane's height is a percentage of the window, so an OS window resize
+  // changes the terminal's geometry with no keystroke involved.
+  new ResizeObserver(() => fitPane()).observe($("pty-term"));
+  if (!pty.listening) {
+    pty.listening = true;
+    listen("pty-data", (e) => { if (pty.term) pty.term.write(fromB64(e.payload)); });
+    listen("pty-exit", (e) => {
+      pty.running = false;
+      const code = e.payload;
+      setPaneStatus(code === null || code === undefined ? "exited" : `exited (${code})`);
+      if (pty.term) pty.term.write("\r\n\x1b[2m[process exited — ⟳ to restart]\x1b[0m\r\n");
+    });
+  }
+}
+
+async function startPaneProcess() {
+  setPaneStatus("");
+  const { rows, cols } = pty.term;
+  await invoke("pty_spawn", { rows, cols });
+  pty.running = true;
+}
+
+/// Re-measure and tell the child. Guarded on a visible box: a `ResizeObserver`
+/// fires when the pane is hidden too, and `fit()` on a zero-height element
+/// computes a nonsense geometry that the child would then be told about.
+function fitPane() {
+  const box = $("pty-term");
+  if (!pty.fit || !box.clientHeight || !box.clientWidth) return;
+  pty.fit.fit();
+  if (pty.running) {
+    invoke("pty_resize", { rows: pty.term.rows, cols: pty.term.cols }).catch(() => {});
+  }
+}
+
+function setPaneStatus(text) {
+  $("pty-status").textContent = text || "";
+}
+
+/// Kill and start again, in place. The button exists because the interesting
+/// failure — `claude` not on the login shell's PATH — is one the user fixes
+/// outside dreamd and then wants to retry without reopening anything.
+async function restartPane() {
+  try {
+    await invoke("pty_kill");
+    pty.running = false;
+    if (pty.term) pty.term.reset();
+    fitPane();
+    await startPaneProcess();
+    pty.term.focus();
+  } catch (e) {
+    setPaneStatus(String(e.message || e));
+  }
+}
+
+/// Is this event the terminal's?
+///
+/// Belt to `attachCustomKeyEventHandler`'s braces, and deliberately kept
+/// despite being unreachable for every key xterm currently handles: xterm calls
+/// `stopPropagation` on those, so they never arrive at `wireKeys` at all
+/// (measured — see the comment on that hook). What *does* arrive is anything a
+/// future xterm stops swallowing, and the answer for those must be "the child's,
+/// not the app's" rather than whatever the global keymap makes of it.
+function inTerminal(el) {
+  return !!(el && el.closest && el.closest("#pty-pane"));
+}
+
 function wireEvents() {
   listen("file-changed", async (e) => {
     // `save_to_paint` is the core product loop: one :w in Neovim through to a
@@ -2079,6 +2301,9 @@ function wireUi() {
   // The two buttons stay one-way on purpose — each is only visible in the state
   // it acts on — so the keybind is the only caller that has to flip either way.
   $("btn-hl-mode").onclick = () => toggleHighlightMode();
+  $("btn-pane").onclick = () => togglePane();
+  $("pty-close").onclick = () => closePane();
+  $("pty-restart").onclick = () => restartPane();
   // In highlight mode, finishing a text selection auto-starts the flow.
   contentEl.addEventListener("mouseup", () => {
     if (!highlightMode || pending) return;
@@ -2144,11 +2369,24 @@ function wireUi() {
 
 function isEditable(el) {
   if (!el) return false;
+  // The pane is here rather than in a second guard of its own: everything a
+  // bare-letter binding must stay out of is one predicate, and a terminal is
+  // the most emphatic member of that set — every key in it belongs to the
+  // child process. xterm's own focus target is a `<textarea>` and so already
+  // matches the test below; this covers a click that lands on the viewport.
+  if (inTerminal(el)) return true;
   return /^(input|textarea|select)$/i.test(el.tagName || "") || el.isContentEditable;
 }
 
 function wireKeys() {
   document.addEventListener("keydown", (e) => {
+    // The pane's keys are the child's, without exception — including Escape,
+    // which is how you interrupt Claude Code mid-answer, and including the
+    // combos every branch below claims. `toggle_pane` is the one key dreamd
+    // keeps, and it is claimed inside xterm rather than here: see
+    // `attachCustomKeyEventHandler` in `buildTerminal` for why this branch
+    // cannot be where that happens.
+    if (inTerminal(e.target)) return;
     if (e.key === "Escape") {
       // Recording a keybind swallows Escape as "cancel", not "close panel".
       if (cancelRecording()) { e.preventDefault(); return; }
@@ -2167,11 +2405,17 @@ function wireKeys() {
       // and the highlights go with it. There is no separate `:nohlsearch` state
       // to arbitrate, and no way to be left looking at highlights with nothing
       // on screen to explain them.
+      // `pty-pane` is in the list, but only for an Escape pressed *outside* the
+      // terminal — one pressed inside it never reaches here, because the branch
+      // above hands it to the child. So this is the reading pane's Escape
+      // closing a pane it can see, and it hides rather than kills: the session
+      // is still there on the next open.
       const claimed = ["palette-overlay", "annot-overlay", "confirm-overlay",
-                       "settings-overlay", "file-menu", "find-bar"]
+                       "settings-overlay", "file-menu", "find-bar", "pty-pane"]
         .some((id) => $(id).classList.contains("open"));
       closePalette();
       closeFileMenu();
+      if ($("pty-pane").classList.contains("open")) closePane();
       if (findBar.classList.contains("open")) closeFind();
       if ($("annot-overlay").classList.contains("open")) cancelAnnot();
       if ($("confirm-overlay").classList.contains("open")) closeConfirm();
@@ -2188,6 +2432,12 @@ function wireKeys() {
     // Palette works from anywhere.
     if (matchCombo(e, keymap.palette)) { e.preventDefault(); openPalette(); return; }
     if (matchCombo(e, keymap.settings)) { e.preventDefault(); openSettings(); return; }
+    // Above `isEditable`, like those two, and for the same reason: the pane is
+    // a place you go to, not something you do to the document, so it must open
+    // from the find bar and the annotation box as well as from the reader. It
+    // is also the counterpart of the branch at the top of this handler — one
+    // key, both directions.
+    if (matchCombo(e, keymap.toggle_pane)) { e.preventDefault(); togglePane(); return; }
 
     // Bare-letter shortcuts must not fire while typing in a field.
     if (isEditable(e.target)) return;
@@ -2344,6 +2594,7 @@ const KEY_ACTIONS = [
   { id: "toggle_tree", label: "Toggle file tree", sub: "Collapse or restore the sidebar" },
   { id: "toggle_view", label: "Toggle view mode", sub: "Hide the titlebar, sidebar and panels — Esc also exits" },
   { id: "toggle_stack", label: "Toggle stack panel" },
+  { id: "toggle_pane", label: "Toggle Claude Code pane", sub: "A terminal docked under the document, running claude in this repo — the same key gets you back out of it" },
   { id: "jump_top", label: "Jump to top", sub: "Scroll the open document to the start" },
   { id: "jump_bottom", label: "Jump to bottom" },
   { id: "next_file", label: "Next file", sub: "Move through the sidebar's order without touching the tree — wraps at the ends" },

@@ -1,5 +1,137 @@
 # Session log
 
+## 2026-07-27 — Step 5: the embedded Claude Code pane, and a spike that opened the gate
+
+Step 5 of `docs/plans/agentic-mcp-persistence.md`, the last one and the one
+designed to be cut. It was gated on a signing question — dreamd ships
+`hardenedRuntime: true` with no entitlements file, and nobody had checked
+whether a pty survives that. It does, so the pane got built.
+
+### What happened
+
+1. **The signing spike, first and on its own.** A throwaway `pty_spike.rs`
+   behind a hidden `dreamd pty-spike`, run out of a real Developer-ID-signed
+   bundle from `packaging/build.sh` — `flags=0x10000(runtime)`, `codesign -d
+   --entitlements` empty. `openpty` → spawn → write → resize → read all work,
+   from the `.app` and again from a session with **no controlling terminal**,
+   which is the Finder-launch shape and the case that actually ships. Phase two
+   spawns the real `claude`, not `/bin/sh`: a hardened-runtime process forking a
+   third-party binary into a pty it owns is the sentence step 5 needed to be
+   true. The notarized half was skipped — no local `APPLE_ID`/`APPLE_PASSWORD`,
+   and the ticket cannot change runtime capability, only Gatekeeper admission.
+   The spike was deleted once the answer was written into `pty.rs`'s module
+   docs and into `CLAUDE.md`.
+
+2. **`src-tauri/src/pty.rs`.** One pty per window, created on the pane's first
+   open and never at boot. A reader thread emitting base64 chunks and a second
+   thread reaping the child, because `wait` blocks and polling `try_wait` from
+   the reader would either spin or delay the exit event behind the next read.
+   Takes a `Sink` closure rather than an `AppHandle` — the same shape as
+   `notify::Notifier`, for the same reason: the tests drive a real pty with no
+   window. `Drop` kills, so a closed pane leaves no orphaned `claude`.
+
+3. **Base64 in both directions.** Out, because a 4 KiB read splits a multi-byte
+   character and only `Terminal.write`'s stateful decoder is positioned to
+   reassemble it. In, because a paste is arbitrary bytes and `btoa` throws above
+   U+00FF. Twenty lines of encoder rather than a dependency.
+
+4. **A login shell, not `claude` directly.** A `.app` launched from Finder
+   inherits launchd's `/usr/bin:/bin:/usr/sbin:/sbin`, and `claude` installs to
+   `~/.local/bin` — spawning it directly works from a terminal and fails from
+   the Dock. `PANE_COMMAND` is a `const`, not a template, with a test pinning
+   it; tenet 3 in `CLAUDE.md` was extended to name this second shell.
+
+5. **Four commands** (`pty_spawn`/`write`/`resize`/`kill`) under `core:default`,
+   no plugin and no capability entry, plus a kill on `RunEvent::ExitRequested`.
+   They are the only commands in `main.rs` that emit, and `notify`'s module doc
+   now says why that is not a contradiction: terminal output arrives when the
+   child feels like producing it, so there is no return value to carry it.
+   `marks-changed` is still the only *store* push.
+
+6. **`ui/vendor/`** — xterm.js 5.5.0 and its fit addon, the publishers' own UMD
+   bundles from `npm pack`, MIT, with provenance and the upgrade procedure in a
+   README. The first vendored JS in the repo, and forced: the CSP blocks a CDN,
+   blocks WASM, and blocks inline silently.
+
+7. **The pane itself** — `#pty-pane` as a `flex: 0 0 40%` sibling of
+   `#content-scroll`, the same shape as `#find-bar`, so `#workspace` keeps its
+   two children and the `body.view-mode` grid rule is untouched. `Ctrl+T`
+   (`toggle_pane`, with its `config::Keymap` twin), a titlebar button, ⟳/✕ in
+   the header, view-mode and print hide lists, `KEY_ACTIONS` entry. Closing
+   hides rather than kills: the conversation survives behind `display: none`.
+
+8. **The macOS app icon**, in its own commit. It was full-bleed 1024×1024 —
+   a favicon's convention, not an app's — so dreamd sat visibly larger in the
+   Dock than everything beside it. `icon.icns` is now generated from a new
+   `src-tauri/icons/macos.svg`, the same four shapes under a
+   `translate(100,100) scale(25.75)`, giving Apple's 824×824-in-1024 grid.
+   Verified by measuring the alpha bounding box: exactly 824×824 at (100,100),
+   against 828×847 at (98,100) for a shipped third-party app on this machine.
+
+### Mistakes & deviations
+
+- **The pane shipped as a keyboard trap, and the plan's guard could not have
+  caught it.** The plan says extend `isEditable` so bare letters don't fire
+  while the terminal has focus. That was written, then broken to check it had
+  teeth — and nothing went red. A capture-phase probe explains why: xterm calls
+  `stopPropagation` on every key it handles, so `Escape`, `/`, `n`, `Ctrl+M`
+  and `Ctrl+T` reach `document` in the capture phase and none of them in the
+  bubble phase, where `wireKeys` listens. The global keymap was never in the
+  race — and `Ctrl+T` pressed *inside* the pane did nothing, so the one key
+  documented to close it was swallowed by the thing it closes. Fixed with
+  xterm's `attachCustomKeyEventHandler`; removing it now turns two `ui-check`
+  checks red, one of them showing `FA==` — the stray `^T` leaking to the child.
+- **`resizing_a_dead_pty_is_an_error_not_a_panic` names an outcome that does not
+  happen.** The master fd is still open, so the ioctl succeeds. Shipped as
+  `resizing_a_pty_whose_child_exited_is_not_a_panic`.
+- **xterm.js is injected on first open, not declared in `index.html`.** The plan
+  said `<script src>` in the document; that costs its parse on every launch,
+  including the overwhelming majority that never open a terminal, and 289 KB
+  would have landed on first paint. Same argument the plan itself makes for not
+  constructing `portable-pty` eagerly. A runtime-created same-origin script tag
+  is as CSP-clean as a declared one.
+- **The first spike run failed on its own harness**, not on signing: it wrote
+  to the master before resizing, so the child raced through to `SIZE_AFTER`
+  before the resize landed. The child is the only clock in that script.
+- **`cargo test` nearly started a Claude Code session.** The first draft of the
+  pty tests called `Pty::spawn`, which runs `PANE_COMMAND`. Split into
+  `spawn_command`, and the tests drive `/bin/sh`; a separate test pins
+  `PANE_COMMAND`'s shape so the real one is still covered.
+
+### State
+
+`cargo build`, `fmt`, `clippy --all-targets --all-features -D warnings` clean.
+205 unit tests (+10 in `pty`), `ui-check.mjs` 108/108 (+20 for the pane),
+`config_check`, `theme_check`, `mcp_check`, `marks_check`, `locate_check`,
+`node --test ui/paths.test.mjs` 10/10 — all green. Both new frontend guards
+proved by breaking them and watching the named check go red.
+
+`/perf-pass` reports 18 regressed and none of it is this change: the baseline
+predates step 4, so `marks_loaded` and `d:ipc_get_highlights 14 → 1034 ms` are
+step 4's lazy re-anchor appearing for the first time, and the real-app arms are
+noise — the *previous* pass run recorded `first_paint` at 10,008 ms against this
+one's 2,528 ms. `js_start` flagged at 53 → 58 ms, but historical pass runs sit
+at 57–63, so 58 is the norm and the baseline's 53 was the outlier. `first_paint`
+improved 5.7%. `/perf-quick` afterwards: 0 regressed. The boot-cost claim does
+not rest on any of that anyway — `ui-check` asserts deterministically that boot
+loads no vendor script and spawns no process. Release binary 5.76 MB → 5.82 MB,
+which is the brotli'd xterm.js.
+
+Open, and named here so it is not lost:
+
+- **The pane has never been looked at.** `ui-check` asserts what the page knows
+  — the terminal's buffer model, which IPC calls happen, which classes are set —
+  and nothing about what it paints. The layout, the colours and whether `claude`
+  actually starts all need `cargo tauri dev` and a human.
+- **The Dock icon is likewise unverified visually.** The geometry is measured
+  and correct; nobody has seen it in a Dock.
+- **The notary's own opinion of a `portable-pty` binary is untested**, for want
+  of local Apple credentials. Low risk — it adds no entitlement to reject — but
+  it is the one half of the signing question that was not measured.
+- **No config key for the pane's command.** It is `claude`, hardcoded. If it is
+  not on the login shell's `PATH` the pane shows `[process exited]` and a ⟳.
+- **`/perf-deep --update-baseline` is still owed**, from step 4 and now this.
+
 ## 2026-07-27 — Step 4: marks that outlive the process, and a pass that found four defects
 
 Step 4 of `docs/plans/agentic-mcp-persistence.md` — wiring thread G's

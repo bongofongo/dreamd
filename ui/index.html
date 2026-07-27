@@ -226,6 +226,45 @@
         opacity: 0.5; user-select: none; -webkit-user-select: none;
       }
 
+      /* embedded Claude Code pane — the same shape as #find-bar, and for the
+         same reason: a *sibling* of `#content-scroll` inside the flex column,
+         so opening it shrinks the reading pane rather than covering the last
+         paragraph. `#workspace` is untouched — a third child there lands in the
+         `0` track under `body.view-mode` and lays out at width zero (see the
+         comment on that rule).
+
+         Closed is `display: none`, so a session that never opens a terminal
+         pays no layout — and, because the vendored xterm.js is injected on
+         first open rather than declared in this file, no parse either.
+
+         `xterm.css` (vendored, injected alongside) styles everything inside
+         `#pty-term`; this block is only the dock around it. The colours come
+         from the palette, so the terminal reads as part of the app in both
+         appearances — xterm paints its own foreground/background from the
+         `theme` object app.js builds out of the same CSS variables. */
+      #pty-pane {
+        display: none; flex: 0 0 40%; min-height: 140px;
+        flex-direction: column; overflow: hidden;
+        border-top: 1px solid var(--border, #2e2940);
+        background: var(--sidebar-bg, #100e17);
+      }
+      #pty-pane.open { display: flex; }
+      #pty-head {
+        display: flex; align-items: center; gap: 8px;
+        padding: 4px 6px 4px 10px;
+        border-bottom: 1px solid var(--border, #2e2940);
+        font-size: 12px; opacity: 0.75;
+        user-select: none; -webkit-user-select: none;
+      }
+      #pty-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      /* Reads "exited (1)" when the child is gone, and nothing at all while it
+         is running — a healthy pane says nothing. */
+      #pty-status { font-family: var(--font-mono, ui-monospace, Menlo, monospace); font-size: 11px; opacity: 0.7; }
+      /* The terminal fills what is left. `min-height: 0` because a flex child
+         defaults to `min-height: auto`, which lets xterm's own sizing push the
+         dock taller than its 40% instead of scrolling inside it. */
+      #pty-term { flex: 1; min-height: 0; padding: 4px 0 0 8px; }
+
       /* The `::highlight()` rules that paint matches are deliberately NOT here.
          They are written into `#find-css` the first time the bar is opened —
          see the comment on that element and `installFindCss` in app.js. */
@@ -336,11 +375,18 @@
          `#find-bar` is absent from the list on purpose. It belongs to the
          reading pane rather than to the chrome, and hiding it would strand a
          reader who just pressed `/` with no titlebar to click and no bar to
-         type into. */
+         type into.
+
+         `#pty-pane` *is* in the list, and the difference is that hiding it
+         costs nothing: the pane's child process keeps running behind
+         `display: none`, its scrollback is intact, and `toggle_pane` brings it
+         back exactly as it was. View mode is the distraction-free reading
+         state, and a live terminal is the distraction. */
       body.view-mode #titlebar,
       body.view-mode #sidebar,
       body.view-mode #btn-expand,
       body.view-mode #outline-panel,
+      body.view-mode #pty-pane,
       body.view-mode #stack-panel { display: none; }
       /* One column, not `0 1fr` — and the difference is the whole screen.
          `display: none` takes the sidebar out of grid *placement* entirely,
@@ -620,7 +666,7 @@
            injected into every rendered code block and would otherwise print as
            a small empty box over each one. */
         #titlebar, #sidebar, #btn-expand,
-        #outline-panel, #stack-panel, #stale-rail, #find-bar,
+        #outline-panel, #stack-panel, #stale-rail, #find-bar, #pty-pane,
         #file-menu, #tooltip, #toast,
         #palette-overlay, .modal-overlay,
         button.code-copy { display: none !important; }
@@ -700,6 +746,9 @@
              `palette_prev`, which the settings panel would flag red as a clash.
              `#btn-hl-mode` below is the existing precedent for a titlebar
              action with no key of its own. -->
+        <button id="btn-pane" class="icon" data-tip="Toggle Claude Code pane" data-tip-key="toggle_pane">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M6 9l3 3-3 3"/><path d="M12 15h5"/></svg>
+        </button>
         <button id="btn-print" class="icon" data-tip="Print / save as PDF">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9V3h12v6"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><path d="M6 14h12v7H6z"/></svg>
         </button>
@@ -752,6 +801,21 @@
           <button id="find-prev" class="icon" data-tip="Previous match" data-tip-key="find_prev">‹</button>
           <button id="find-next" class="icon" data-tip="Next match" data-tip-key="find_next">›</button>
           <button id="find-close" class="icon" data-tip="Close find">✕</button>
+        </div>
+
+        <!-- Embedded Claude Code. Also a sibling of the scroller, below the
+             find bar, so the two dock in a predictable order when both are
+             open. Empty in the document: xterm.js is vendored under
+             `ui/vendor/` and injected on first open, so a launch that never
+             opens a terminal parses none of it. See `openPane` in app.js. -->
+        <div id="pty-pane">
+          <div id="pty-head">
+            <span id="pty-title">Claude Code</span>
+            <span id="pty-status" aria-live="polite"></span>
+            <button id="pty-restart" class="icon" data-tip="Restart the pane's process">⟳</button>
+            <button id="pty-close" class="icon" data-tip="Hide pane (the process keeps running)" data-tip-key="toggle_pane">✕</button>
+          </div>
+          <div id="pty-term"></div>
         </div>
 
         <!-- Left edge of the reading area, so it can sit open alongside the

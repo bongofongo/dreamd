@@ -235,6 +235,23 @@ causes were wrong.
 
 ## Recent updates
 
+- **2026-07-27** — **Claude Code now runs inside dreamd.** Press `Ctrl+T` and a
+  terminal opens along the bottom of the reading pane with an assistant already
+  started in the repository you are reading — the same one that can see your
+  highlights and work through your queue. It is a real terminal, so everything
+  you would type in one works, and the key that opened it closes it again from
+  either side. Closing only hides it: the conversation is still there when you
+  bring it back, and it is put away automatically in distraction-free reading
+  mode and never printed. Nothing about it costs anything until you press the
+  key for the first time — a session that never opens a terminal doesn't load
+  one. Two caveats worth stating plainly: the pane has been tested but not yet
+  *looked at* by a person, and it assumes the `claude` command is installed the
+  usual way. If it isn't, the pane says the process exited and offers a retry
+  button rather than failing silently.
+  The app's icon also changed size. It had been drawn to fill its square, which
+  is right for a browser tab and wrong for the Dock, where it made dreamd look
+  larger than every app beside it. It is now drawn to Apple's grid.
+
 - **2026-07-27** — **Your marks now survive closing the app.** Until today,
   highlights, the questions attached to them and the queue they form all lived
   only in memory: quit dreamd and they were gone. That was a deliberate rule, and

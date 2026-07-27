@@ -71,6 +71,7 @@ clap = { version = "4", features = ["derive"] }
 arboard = { version = "3", default-features = false }
 open = "5"
 trash = "5"
+portable-pty = "0.9.0"
 
 # The File -> Open picker, driven straight from the native menu handler. The
 # Tauri dialog plugin wraps this same crate; going direct avoids a plugin

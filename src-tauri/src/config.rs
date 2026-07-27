@@ -114,6 +114,8 @@ pub struct Keymap {
     pub toggle_stack: String,
     /// Toggle the contents / outline panel.
     pub toggle_outline: String,
+    /// Show or hide the embedded Claude Code pane.
+    pub toggle_pane: String,
     /// Collapse / restore the sidebar file tree.
     pub toggle_tree: String,
     /// Distraction-free view mode: hide the titlebar, sidebar and side panels
@@ -160,6 +162,13 @@ impl Default for Keymap {
             toggle_stack: "Ctrl+O".into(),
             // I for "index"; B is the sidebar, the way every editor spells it.
             toggle_outline: "Ctrl+I".into(),
+            // T for terminal. Free here, and unlike the editors' `Ctrl+``,
+            // reachable on every layout — backtick is a dead key on several,
+            // where it arrives as `e.key === "Dead"` and can never match. This
+            // is the one binding checked *above* the `isEditable` guard and
+            // above the pane's own key handling, so it both opens the pane and
+            // gets you back out of it.
+            toggle_pane: "Ctrl+T".into(),
             toggle_tree: "Ctrl+B".into(),
             // M for "minimal". Ctrl+M is free here and unclaimed by the
             // webview; the macOS menubar's Cmd-chords can't reach it because
