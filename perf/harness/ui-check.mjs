@@ -12,11 +12,14 @@
 // is DOM structure, event wiring, and which IPC calls the panel makes. The
 // same caveat as the perf scenarios applies to anything visual.
 import { chromium } from "playwright";
-import { pathToFileURL } from "node:url";
-import { join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { dirname, join } from "node:path";
 import { readFileSync, readdirSync } from "node:fs";
 
-const UI = "/Users/oliverfong/toadmountain/dreamd/ui";
+// perf/harness/ -> repo root -> ui/. Derived, not hardcoded: this was an
+// absolute path into one laptop's checkout, so the harness ran nowhere else —
+// including CI, which is why nothing caught it.
+const UI = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "ui");
 const base = readFileSync(join(UI, "theme.css"), "utf8");
 const palettes = Object.fromEntries(
   readdirSync(join(UI, "themes")).map((f) => [

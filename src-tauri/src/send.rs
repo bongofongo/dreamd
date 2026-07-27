@@ -15,8 +15,13 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Every query file this module writes starts with this. The sweep will only
+/// ever consider deleting a name carrying it.
+const QUERY_PREFIX: &str = "dreamd-query-";
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SendResult {
@@ -68,10 +73,72 @@ pub fn assemble_query(repo_root: &Path, pairs: &[Pair]) -> String {
     out
 }
 
+/// Whole days since the Unix epoch. Coarse on purpose: the only question a
+/// query file's name has to answer is "was this written before today", and
+/// answering it this way keeps the stamp a plain integer with no calendar crate
+/// behind it.
+fn epoch_day(t: SystemTime) -> u64 {
+    t.duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() / 86_400)
+        .unwrap_or(0)
+}
+
+fn query_name(day: u64, pid: u32, n: u64) -> String {
+    format!("{QUERY_PREFIX}{day}-{pid}-{n}.md")
+}
+
+/// The day stamp out of a name `query_name` produced, or `None` for anything
+/// else in the temp directory.
+///
+/// The field count is what makes it unambiguous. A build from before the stamp
+/// existed wrote `dreamd-query-<pid>-<n>.md`, whose first field is a pid that
+/// would parse perfectly well as a day — so require all three fields and leave
+/// the two-field shape alone rather than delete a file on a misread name.
+fn query_day(name: &str) -> Option<u64> {
+    let stem = name.strip_prefix(QUERY_PREFIX)?.strip_suffix(".md")?;
+    let mut fields = stem.split('-');
+    let day = fields.next()?.parse().ok()?;
+    (fields.count() == 2).then_some(day)
+}
+
+/// Delete query files left in `dir` by earlier days. Returns how many went.
+///
+/// Tenet 1 puts every write outside the repo, so these land in the system temp
+/// directory — and nothing ever removed them, so a session's worth of sends
+/// stayed there forever. Today's are kept deliberately: the path inside a
+/// `read @<file>` prompt has to stay readable for as long as the agent might
+/// act on it, and a second dreamd running alongside this one is still pointing
+/// at its own. Best-effort throughout — a file that will not delete is a file
+/// somebody else owns, and the send matters more than the tidying.
+fn sweep_stale_queries(dir: &Path, today: u64) -> usize {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    let mut swept = 0;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(day) = name.to_str().and_then(query_day) else {
+            continue;
+        };
+        // `<`, not `!=`: a clock that has gone backwards should leave a file
+        // alone rather than delete one a live process is still pointing at.
+        if day < today && std::fs::remove_file(entry.path()).is_ok() {
+            swept += 1;
+        }
+    }
+    swept
+}
+
 fn write_temp(content: &str) -> std::io::Result<PathBuf> {
+    let dir = std::env::temp_dir();
+    let day = epoch_day(SystemTime::now());
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let name = format!("dreamd-query-{}-{}.md", std::process::id(), n);
-    let path = std::env::temp_dir().join(name);
+    // The first send of the session pays for the sweep; the ones after it would
+    // find nothing new.
+    if n == 0 {
+        sweep_stale_queries(&dir, day);
+    }
+    let path = dir.join(query_name(day, std::process::id(), n));
     std::fs::write(&path, content)?;
     Ok(path)
 }
@@ -294,5 +361,56 @@ mod tests {
         let out = query(&[pair(nasty, nasty, 1, 1)]);
         assert!(out.contains(&format!("> {nasty}\n")), "{out}");
         assert!(out.contains(&format!("**Question:** {nasty}")), "{out}");
+    }
+
+    #[test]
+    fn the_written_name_is_one_the_sweeper_can_read() {
+        // The two halves are only useful together: a naming change that the
+        // parser stopped recognising would disable the sweep silently, and the
+        // symptom is a temp directory that quietly fills up again.
+        assert_eq!(query_day(&query_name(20_660, 4242, 7)), Some(20_660));
+        assert_eq!(query_day("dreamd-query-4242-7.md"), None, "pre-stamp name");
+        assert_eq!(query_day("notes.md"), None);
+        assert_eq!(
+            query_day("dreamd-query-x-4242-7.md"),
+            None,
+            "unparseable day"
+        );
+    }
+
+    #[test]
+    fn stale_query_files_are_swept_but_todays_are_kept() {
+        let dir = std::env::temp_dir().join(format!("dreamd-sweep-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+
+        let today = 20_660;
+        let put = |name: String| {
+            let p = dir.join(name);
+            std::fs::write(&p, "query").expect("fixture");
+            p
+        };
+
+        let yesterday = put(query_name(today - 1, 99, 0));
+        let last_year = put(query_name(today - 400, 99, 3));
+        // Kept: this session's own file, a concurrent dreamd's file from today
+        // (its agent may still be about to read it), a stamp from a clock that
+        // has run ahead, the pre-stamp name shape, and somebody else's file.
+        let kept = [
+            put(query_name(today, 99, 1)),
+            put(query_name(today, 1234, 7)),
+            put(query_name(today + 1, 99, 0)),
+            put("dreamd-query-4242-7.md".into()),
+            put("holiday-notes.md".into()),
+        ];
+
+        assert_eq!(sweep_stale_queries(&dir, today), 2);
+        assert!(!yesterday.exists(), "yesterday's file survived");
+        assert!(!last_year.exists(), "last year's file survived");
+        for k in &kept {
+            assert!(k.exists(), "swept {} and should not have", k.display());
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

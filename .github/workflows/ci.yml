@@ -65,16 +65,52 @@ jobs:
       - name: Build
         run: cargo build
 
-  # No npm install, no Playwright: paths.test.mjs evaluates ui/paths.js in a vm
-  # context and asserts on it directly. Seconds, and ubuntu is fine because
-  # nothing here is engine-specific.
+      # The example harnesses own what a unit test cannot reach, and each exits
+      # non-zero on failure — but until now clippy only ever *compiled* them, so
+      # a harness could go red for weeks without anyone running it. These two
+      # need nothing but the crate: config_check points XDG_CONFIG_HOME at a
+      # scratch directory before it touches anything, and theme_check reads the
+      # bundled palettes. Seconds each, against a tree cargo has already built.
+      #
+      # locate_check is deliberately not here. It wants the ~11MB generated
+      # corpus and a release build to run in reasonable time, which is a perf
+      # tier's job rather than a per-push one.
+      - name: Correctness harnesses
+        run: |
+          cargo run --example config_check
+          cargo run --example theme_check
+
+  # ubuntu, not macos-14: nothing the frontend is checked for is engine-specific,
+  # and both of these run against a JS engine rather than against WKWebView.
   ui:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
+          cache: npm
+          cache-dependency-path: perf/harness/package-lock.json
+
+      # No npm install, no Playwright: paths.test.mjs evaluates ui/paths.js in a
+      # vm context and asserts on it directly. Seconds. Kept first so the cheap
+      # check reports before the browser one starts downloading anything.
       - name: Path guards
         run: node --test ui/paths.test.mjs
+
+      # The frontend's only correctness harness: it loads the real ui/ in
+      # Chromium behind a stub of the Rust commands, drives the settings panel,
+      # navigation, view mode and find, and asserts on the DOM.
+      #
+      # It had never run anywhere but its author's laptop, because it opened
+      # `ui/` through an absolute path into one checkout — green by never being
+      # executed. The path is derived now, and this step is what keeps it that
+      # way. It asserts DOM structure, event wiring and which IPC calls the page
+      # makes; no timings are taken and nothing here feeds perf/baseline.json.
+      - name: Frontend harness
+        working-directory: perf/harness
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+          node ui-check.mjs
