@@ -6,10 +6,13 @@
 //! and `theme::save_user` — so a value set here and a value set in the panel
 //! land in the same file in the same shape.
 
+use crate::annotations::{Highlight, HighlightState, Store};
 use crate::config::{self, Config};
+use crate::marks_file;
 use crate::theme;
 use clap::Subcommand;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Subcommand)]
 pub enum Cmd {
@@ -22,6 +25,11 @@ pub enum Cmd {
     Config {
         #[command(subcommand)]
         action: ConfigCmd,
+    },
+    /// Inspect and prune this repo's saved marks.
+    Marks {
+        #[command(subcommand)]
+        action: MarksCmd,
     },
     /// Serve dreamd's MCP tools over stdio, for an agent to spawn.
     ///
@@ -62,6 +70,42 @@ pub enum ConfigCmd {
     Set { key: String, value: String },
 }
 
+#[derive(Subcommand)]
+pub enum MarksCmd {
+    /// Print the path of this repo's marks file.
+    Path,
+    /// Drop marks from this repo's file. With no flag, report and change
+    /// nothing.
+    ///
+    /// A destructive verb with a read-only default: `prune` on its own prints
+    /// what each flag would remove, so the first thing anyone types is a dry
+    /// run rather than a deletion.
+    Prune {
+        /// Drop stale marks carrying no question — the ones a `git checkout`
+        /// stranded and nobody annotated.
+        #[arg(long)]
+        stale: bool,
+        /// Drop marks an agent answered longer ago than this: `30d`, `12h`,
+        /// `90m`. Annotated marks are exactly what this removes, which is the
+        /// difference between it and `--stale`: the question was answered.
+        #[arg(long, value_name = "AGE", value_parser = parse_age)]
+        older_than: Option<u64>,
+    },
+}
+
+/// Is another dreamd already serving this repo?
+///
+/// The lock is the MCP socket bind (`mcp::server`'s module doc), and this is a
+/// read of it: a socket that accepts a connection has a live owner. It lives in
+/// the library rather than in `main.rs` for the reason [`crate::guard`] does —
+/// `main.rs` is a `[[bin]]` and cannot be imported, so a predicate that decides
+/// whether this process may write the user's marks would have no test at all.
+/// `examples/marks_check.rs` drives it against a real socket; `marks prune` and
+/// `main.rs`'s startup are the two callers.
+pub fn repo_is_claimed(root: &Path) -> bool {
+    std::os::unix::net::UnixStream::connect(crate::mcp::server::socket_path(root)).is_ok()
+}
+
 /// Run a subcommand. The `Err` message is printed to stderr by the caller,
 /// which then exits non-zero.
 pub fn run(cmd: Cmd) -> Result<(), String> {
@@ -76,6 +120,7 @@ pub fn run(cmd: Cmd) -> Result<(), String> {
     match cmd {
         Cmd::Theme { action } => theme_cmd(action, &cfg),
         Cmd::Config { action } => config_cmd(action, &repo_root),
+        Cmd::Marks { action } => marks_cmd(action, &repo_root),
         // Handled above, before the config read.
         Cmd::Mcp => unreachable!(),
     }
@@ -242,6 +287,136 @@ fn config_cmd(action: ConfigCmd, repo_root: &std::path::Path) -> Result<(), Stri
     }
 }
 
+// ---- marks ---------------------------------------------------------------
+
+/// The age `prune` reports against when no `--older-than` was given. Only a
+/// number in a dry run — nothing is deleted on it.
+const REPORT_AGE: u64 = 30 * 24 * 60 * 60;
+
+/// `30d`, `12h`, `90m`, `45s`, `2w` -> seconds.
+///
+/// A bare number is refused rather than assumed: "prune --older-than 30" means
+/// days to one person and seconds to another, and the wrong guess deletes
+/// answered questions a month early.
+fn parse_age(raw: &str) -> Result<u64, String> {
+    let raw = raw.trim();
+    // Split on the last *character*, never on `len() - 1`: this string comes
+    // straight off the command line, and `str::split_at` panics on a byte index
+    // inside a multi-byte character — `--older-than 30é` would abort with a
+    // backtrace where clap should have printed a usage error.
+    let mut chars = raw.chars();
+    let unit = chars.next_back();
+    let digits = chars.as_str();
+    let scale = match unit {
+        Some('s') => 1,
+        Some('m') => 60,
+        Some('h') => 60 * 60,
+        Some('d') => 24 * 60 * 60,
+        Some('w') => 7 * 24 * 60 * 60,
+        _ => return Err(format!("expected a duration like 30d or 12h, got {raw:?}")),
+    };
+    let n: u64 = digits
+        .parse()
+        .map_err(|_| format!("expected a duration like 30d or 12h, got {raw:?}"))?;
+    Ok(n * scale)
+}
+
+fn now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+/// Stale, unanswered, and carrying no question — the `--stale` set.
+///
+/// The same policy `marks_file::enforce_cap` applies at the cap: an annotated
+/// mark is a question in flight and `--stale` never touches one, however stale
+/// its quote has gone.
+fn is_stale_droppable(h: &Highlight) -> bool {
+    h.state == HighlightState::Stale && h.annotation.is_none() && h.resolved.is_none()
+}
+
+/// Answered before `cutoff` — the `--older-than` set.
+///
+/// This one *does* remove annotated marks, and that is the point: the question
+/// was answered, and the answer is what makes the mark disposable.
+fn resolved_before(h: &Highlight, cutoff: u64) -> bool {
+    h.resolved.as_ref().is_some_and(|r| r.at < cutoff)
+}
+
+fn marks_cmd(action: MarksCmd, repo_root: &Path) -> Result<(), String> {
+    let path = marks_file::path_for(repo_root);
+    match action {
+        MarksCmd::Path => {
+            println!("{}", path.display());
+            if !path.exists() {
+                eprintln!("dreamd: nothing saved for this repo yet");
+            }
+            Ok(())
+        }
+        MarksCmd::Prune { stale, older_than } => {
+            if !path.exists() {
+                return Err(format!("nothing saved for this repo ({})", path.display()));
+            }
+            // Through `load`, so what is written back has already been through
+            // every admission rule — a prune is also the moment a file that
+            // drifted gets tidied.
+            let (mut highlights, stack) = marks_file::load(repo_root).into_parts();
+            let now = now_secs();
+            let report_cutoff = now.saturating_sub(REPORT_AGE);
+            let queued = stack.len();
+
+            if !stale && older_than.is_none() {
+                println!("{}", path.display());
+                println!("  {} marks, {queued} queued", highlights.len());
+                println!(
+                    "  {} stale and unannotated       (--stale)",
+                    highlights.iter().filter(|h| is_stale_droppable(h)).count()
+                );
+                println!(
+                    "  {} resolved over 30 days ago   (--older-than 30d)",
+                    highlights
+                        .iter()
+                        .filter(|h| resolved_before(h, report_cutoff))
+                        .count()
+                );
+                eprintln!("dreamd: nothing removed; pass a flag to remove it");
+                return Ok(());
+            }
+
+            let cutoff = older_than.map(|age| now.saturating_sub(age));
+            let before = highlights.len();
+            highlights.retain(|h| {
+                let by_stale = stale && is_stale_droppable(h);
+                let by_age = cutoff.is_some_and(|c| resolved_before(h, c));
+                !by_stale && !by_age
+            });
+            let removed = before - highlights.len();
+
+            // `admit` rather than a hand-rolled filter, so a stack entry whose
+            // mark just went is dropped by the same code the loader uses.
+            let root = repo_root
+                .canonicalize()
+                .unwrap_or_else(|_| repo_root.to_path_buf());
+            let kept = Store::from_parts(highlights, stack);
+            let kept = marks_file::admit(&root, marks_file::doc_from(&root, &kept));
+            if repo_is_claimed(repo_root) {
+                eprintln!(
+                    "dreamd: warning — dreamd is open on this repo and will overwrite this file"
+                );
+            }
+            marks_file::save(repo_root, &kept)
+                .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+            println!(
+                "removed {removed}, kept {} ({} queued)",
+                kept.parts().0.len(),
+                kept.parts().1.len()
+            );
+            Ok(())
+        }
+    }
+}
+
 /// Print a TOML value the way a shell caller wants it: bare strings, no quotes.
 fn render_value(value: &toml::Value) -> String {
     match value {
@@ -276,5 +451,94 @@ fn edit(path: PathBuf) -> Result<(), String> {
                 .ok_or_else(|| format!("{program} exited with {status}"))
         }
         _ => open::that(&path).map_err(|e| format!("cannot open {}: {e}", path.display())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Only the pure half of `marks prune`: what it decides to drop, and how it
+    //! reads a duration. Everything that touches a file is
+    //! `examples/marks_check.rs`'s — `marks_file::path_for` reads the real
+    //! `config_dir()`, and `cargo test` is not allowed near it.
+    use super::*;
+    use crate::annotations::Resolution;
+
+    fn mark(
+        state: HighlightState,
+        annotation: Option<&str>,
+        resolved_at: Option<u64>,
+    ) -> Highlight {
+        Highlight {
+            id: "h1".into(),
+            quote: "q".into(),
+            state,
+            annotation: annotation.map(str::to_string),
+            resolved: resolved_at.map(|at| Resolution { note: None, at }),
+            ..Highlight::default()
+        }
+    }
+
+    #[test]
+    fn a_duration_needs_a_unit() {
+        assert_eq!(parse_age("30d"), Ok(30 * 24 * 60 * 60));
+        assert_eq!(parse_age("12h"), Ok(12 * 60 * 60));
+        assert_eq!(parse_age("90m"), Ok(90 * 60));
+        assert_eq!(parse_age("45s"), Ok(45));
+        assert_eq!(parse_age(" 2w "), Ok(14 * 24 * 60 * 60));
+        // A bare number is refused rather than guessed: "30" means days to one
+        // person and seconds to another, and one of those deletes a month of
+        // answered questions early.
+        assert!(parse_age("30").is_err());
+        assert!(parse_age("").is_err());
+        assert!(parse_age("d").is_err());
+        assert!(parse_age("-1d").is_err());
+        assert!(parse_age("30 days").is_err());
+        // An error, not a panic: this string comes off the command line, and
+        // splitting it at `len() - 1` lands inside the `é`.
+        assert!(parse_age("30é").is_err());
+        assert!(parse_age("あ").is_err());
+        assert!(parse_age("３０日").is_err());
+    }
+
+    #[test]
+    fn stale_pruning_never_takes_a_question() {
+        // The same line `enforce_cap` draws: an annotated mark is a question in
+        // flight, and a stale quote is usually mid-`git checkout`.
+        assert!(is_stale_droppable(&mark(HighlightState::Stale, None, None)));
+        assert!(!is_stale_droppable(&mark(
+            HighlightState::Stale,
+            Some("why?"),
+            None
+        )));
+        assert!(!is_stale_droppable(&mark(
+            HighlightState::Active,
+            None,
+            None
+        )));
+        // Answered marks are `--older-than`'s business, not `--stale`'s, even
+        // when the quote has gone stale since.
+        assert!(!is_stale_droppable(&mark(
+            HighlightState::Stale,
+            None,
+            Some(1)
+        )));
+    }
+
+    #[test]
+    fn age_pruning_only_takes_answered_marks() {
+        let cutoff = 1_000;
+        assert!(resolved_before(
+            &mark(HighlightState::Active, Some("why?"), Some(999)),
+            cutoff
+        ));
+        assert!(!resolved_before(
+            &mark(HighlightState::Active, Some("why?"), Some(1_001)),
+            cutoff
+        ));
+        // Never answered — no age to be older than, however old the mark is.
+        assert!(!resolved_before(
+            &mark(HighlightState::Stale, None, None),
+            cutoff
+        ));
     }
 }

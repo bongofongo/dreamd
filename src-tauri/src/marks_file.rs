@@ -573,8 +573,12 @@ mod tests {
         // Multi-byte text is the common case in prose, and `String::truncate`
         // panics on a boundary miss — in `admit`, on the startup path.
         let mut h = mark("h1", "/w/notes/a.md", "");
-        // 3 bytes each, so the cap falls mid-character.
-        h.quote = "é".repeat(MAX_FIELD_BYTES);
+        // 3 bytes each, so the cap falls mid-character. It has to be 3: this
+        // test used `é`, which is *2* bytes, and `MAX_FIELD_BYTES` is even — so
+        // the cap always landed on a boundary and a naive `String::truncate`
+        // passed it. Verified the other way round: with a 3-byte character and
+        // the boundary walk removed, this panics.
+        h.quote = "あ".repeat(MAX_FIELD_BYTES);
         let store = admit(&root(), doc(vec![h], &[]));
         let quote = &store.parts().0[0].quote;
         assert!(quote.len() <= MAX_FIELD_BYTES);

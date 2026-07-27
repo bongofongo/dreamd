@@ -35,10 +35,13 @@ Two deliberate constraints worth knowing:
 
 - **Read-only.** Editing stays in Neovim, where it belongs. dreamd never writes to
   your markdown.
-- **Nothing is saved.** Highlights, annotations, and the stack live in memory and
-  vanish when you close the app. This is on purpose for v1 — it keeps the whole
-  thing simple and honest about what it is: a working surface for one reading
-  session, not a note-taking database.
+- **Nothing is saved inside your repository.** Highlights, annotations and the
+  stack are written to a small file in your own settings folder — one per
+  repository, readable only by you — so they are still there tomorrow. That is a
+  change from v1, which kept them in memory and lost them on quit; it stopped
+  being the right rule once an assistant could work through the queue across
+  sessions. Your markdown, and everything else in the repository, is still never
+  written to.
 
 ## How it's built
 
@@ -62,6 +65,8 @@ The Rust side is seven small modules, each with one job:
   highlight anchoring and the `file:line` references in sent queries.
 - **`annotations`** — holds the highlights, annotations, and stack in memory, and
   re-anchors highlights when a file changes on disk.
+- **`marks_file`** — reads and writes that same set to your settings folder, and
+  decides what a file coming back off disk is allowed to say.
 - **`search`** — fuzzy search over file paths using `nucleo` (the matcher behind the
   Helix editor). This is the Telescope-style palette.
 - **`send`** — assembles the stack into a temp file, finds a tmux pane running
@@ -120,9 +125,12 @@ Known limits, all deliberate for v1:
 - Highlight anchoring matches on the selected text with whitespace normalized,
   plus the text either side of it. Heavily formatted inline selections may still
   fail to re-locate and will read as stale.
-- Nothing from your *reading session* persists — highlights, annotations and the
-  stack are gone when you close the window, by design. Your *preferences* do
-  persist, and are the only thing the app ever writes.
+- Your reading session now persists — highlights, annotations and the stack are
+  saved to your settings folder and come back when you reopen. Two limits: the
+  saved line numbers are re-checked per file the first time you open it, so a
+  document edited elsewhere corrects itself when you look at it rather than at
+  launch; and if two windows are open on the same repository, only the first is
+  saving.
 - The settings panel rewrites the config file when you change something. The values
   you set by hand are kept; comments in the file are not.
 
@@ -226,6 +234,32 @@ causes were wrong.
   that is where its users look.
 
 ## Recent updates
+
+- **2026-07-27** — **Your marks now survive closing the app.** Until today,
+  highlights, the questions attached to them and the queue they form all lived
+  only in memory: quit dreamd and they were gone. That was a deliberate rule, and
+  it stopped being the right one the moment an assistant could work through your
+  queue — a conversation that spans a lunch break shouldn't lose the questions you
+  asked before it. They are now written to a small file in your own settings
+  folder, one per repository, readable only by your account. Nothing is written
+  into the repository itself, and your markdown is still never touched; that part
+  of the rule has not moved.
+  Three details worth knowing. Saving is deferred by half a second and happens
+  again on quit, so typing a question never waits on the disk and closing the app
+  never loses the one you just typed. If two dreamd windows are open on the same
+  repository, only the first writes — the second keeps its marks for as long as it
+  runs and stays out of the way, rather than the two overwriting each other. And
+  the file is treated as untrusted on the way back in: a hand-edited or copied one
+  cannot point dreamd at a file outside your repository, and a corrupted one costs
+  you the marks rather than the launch.
+  There is also a new way to look at all this from a terminal: `dreamd marks path`
+  prints the file, and `dreamd marks prune` says what it *would* tidy up before it
+  tidies anything. A question you asked and nobody answered is never deleted, by
+  any of it.
+  Two things not yet done: nobody has quit and reopened the real window to watch
+  the marks come back — everything underneath that is tested automatically — and a
+  second window doesn't yet *show* that it isn't saving, it only says so in a log
+  nobody reads.
 
 - **2026-07-27** — **The assistant can now read your queue, and the window answers
   back.** This is the one the last few sessions were building toward. When you

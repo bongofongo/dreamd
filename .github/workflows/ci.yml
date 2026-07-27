@@ -75,12 +75,17 @@ jobs:
       # binds a real Unix socket under `config_dir()`, which is exactly what
       # `cargo test` is not allowed to touch, so the transport — the socket
       # mode, the bind-is-the-lock rule, the shim's wire format, a cancel that
-      # really retires the thread — is only ever checked here.
+      # really retires the thread — is only ever checked here. marks_check is
+      # the same story one directory over: the marks file lives under
+      # `config_dir()` too, and the modes, the size cap, the `.tmp` a crash
+      # leaves behind and the rule deciding which of two dreamds may write at
+      # all are only observable against a real one.
       - name: Correctness harnesses
         run: |
           cargo run --example config_check
           cargo run --example theme_check
           cargo run --example mcp_check
+          cargo run --example marks_check
 
       # locate_check used to be excluded here as a perf tier's job. It isn't:
       # it is the only check with an independent oracle for highlight

@@ -1,5 +1,134 @@
 # Session log
 
+## 2026-07-27 — Step 4: marks that outlive the process, and a pass that found four defects
+
+Step 4 of `docs/plans/agentic-mcp-persistence.md` — wiring thread G's
+`marks_file.rs` into the app so highlights, annotations and the stack survive a
+quit. It got there. The verification pass at the end found four real defects in
+the wiring and two checks that were green for the wrong reason; all six are
+fixed in this commit.
+
+### What happened
+
+1. **Startup.** Marks load between `Config::load` and the walk, guarded by
+   `has_repo` for the same reason the watcher and the socket are: with no repo
+   the root is whatever the walk-up fell back to, and a marks file named after
+   it would claim a repo that does not exist. `perf::mark("marks_loaded")` plus
+   a `d:marks_loaded` duration. Nothing is re-anchored at boot.
+
+2. **Lazy per-file re-anchor.** `AppState::pending_reanchor` is seeded from the
+   loaded marks' distinct file paths and drained by `get_highlights`, which is
+   already the first thing `renderCurrent` calls after `innerHTML`. The set is
+   what keeps the steady state free — `Store::ensure_reanchored` is idempotent
+   but takes source bytes, so calling it unconditionally would re-read the open
+   document on every repaint, inside the `save_to_paint` loop. A mark created
+   this session was anchored against those bytes and is never in the set.
+
+3. **Debounced save.** A `dirty` flag on the four mutating commands, a 500ms
+   thread, and a flush on `RunEvent::ExitRequested | Exit` — which is why the
+   builder is now `build()` + `run()` rather than `run()` alone. MCP mutations
+   dirty the store by **wrapping the `Notifier`** rather than through a second
+   filter: `notify` already fires on exactly the calls that changed something,
+   and `mcp/server.rs` has tests holding that line. `reanchor` is the one
+   mutation that deliberately does *not* dirty — what it changes is derived
+   from the file's current bytes and is recomputed at next boot, so marking it
+   would put a marks write on every `:w`.
+
+4. **`adopt_root`.** Flush of the old root, config swap, root swap, load of the
+   new root, `dirty` cleared and `pending_reanchor` re-seeded, all in one block
+   under the store lock, as the plan required.
+
+5. **Multi-instance.** `cli::repo_is_claimed` — a connect probe against the MCP
+   socket, i.e. a *read* of the bind-is-the-lock rule. It lives in `cli` rather
+   than `main.rs` for the reason `guard` does: in a `[[bin]]` no test could
+   reach the predicate deciding whether a process may write the user's marks.
+   A secondary loads marks, never writes, and says so on stderr.
+
+6. **`dreamd marks path|prune [--stale] [--older-than 30d]`.** Bare `prune` is
+   a dry run — a destructive verb whose default changes nothing. `--stale`
+   never touches an annotated mark; `--older-than` drops answered ones, which
+   is exactly the difference between them. Stack pruning reuses
+   `marks_file::admit` rather than reimplementing it.
+
+7. **`examples/marks_check.rs`**, 75 checks: modes tightened rather than merely
+   created, round trip including `resolved`/`origin`/stack order, five corrupt
+   file shapes, the 4 MiB pre-read cap, hand-edited containment, a
+   future-version file, an orphaned `.tmp`, two repos, the one-writer lock, and
+   `prune` driven through `cli::run`. CI runs it; tenet 2 in `CLAUDE.md` was
+   rewritten, because it claimed nothing persists and that is now false.
+
+### Mistakes & deviations
+
+- **`flush_marks` read `persists`, `dirty` and `root` across the store lock.**
+  `adopt_root` mutates all three *under* it, so a tick could pass the gate as
+  primary on repo Y, block on the lock, and wake up to write repo X's file — as
+  a secondary that had just stood down. Now every decision but the cheap
+  `dirty` hint is made under the lock.
+- **`get_highlights` cleared the re-anchor debt before knowing the read
+  succeeded.** `remove(&path).then(read)` drops the path even when the file is
+  briefly unreadable — Neovim's atomic-rename save, mid-`git checkout` — leaving
+  the marks at last session's line numbers, `Active`, for the rest of the run.
+  Now `contains`, with the `remove` after a successful re-anchor and under the
+  store lock, which also makes the lock order store → `pending_reanchor` a
+  stated invariant rather than an ownership accident.
+- **`parse_age` panicked on non-ASCII.** `split_at(len - 1)` lands inside a
+  multi-byte character, so `dreamd marks prune --older-than 30é` aborted with a
+  backtrace where clap should have printed a usage error. Splits on the last
+  *character* now.
+- **`prune`'s `--stale` retain had no test.** The three predicates all had real
+  teeth; the line that calls them — the one that actually deletes a user's work
+  — had none. Swapping `is_stale_droppable(h)` for a bare `h.state == Stale`,
+  so `--stale` eats annotated questions, left 197 unit tests and 61 harness
+  checks green. `prune` is now driven through `cli::run`, and that break turns
+  it red.
+- **`truncation_lands_on_a_char_boundary` was toothless, pre-existing.** Its
+  comment says "3 bytes each" but `é` is **2**, and `MAX_FIELD_BYTES` is even,
+  so the cap always landed on a boundary and a naive `String::truncate` passed.
+  Fixture is a 3-byte character now; with the boundary walk removed it panics,
+  which is the point.
+- **`/perf-pass` was run and thrown away.** 106 of 199 rows moved >15%,
+  including pure-Chromium rows that run none of the changed code — Firefox
+  media playback at 73% CPU and WindowServer at 97% during the run. Contaminated,
+  not a regression. Reported and skipped rather than quoted.
+
+### State
+
+`cargo build`, `fmt`, `clippy --all-targets -D warnings` clean. 197 unit tests,
+`marks_check` 75/75, `mcp_check` 46/46, `config_check` 34/34, `theme_check`,
+`locate_check`, `node --test ui/paths.test.mjs` 10/10 — all green. Each fix
+proved by breaking the guard and watching the named check go red.
+
+Open, and named here so it is not lost:
+
+- **No perf numbers for this change.** `/perf-pass` and
+  `/perf-deep --update-baseline` both still owed, on a quiet machine. The only
+  figure that survived the contaminated run is `d:marks_loaded` at 0.042 ms —
+  under the plan's 1 ms, but on the *empty* load path, since neither corpus repo
+  has a marks file. A seeded measurement has not been taken.
+- **Both manual checks are unrun.** Quit-and-reopen (marks, stack and badge at
+  boot) and a second window announcing itself as secondary need the GUI, which
+  cannot be driven from this environment.
+- **The MCP read tools never re-anchor.** The plan is explicit that `get_stack`
+  needs it; `mcp/tools.rs` has no `ensure_reanchored` call, and the socket
+  thread cannot see `pending_reanchor` — it lives in `main.rs`'s `AppState`. So
+  the first `get_stack` of a cold session hands the agent line numbers from the
+  previous session, which costs an incorrect edit rather than a cosmetic
+  misplacement. Out of this thread's scope; the highest-value follow-up.
+- **A secondary window is silent in the GUI.** The plan asks for an indicator.
+  `repo_info` exposes `persists` and nothing in `ui/app.js` reads it, so a
+  second window looks identical to the first while losing every mark on quit.
+- **The cap is enforced at load, not at save**, and `marks.max_per_repo` does
+  not exist in `config.rs`. A session can write 2500 marks and the next boot
+  silently drops 500 with no user action in between.
+- **A secondary never reclaims.** `persists` is re-decided only when the root
+  moves, so a window that started second stays a non-writer even after the
+  primary quits.
+- **Step 4's `main.rs` wiring has no automated coverage at all** — deleting
+  `state.touch()` from `set_annotation`, or gutting `flush_marks`, leaves every
+  suite green. Expected for a `[[bin]]`, but `flush_marks`'s gate policy and
+  `marking_dirty` are logic, and CLAUDE.md's own rule says logic goes where a
+  test can reach it.
+
 ## 2026-07-27 — Step 3c: the socket, the shim, and an independent pass that found teeth missing
 
 Step 3c of `docs/plans/agentic-mcp-persistence.md` — the transport between the

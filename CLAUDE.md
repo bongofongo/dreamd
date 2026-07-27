@@ -35,12 +35,14 @@ cargo run --release --example locate_check   # highlight anchoring, 611 corpus f
 cargo run --example config_check             # config layering + write-back
 cargo run --example theme_check              # bundled palettes: vars, --bg, --syntax-theme
 cargo run --example mcp_check                # the MCP socket: mode, lock, wire, retirement
+cargo run --example marks_check              # the marks file: modes, caps, crash artifacts, the lock
 node perf/harness/ui-check.mjs               # settings panel in Chromium (needs harness setup)
 ```
 
 ```sh
 dreamd theme list|set <name>|show [name]|new <name> [--from <base>]
 dreamd config path|edit|get <key>|set <key> <value>
+dreamd marks path|prune [--stale] [--older-than 30d]   # bare `prune` is a dry run
 dreamd mcp                           # the stdio MCP shim; `claude mcp add dreamd -- dreamd mcp`
 dreamd --theme nord [path]           # one run, no config write
 ```
@@ -50,10 +52,11 @@ allowlist, repo-root containment), `markdown` (HTML escaping, slugs, `locate`'s
 three tiers), `theme` (`user_path` traversal, the CSS parser), `annotations`
 (`Store` semantics), `config` (`deep_merge`), `fs_walk::build_tree`, `is_markdown`.
 Nothing there touches `config_dir()` — that reads the real `~/.config/dreamd`,
-and sandboxing it is `config_check`'s job — and `mcp_check`'s, whose socket
-lives there too. The example harnesses above still own what a unit test cannot
-reach (corpus anchoring, config layering + write-back, the bundled palettes, the
-MCP transport) and each exits non-zero on failure. **The GUI itself is
+and sandboxing it is `config_check`'s job — and `mcp_check`'s and
+`marks_check`'s, whose socket and marks file live there too. The example
+harnesses above still own what a unit test cannot reach (corpus anchoring,
+config layering + write-back, the bundled palettes, the MCP transport, the marks
+file on disk) and each exits non-zero on failure. **The GUI itself is
 verified only by hand** — `ui-check.mjs` asserts what the page knows, not what it
 paints; don't claim coverage beyond that.
 `perf/run.sh` takes an exclusive lock: one tier at a time, no `cargo` alongside it.
@@ -117,11 +120,14 @@ to the crate version, verified.
 1. **Read-only.** dreamd never writes to the user's markdown, and never writes anything
    inside the repo. Editing stays in Neovim. The one place it writes is
    `~/.config/dreamd/` (see tenet 2).
-2. **No session state persists.** Highlights, annotations, and the stack are in-memory
-   and die with the process. Don't add a database without an explicit decision to.
-   *Preferences* are the deliberate exception: `config.toml` and saved themes under
-   `~/.config/dreamd/` are written by the settings panel and the `config`/`theme`
-   subcommands. Nothing else is ever written.
+2. **Session state persists only under `~/.config/dreamd/`, and only as files.**
+   Amended in step 4: marks that died with the process made an agent loop
+   spanning sessions impossible, so highlights, annotations and the stack are
+   written to `marks/<basename>-<16hex>.json` (0600) — debounced, and by the one
+   dreamd that holds the repo's socket. *Preferences* are the older exception:
+   `config.toml` and saved themes, written by the settings panel and the
+   `config`/`theme` subcommands. Still no database, and still nothing written
+   anywhere else — a third thing that wants to persist needs its own decision.
 3. **No shell interpolation of user content.** Sent queries go through a temp file and
    a fixed `read @<file>` prompt. Highlighted text never enters a command line.
 4. **Escape, don't execute.** Raw HTML in markdown is escaped. External links are
@@ -191,8 +197,18 @@ exists so `node --test` can drive the containment guard without a browser.
   to an explicit `mode` — which is why `Config::mode` is an `Option`. Debug builds read
   bundled palettes off disk so they hot-reload like user ones.
   `readCssVar`/`modeSlice` in `ui/app.js` mirror this; change one, change the other.
-- `cli` — the headless `dreamd theme …` / `dreamd config …` subcommands. They run and exit
+- `cli` — the headless `dreamd theme …` / `dreamd config …` / `dreamd marks …`
+  subcommands. They run and exit
   before the Tauri builder, sharing the panel's write paths so both produce the same file.
+  It also holds `repo_is_claimed`, the read of the socket lock that decides
+  whether a process may write marks — in `main.rs` no test could reach it.
+- `marks_file` — the persistence half of tenet 2: `admit` (every load-time rule,
+  pure) plus `load`/`save` (mode 0600, temp sibling, rename). `load` never fails
+  and never panics; a corrupt file costs the marks, not the launch. `main.rs`
+  owns the *scheduling* — a load before the walk, a 500ms debounced save thread,
+  a flush on `RunEvent::ExitRequested`, and the flush + reload `adopt_root` does
+  in the same block that swaps config. Only the primary writes: the second
+  dreamd on a repo keeps its marks in memory and says so.
 - `mcp` — the agent surface. `jsonrpc`/`schema`/`tools`/`view` are pure and
   Tauri-free; `server` is the Unix socket the GUI listens on
   (`~/.config/dreamd/run/<16hex>.sock`, mode 0600, the same FNV-1a root hash
@@ -224,7 +240,11 @@ exists so `node --test` can drive the containment guard without a browser.
 whitespace-stripped match. The frontend sends what `getSelection().toString()` returns —
 **rendered DOM text**, never raw source — so the whitespace-normalized path is the hot one
 and the only realistic thing to benchmark. `reanchor_file` re-runs this on save; failure
-marks the highlight `Stale` rather than dropping it.
+marks the highlight `Stale` rather than dropping it. Marks read off disk are
+re-anchored **lazily, once per file, in `get_highlights`** — never all of them at
+startup, which would land straight on the cold-start number. `AppState`'s
+`pending_reanchor` is what makes the steady state free: a mark created this
+session was anchored against the bytes on screen and is never in it.
 
 **Perf instrumentation** is behind the off-by-default `perf` cargo feature. Marks go to
 **stderr** as NDJSON because `console.log` in WKWebView never reaches process stdout;
@@ -237,12 +257,12 @@ highlights from a corpus fixture.
 - Commits go **straight to main** — no branches, no PRs.
 - `cargo build` must pass before any commit touching `src-tauri/`.
 - `.github/workflows/ci.yml` runs fmt + clippy (`-D warnings`) + test + build on
-  **macos-14** for every push and PR, then `config_check`, `theme_check` and
-  `locate_check` (the last against a cached corpus), plus
-  `node --test ui/paths.test.mjs` and `ui-check.mjs` on
+  **macos-14** for every push and PR, then `config_check`, `theme_check`,
+  `mcp_check`, `marks_check` and `locate_check` (the last against a cached
+  corpus), plus `node --test ui/paths.test.mjs` and `ui-check.mjs` on
   ubuntu. macOS is not a preference: Tauri on Linux needs webkit2gtk, and the
-  `#[cfg(target_os = "macos")]` paths compile nowhere else. Run those four
-  commands locally before pushing — CI is the backstop, not the first check.
+  `#[cfg(target_os = "macos")]` paths compile nowhere else. Run those harnesses
+  locally before pushing — CI is the backstop, not the first check.
   Its toolchain is **pinned** (`dtolnay/rust-toolchain@1.97.1`); bumping it is a
   deliberate commit that also clears whatever the new clippy found.
 - Repeatable flows become skills in `.claude/skills/`.

@@ -14,13 +14,24 @@ use dreamd::config::{Config, Keymap};
 use dreamd::fs_walk::FileNode;
 use dreamd::send::SendResult;
 use dreamd::{
-    cli, config, guard, home_relative, markdown, mcp, notify, perf, read_source, send, theme,
-    watcher,
+    cli, config, guard, home_relative, markdown, marks_file, mcp, notify, perf, read_source, send,
+    theme, watcher,
 };
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
+use std::time::Duration;
 use tauri::{Emitter, Manager, State};
+
+/// How long a mutation waits before it reaches disk.
+///
+/// Saves are coalesced off the command thread because serialising the whole
+/// store inside `set_annotation` would put a file write on a UI-latency path —
+/// the one path `perf/` measures as `save_to_paint`. Half a second is short
+/// enough that the only way to lose a mark is `kill -9`, and long enough that
+/// dragging a selection across a paragraph writes once rather than per chip.
+const SAVE_DEBOUNCE: Duration = Duration::from_millis(500);
 
 struct AppState {
     /// Behind a lock because File -> Open can move it: a `.app` launched from
@@ -65,6 +76,29 @@ struct AppState {
     /// order. Written by `.setup()` at startup and by `set_appearance` when the
     /// frontend notices the OS change.
     appearance: AtomicU8,
+    /// Whether this process is the one that writes this repo's marks file.
+    ///
+    /// False for a repo with no `.git` (there is nothing to be the marks *of*)
+    /// and for a **secondary** — a second dreamd on a repo another one already
+    /// claimed. Two writers would be last-write-wins on a whole file, so the
+    /// second window keeps its marks in memory and says so on stderr rather
+    /// than clobbering the first's. `adopt_root` re-decides it, because the
+    /// claim is per repo.
+    persists: AtomicBool,
+    /// Set by every mutation, cleared by the save thread. An atomic rather than
+    /// a channel because the interesting question is only ever "has anything
+    /// changed since the last write?", and coalescing is the entire point.
+    dirty: Arc<AtomicBool>,
+    /// Files whose loaded marks have not been checked against this run's bytes
+    /// yet.
+    ///
+    /// Seeded from the marks file at startup and re-seeded by `adopt_root`;
+    /// `get_highlights` drains it one path at a time. This exists so the
+    /// steady state costs **nothing**: `Store::ensure_reanchored` is idempotent
+    /// but takes a `&str` of source, so calling it unconditionally would mean
+    /// re-reading the open document on every repaint. A mark created this
+    /// session was anchored against these bytes and is never in here.
+    pending_reanchor: Mutex<HashSet<String>>,
 }
 
 impl AppState {
@@ -87,6 +121,15 @@ impl AppState {
             theme::Scheme::Dark => 1,
         };
         self.appearance.store(v, Ordering::Relaxed);
+    }
+
+    /// Note that the store changed, so the next debounce tick writes it.
+    ///
+    /// Called by the mutating commands and — through
+    /// [`marking_dirty`] — by the MCP layer's notifier, which already fires on
+    /// exactly the calls that changed something.
+    fn touch(&self) {
+        self.dirty.store(true, Ordering::Relaxed);
     }
 
     /// The syntect theme the active palette asks for, or syntect's default.
@@ -142,6 +185,68 @@ fn parse_mode(raw: &str) -> Result<config::Mode, String> {
     }
 }
 
+// ---- persistence ---------------------------------------------------------
+
+/// Every distinct file the loaded marks name, as the set `get_highlights`
+/// drains.
+fn files_with_marks(store: &Store) -> HashSet<String> {
+    store
+        .parts()
+        .0
+        .iter()
+        .map(|h| h.file_path.clone())
+        .collect()
+}
+
+/// Wrap a notifier so an agent's mutation dirties the store on its way to the
+/// window.
+///
+/// The MCP layer is the one mutator that never touches a Tauri command, so
+/// nothing in here would otherwise know it happened. `notify` already fires on
+/// exactly the calls that changed something — a read tool and a refused write
+/// emit nothing, and `mcp/server.rs` has tests holding that line — which makes
+/// it the right signal to hang the dirty flag off, rather than a second filter
+/// that could disagree with it.
+fn marking_dirty(dirty: Arc<AtomicBool>, inner: notify::Notifier) -> notify::Notifier {
+    Arc::new(move |change| {
+        dirty.store(true, Ordering::Relaxed);
+        inner(change);
+    })
+}
+
+/// Write the marks if anything changed. The debounce tick, the quit hook and
+/// `adopt_root` all land here.
+///
+/// **Lock order is store, then `config` / `repo_root` / `pending_reanchor`**,
+/// and `adopt_root` takes them in the same order for the same reason: those two
+/// are the only places holding more than one, and inverting them here would
+/// deadlock a File -> Open against a save.
+///
+/// Every decision except the first is made *under* the store lock, and that is
+/// load-bearing rather than tidy. `adopt_root` mutates `persists`, `repo_root`
+/// and the store together beneath that lock, so a tick that read them outside
+/// it could pass the gate as a primary on repo Y, block on the lock, and wake
+/// up to write repo X's file — as a secondary that had just stood down. The
+/// unlocked `dirty` read is only a hint, and the safe direction: it can miss a
+/// mutation that lands microseconds later, which the next tick catches.
+fn flush_marks(app: &tauri::AppHandle) {
+    let state = app.state::<AppState>();
+    if !state.dirty.load(Ordering::Relaxed) {
+        return;
+    }
+    let store = state.store.lock().unwrap();
+    if !state.persists.load(Ordering::Relaxed) || !state.dirty.swap(false, Ordering::Relaxed) {
+        return;
+    }
+    let root = state.root();
+    if let Err(e) = marks_file::save(&root, &store) {
+        eprintln!("dreamd: cannot save marks for {}: {e}", root.display());
+        // Put the flag back: a full disk that clears itself should not have
+        // cost the session's marks.
+        state.dirty.store(true, Ordering::Relaxed);
+    }
+}
+
 // ---- commands ------------------------------------------------------------
 
 /// The three commands below are `async` and do their waiting inside
@@ -167,6 +272,10 @@ fn repo_info(state: State<AppState>) -> serde_json::Value {
         // False means "nothing opened yet" — the frontend shows the empty state
         // rather than a tree it is about to find empty.
         "hasRepo": state.has_repo.load(Ordering::Relaxed),
+        // False means this window is a secondary: its marks are real for as
+        // long as it runs and are never written. Exposed so the frontend can
+        // say so; nothing in `ui/` reads it yet.
+        "persists": state.persists.load(Ordering::Relaxed),
     })
 }
 
@@ -217,34 +326,69 @@ fn add_highlight(
     // Anchoring lives in `Store::add_anchored`, not here: `main.rs` cannot be
     // imported, so the (0, 0) fallback had no test, and the agent's
     // `mark_passage` needs the same behaviour.
-    Ok(state.store.lock().unwrap().add_anchored(
+    let id = state.store.lock().unwrap().add_anchored(
         file_path,
         &source,
         quote,
         prefix,
         suffix,
         Origin::Human,
-    ))
+    );
+    state.touch();
+    Ok(id)
 }
 
 #[tauri::command]
 fn set_annotation(state: State<AppState>, id: String, text: String) -> bool {
-    state.store.lock().unwrap().set_annotation(&id, text)
+    let changed = state.store.lock().unwrap().set_annotation(&id, text);
+    if changed {
+        state.touch();
+    }
+    changed
 }
 
 #[tauri::command]
 fn remove_highlight(state: State<AppState>, id: String) {
     state.store.lock().unwrap().remove(&id);
+    state.touch();
 }
 
 #[tauri::command]
 fn remove_pair(state: State<AppState>, id: String) {
     state.store.lock().unwrap().remove_from_stack(&id);
+    state.touch();
 }
 
+/// The overlay for one document — and the first thing `renderCurrent` calls
+/// after `innerHTML`, which is why the lazy re-anchor hangs off it.
+///
+/// Marks that came off disk carry line numbers from whenever they were last
+/// saved, and the file may have been edited by anything since. Re-anchoring
+/// them all at startup would land straight on the cold-start number, so it is
+/// paid per file, on first sight of that file, inside a path that was already
+/// scanning the store for it. A repo where you open two documents pays for
+/// two; one where you open two hundred pays for two hundred, which is the
+/// right way round.
 #[tauri::command]
 fn get_highlights(state: State<AppState>, path: String) -> Vec<Highlight> {
-    state.store.lock().unwrap().for_file(&path)
+    // Read the file *before* taking the store lock, and only when this path is
+    // still owed a re-anchor. The guard is a `contains`, not a `remove`: a read
+    // that fails — Neovim's atomic-rename save has the file unlinked for an
+    // instant, and a `git checkout` for longer — must leave the debt standing,
+    // or the marks render at the previous session's line numbers, `Active`, for
+    // the rest of the run.
+    let owed = state.pending_reanchor.lock().unwrap().contains(&path);
+    let source = owed.then(|| read_source(&path).ok()).flatten();
+    let mut store = state.store.lock().unwrap();
+    if let Some(source) = source {
+        store.ensure_reanchored(&path, &source);
+        // Under the store lock, so the order is store -> pending_reanchor here
+        // and in `adopt_root`. The `contains` above is the only place that
+        // takes `pending_reanchor` alone, and it releases before the store lock
+        // is taken; keep it that way.
+        state.pending_reanchor.lock().unwrap().remove(&path);
+    }
+    store.for_file(&path)
 }
 
 #[tauri::command]
@@ -254,9 +398,19 @@ fn get_highlight(state: State<AppState>, id: String) -> Option<Highlight> {
 
 /// Re-read the file and re-anchor its highlights (Active/Stale). Called by the
 /// frontend when a `file-changed` event arrives for the open document.
+///
+/// Deliberately **does not** dirty the store, and it is the only mutation that
+/// doesn't. What it changes — line numbers and Active/Stale — is derived from
+/// the file's current bytes, and `get_highlights` derives it again on the next
+/// cold start from whatever the bytes are *then*. Marking it dirty would put a
+/// marks write on every `:w` in Neovim, in the middle of the `save_to_paint`
+/// loop, to persist an answer that is recomputed anyway.
 #[tauri::command]
 fn reanchor(state: State<AppState>, path: String) -> Result<Vec<Highlight>, String> {
     let source = read_source(&path)?;
+    // This *is* the re-anchor the pending set exists to force, so nothing is
+    // owed for this path any more.
+    state.pending_reanchor.lock().unwrap().remove(&path);
     Ok(state.store.lock().unwrap().reanchor_file(&path, &source))
 }
 
@@ -597,6 +751,7 @@ fn adopt_root(app: &tauri::AppHandle, path: PathBuf) {
 
     let state = app.state::<AppState>();
     let previous_root = state.root();
+    let moved = previous_root != root;
 
     // Re-read config: the new repo may carry its own `.dreamd.toml`, and the
     // settings panel reports which keys it overrides. A `--theme`/`--mode` given
@@ -606,9 +761,47 @@ fn adopt_root(app: &tauri::AppHandle, path: PathBuf) {
     let cfg = Config::load(&root);
     let ignores = cfg.extra_ignores.clone();
     let theme_path = cfg.theme_css.clone();
-    *state.config.lock().unwrap() = cfg;
-    *state.repo_root.write().unwrap() = root.clone();
-    state.has_repo.store(true, Ordering::Relaxed);
+
+    // Whether the *new* repo is already someone else's. Probed before the swap
+    // and only when the root actually moved: probing a root we already own
+    // would find our own socket and demote us.
+    let claimed = moved && cli::repo_is_claimed(&root);
+
+    // Marks move with the root, in the same block that swaps config — a window
+    // that kept the previous repo's marks would paint them over documents that
+    // never carried them, and the file they belong to would then be written
+    // back under the new repo's name.
+    //
+    // Lock order is store -> config -> repo_root, matching `flush_marks`; it
+    // is the only other holder of more than one of them.
+    {
+        let mut store = state.store.lock().unwrap();
+        if state.persists.load(Ordering::Relaxed) && state.has_repo.load(Ordering::Relaxed) {
+            if let Err(e) = marks_file::save(&previous_root, &store) {
+                eprintln!(
+                    "dreamd: cannot save marks for {}: {e}",
+                    previous_root.display()
+                );
+            }
+        }
+        *state.config.lock().unwrap() = cfg;
+        *state.repo_root.write().unwrap() = root.clone();
+        state.has_repo.store(true, Ordering::Relaxed);
+        if moved {
+            state.persists.store(!claimed, Ordering::Relaxed);
+        }
+        *store = marks_file::load(&root);
+        // The old root's dirt was just written, and the new root's marks came
+        // straight off disk — neither is owed a save.
+        state.dirty.store(false, Ordering::Relaxed);
+        *state.pending_reanchor.lock().unwrap() = files_with_marks(&store);
+    }
+    if claimed {
+        eprintln!(
+            "dreamd: another dreamd already owns {} — this window will not save marks",
+            root.display()
+        );
+    }
 
     // Retire the watcher on the old root before arming one on the new.
     {
@@ -633,7 +826,7 @@ fn adopt_root(app: &tauri::AppHandle, path: PathBuf) {
     // accept poll, so a rebind on the *same* path would find the old server
     // still listening, read that as another live dreamd, and stand down as a
     // secondary — silently losing MCP for the rest of the session.
-    if previous_root != root {
+    if moved {
         let mut slot = state.mcp_cancel.lock().unwrap();
         if let Some(old) = slot.take() {
             old.store(true, Ordering::Relaxed);
@@ -642,7 +835,7 @@ fn adopt_root(app: &tauri::AppHandle, path: PathBuf) {
         mcp::server::spawn(
             state.store.clone(),
             root.clone(),
-            notify::to_window(app.clone()),
+            marking_dirty(state.dirty.clone(), notify::to_window(app.clone())),
             cancel.clone(),
         );
         *slot = Some(cancel);
@@ -776,6 +969,48 @@ fn main() {
     }
     perf::mark("config_loaded");
 
+    // Marks come back before the walk, so the window has them the first time
+    // the frontend asks — `refreshStack` runs at boot and a badge painted from
+    // an empty store would have to be corrected. Nothing is re-anchored here;
+    // that is `get_highlights`'s job, per file, on first sight.
+    //
+    // `has_repo` guards it for the same reason it guards the watcher and the
+    // socket: with no repo the root is whatever the walk-up fell back to, and
+    // a marks file named after it would be claiming a repo that doesn't exist.
+    let marks_started = std::time::Instant::now();
+    // `mut` is only needed by the perf seeding below, which compiles out.
+    #[allow(unused_mut)]
+    let mut store = if has_repo {
+        marks_file::load(&repo_root)
+    } else {
+        Store::default()
+    };
+    perf::emit(
+        "d:marks_loaded",
+        marks_started.elapsed().as_secs_f64() * 1000.0,
+    );
+    perf::mark("marks_loaded");
+    let pending_reanchor = files_with_marks(&store);
+
+    // Persistence follows the same claim MCP does: the socket bind is the lock
+    // (`mcp::server`'s module doc), and this is a read of it. A second dreamd
+    // on the same repo keeps its marks in memory rather than racing the first
+    // one's writes, which would be last-write-wins over a whole file.
+    //
+    // The gap between this probe and the bind the socket thread performs in
+    // `.setup()` is real but narrow: two dreamds started on the same repo
+    // inside the same few milliseconds could both read "unclaimed". The cost
+    // is one save overwriting another's, not a corrupt file — `marks_file`
+    // writes a temp sibling and renames. Closing it properly means the bind
+    // itself reporting back, which is a change to `mcp::server`'s interface.
+    let persists = has_repo && !cli::repo_is_claimed(&repo_root);
+    if has_repo && !persists {
+        eprintln!(
+            "dreamd: another dreamd already owns {} — this window will not save marks",
+            repo_root.display()
+        );
+    }
+
     // `dreamd file.md` is a Preview-style "open this one document" gesture: the
     // document is the only thing on screen, the sidebar starts collapsed, and
     // the repo walk has no business on the critical path. Anything else — a
@@ -820,9 +1055,6 @@ fn main() {
 
     let theme_path = cfg.theme_css.clone();
 
-    // `mut` is only needed by the seeding call below, which compiles out.
-    #[allow(unused_mut)]
-    let mut store = Store::default();
     #[cfg(feature = "perf")]
     seed_highlights(&mut store, &initial);
 
@@ -832,6 +1064,7 @@ fn main() {
     // claiming a repo that does not exist.
     let mcp_cancel = has_repo.then(|| Arc::new(AtomicBool::new(false)));
     let store = Arc::new(Mutex::new(store));
+    let dirty = Arc::new(AtomicBool::new(false));
     let state = AppState {
         repo_root: RwLock::new(repo_root.clone()),
         has_repo: AtomicBool::new(has_repo),
@@ -846,6 +1079,9 @@ fn main() {
         // lands, so this is the status quo for the handful of statements in
         // between.
         appearance: AtomicU8::new(1),
+        persists: AtomicBool::new(persists),
+        dirty: dirty.clone(),
+        pending_reanchor: Mutex::new(pending_reanchor),
     };
 
     tauri::Builder::default()
@@ -947,10 +1183,23 @@ fn main() {
                 mcp::server::spawn(
                     store.clone(),
                     repo_root.clone(),
-                    notify::to_window(app.handle().clone()),
+                    marking_dirty(dirty.clone(), notify::to_window(app.handle().clone())),
                     cancel,
                 );
             }
+            // The debounce thread. It reads the root and the claim through the
+            // handle on every tick rather than capturing them, because
+            // File -> Open moves both — a window launched with no repo at all
+            // starts as no writer and becomes one — and `adopt_root` has
+            // already flushed and cleared the flag by the time the next tick
+            // sees the new root. Unconditional for that reason; a tick that
+            // owns nothing is one relaxed load. No cancel token: the process
+            // exiting is its only exit condition.
+            let handle = app.handle().clone();
+            std::thread::spawn(move || loop {
+                std::thread::sleep(SAVE_DEBOUNCE);
+                flush_marks(&handle);
+            });
             Ok(())
         })
         .menu(dreamd::menu::build)
@@ -959,6 +1208,20 @@ fn main() {
             dreamd::menu::OPEN_FILE => open_target(app, true),
             _ => {}
         })
-        .run(tauri::generate_context!())
-        .expect("error while running dreamd");
+        // `build` + `run` rather than `run` alone, for the one thing the short
+        // form cannot do: a last flush on the way out. Quitting inside the
+        // debounce window would otherwise lose the annotation the user typed
+        // just before Cmd+Q — the most likely mark in the store to matter.
+        // Both events, because `ExitRequested` can be cancelled by a listener
+        // that doesn't exist yet, and a second flush costs one atomic read.
+        .build(tauri::generate_context!())
+        .expect("error while building dreamd")
+        .run(|app, event| {
+            if matches!(
+                event,
+                tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
+            ) {
+                flush_marks(app);
+            }
+        });
 }
