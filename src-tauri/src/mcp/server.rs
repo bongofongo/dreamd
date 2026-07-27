@@ -282,9 +282,19 @@ fn tools_call(
 
 /// What the window has to repaint after a tool ran, if anything.
 ///
-/// Only the two write tools produce an event, and a failed call produces none —
+/// Only the two write tools produce an event, and a failed call produces none.
 /// `tools::call` reports a refusal as `isError: true` inside a *successful*
-/// result, so the flag is the only honest signal here.
+/// JSON-RPC result, so that flag — not an `Err` — is what "the call failed"
+/// looks like from here.
+///
+/// The two arms lean on it differently, and it is worth knowing which. For
+/// `mark_passage` there is a second, independent gate: a refused call has no
+/// `structuredContent.id` to read, so it would fall out anyway. For
+/// `resolve_highlight` the `isError` check is the *only* thing standing between
+/// a refusal and a phantom repaint — the id comes from the caller's arguments,
+/// which are just as present on a call that failed. An asymmetry like that is
+/// how a later edit removes a check that looked redundant on the arm the author
+/// happened to be reading, so both arms are pinned by their own test.
 fn change_after(store: &Store, call: &tools::ToolCall, result: &Value) -> Option<MarksChanged> {
     if result["isError"].as_bool().unwrap_or(false) {
         return None;
@@ -429,9 +439,13 @@ mod tests {
 
     #[test]
     fn a_refused_write_emits_nothing() {
-        // `mark_passage` outside the root is refused inside a *successful*
-        // JSON-RPC result, so `isError` is the only thing standing between a
-        // rejected call and a phantom repaint.
+        // A containment refusal arrives as `isError: true` inside a
+        // *successful* JSON-RPC result, so nothing upstream of here filters it.
+        //
+        // The `mark_passage` half of this is double-gated — no id in the
+        // result either — which means it alone would stay green with the
+        // `isError` check deleted. `resolving_a_refused_call_emits_nothing`
+        // below is the half with teeth; keep both.
         let (store, _) = store_with_a_question();
         let (notify, log) = notify::recording();
         let out = respond(
@@ -447,6 +461,38 @@ mod tests {
         .expect("a result envelope, not a protocol error");
         assert_eq!(out["isError"], true);
         assert!(log.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn resolving_a_refused_call_emits_nothing() {
+        // The arm where `isError` is load-bearing on its own: the id comes
+        // from the caller's *arguments*, which are just as readable on a call
+        // that failed as on one that worked. Drop the flag check and this
+        // pushes a repaint for a mark that was never resolved.
+        //
+        // A real mark, unlike `resolving_an_unknown_id_emits_nothing` below —
+        // so `store.get` would succeed and the event would even name the right
+        // file. The only thing making it wrong is that the call was refused.
+        let (store, id) = store_with_a_question();
+        let (notify, log) = notify::recording();
+        // Refused for a reason unrelated to the id: the arguments carry a key
+        // the schema does not allow.
+        let out = respond(
+            &store,
+            Path::new("/repo"),
+            &notify,
+            &request(
+                "tools/call",
+                json!({"name": "resolve_highlight",
+                       "arguments": {"id": id, "note": 42}}),
+            ),
+        )
+        .expect("a result envelope, not a protocol error");
+        assert_eq!(out["isError"], true, "the call must actually have failed");
+        assert!(
+            log.lock().unwrap().is_empty(),
+            "a refused resolve must not repaint the window"
+        );
     }
 
     #[test]

@@ -238,19 +238,47 @@ fn main() {
 
     // Security-shaped, over the real transport: `mark_passage` must refuse a
     // path outside the root even when the socket itself is reachable.
+    //
+    // **Every target here has to exist, and the quote has to be in it.**
+    // `mark_passage` refuses for three different reasons — the path will not
+    // canonicalise, the path is outside the root, the quote is not in the file
+    // — and only the middle one is containment. A target that does not exist,
+    // or a quote that is not in it, produces a refusal that survives deleting
+    // `guard::inside_root` outright: green, and meaningless. An earlier version
+    // of this loop was exactly that, twice over.
+    const SECRET: &str = "the secret line\n";
+    let outside = root.join("outside");
+    std::fs::create_dir_all(&outside).expect("outside dir");
+    std::fs::write(outside.join("secret.md"), SECRET).expect("outside file");
+    // A sibling whose path shares the root's prefix textually — `/w/notes` vs
+    // `/w/notes-private` — which is why `inside_root` compares components.
+    let sibling = root.join("repo-private");
+    std::fs::create_dir_all(&sibling).expect("sibling dir");
+    std::fs::write(sibling.join("x.md"), SECRET).expect("sibling file");
+
     for (what, file) in [
-        ("an absolute path outside the root", "/etc/passwd"),
-        ("a dot-dot escape", "../../etc/passwd"),
+        (
+            "an absolute path outside the root",
+            outside.join("secret.md").to_string_lossy().into_owned(),
+        ),
+        ("a dot-dot escape", "../outside/secret.md".to_string()),
         (
             "a sibling sharing the root's prefix",
-            "../repo-private/x.md",
+            "../repo-private/x.md".to_string(),
         ),
     ] {
         let out = call(
             "mark_passage",
-            json!({"file": file, "quote": "x", "note": "n"}),
+            json!({"file": file, "quote": SECRET.trim(), "note": "n"}),
         );
         checks.ok(&format!("mark_passage refuses {what}"), errored(&out));
+        // Not just "it refused" — refused *for containment*. Without this the
+        // check passes on "no such file" and on "that quote is not in there",
+        // neither of which says anything about the guard.
+        checks.ok(
+            &format!("and refuses {what} on containment, not on some other ground"),
+            text_of(&out).contains("outside the repo root"),
+        );
         // The refusal echoes back what the caller asked for, which is fine —
         // what must never appear is dreamd's own absolute path, the same leak
         // `paths_leaving_dreamd_are_repo_relative` guards on the happy path.
