@@ -422,28 +422,32 @@ function interceptLinks() {
     if (/^[a-z]+:\/\//i.test(href) || href.startsWith("mailto:")) {
       a.onclick = (e) => { e.preventDefault(); invoke("open_external", { url: href }); };
     } else if (href.startsWith("#")) {
-      a.onclick = (e) => {
-        e.preventDefault();
-        // Headings are the only things inside #content carrying an id, so
-        // scanning them beats `querySelector(href)` twice over. A slug like
-        // `1-intro` (from `## 1. Intro`) is a valid *id* but an invalid CSS
-        // *id selector*, and `querySelector("#1-intro")` throws rather than
-        // returning null; and scoping to #content stops a document's own
-        // `#content` or `#tree` link resolving to the app's chrome.
-        let id = href.slice(1);
-        try { id = decodeURIComponent(id); } catch (_) {}
-        const t = [...contentEl.querySelectorAll("[id]")].find((el) => el.id === id);
-        if (t) t.scrollIntoView();
-      };
+      a.onclick = (e) => { e.preventDefault(); scrollToFragment(href.slice(1)); };
     } else {
       // relative path -> only navigate to markdown inside the repo; other
       // relative targets are dropped (never handed to the OS opener).
       a.onclick = (e) => {
         e.preventDefault();
         const base = currentFile.replace(/[^\/]*$/, "");
-        const target = normalizePath(base + href.split("#")[0]);
-        if (/\.(md|markdown|mdown|mkd)$/i.test(target)) openFile(target);
-        else toast("Ignored non-markdown local link");
+        // Split on the *first* `#` only: everything after it is the fragment,
+        // even if it contains further `#`s.
+        const cut = href.indexOf("#");
+        const rel = cut === -1 ? href : href.slice(0, cut);
+        const frag = cut === -1 ? "" : href.slice(cut + 1);
+        const target = normalizePath(base + rel);
+        if (!/\.(md|markdown|mdown|mkd)$/i.test(target)) {
+          toast("Ignored non-markdown local link");
+        } else if (!insideRepo(target)) {
+          // Enough `../` segments resolve outside the root; images have always
+          // refused that and links now do too.
+          toast("Ignored link outside the repo");
+        } else if (frag) {
+          // Cross-file section link. `renderCurrent` sets scrollTop last, so
+          // awaiting the open is what makes this land after the reset.
+          openFile(target).then(() => scrollToFragment(frag), () => {});
+        } else {
+          openFile(target);
+        }
       };
     }
   });
@@ -454,10 +458,40 @@ function interceptLinks() {
       const base = currentFile.replace(/[^\/]*$/, "");
       const abs = normalizePath(base + src);
       // Only load local images that live inside the repo root.
-      if (repoRoot && abs.startsWith(repoRoot)) img.src = "file://" + abs;
+      if (insideRepo(abs)) img.src = "file://" + abs;
       else img.removeAttribute("src");
     }
   });
+}
+
+/// Is this already-normalized absolute path inside the open repo root?
+///
+/// A bare `startsWith(repoRoot)` is *not* containment: with a root of
+/// `/w/notes` it also accepts `/w/notes-private/secret.md`, because the check
+/// never reaches a path separator. The boundary has to be the separator, so
+/// the test is "equal to the root, or under root + `/`". With no repo open
+/// nothing is inside, which is what the image handler has always done.
+function insideRepo(abs) {
+  if (!repoRoot) return false;
+  const root = repoRoot.replace(/\/+$/, "");
+  return abs === root || abs.startsWith(root + "/");
+}
+
+/// Scroll to an element by id within #content, returning whether it was found.
+///
+/// Shared by same-document `#anchor` links and the fragment half of a
+/// cross-file `other.md#anchor` link. Headings are the only things inside
+/// #content carrying an id, so scanning them beats `querySelector("#" + id)`
+/// twice over: a slug like `1-intro` (from `## 1. Intro`) is a valid *id* but
+/// an invalid CSS *id selector*, and `querySelector("#1-intro")` throws rather
+/// than returning null. Scoping to #content also stops a document's own
+/// `#content` or `#tree` link resolving to the app's chrome.
+function scrollToFragment(frag) {
+  let id = frag;
+  try { id = decodeURIComponent(id); } catch (_) {}
+  const t = [...contentEl.querySelectorAll("[id]")].find((el) => el.id === id);
+  if (t) t.scrollIntoView();
+  return !!t;
 }
 
 function normalizePath(p) {

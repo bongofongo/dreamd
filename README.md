@@ -109,6 +109,11 @@ See `perf/README.md` for what each tier measures and how much to trust it.
   the file while it is open, so a `:w` in Neovim updates it with the document.
   In-document `[link](#a-heading)` links work too — headings carry GitHub-style
   slug ids.
+- **Links:** a relative `[link](notes/other.md)` opens that file in place, and
+  `[link](notes/other.md#a-heading)` opens it *and* jumps to the section. Local
+  links that resolve outside the repo root, or to something that isn't markdown,
+  are ignored rather than handed to the OS. `http(s)` and `mailto:` links open
+  in your browser or mail client.
 - **Highlight → annotate:** select text in the preview, press the highlight key,
   type a question/comment, "Add to stack".
 - **Send:** press the send key (or the toolbar **Send ▸**) to push the whole
