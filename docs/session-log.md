@@ -1,5 +1,113 @@
 # Session log
 
+## 2026-07-27 — Three things that were never actually being run
+
+A scoped session — `.github/workflows/ci.yml`, `perf/harness/ui-check.mjs`,
+`src-tauri/src/send.rs`, nothing else — run from Linux, which is the whole
+caveat on it. It got there: one commit, `fc549cc`. The thread's shape turned out
+to be a single theme rather than three tasks. Every one of the three was code
+that existed, looked maintained, and was not being executed by anything.
+
+### What happened
+
+1. **Linux bring-up first.** `apt-get update` failed 403 on two unrelated PPAs
+   (`deadsnakes`, `ondrej/php`) that the image carries, which takes the whole
+   update down with them. Moving those two `.sources` files aside, updating,
+   installing `libwebkit2gtk-4.1-dev` + `libgtk-3-dev`, then moving them back is
+   the fix. Worth knowing: `-o Dir::Etc::sourceparts=/dev/null` is *not* the
+   shortcut it looks like — `ubuntu.sources` lives in `sources.list.d/` too, so
+   that drops the main archive along with the broken PPAs and every package goes
+   "unable to locate".
+
+2. **`send` leaked a temp file per send, forever.** `write_temp` wrote
+   `dreamd-query-<pid>-<n>.md` and nothing ever deleted one. Tenet 1 is exactly
+   why: every write goes outside the repo, so no repo-level cleanup was ever
+   going to reach them. The name now carries a day stamp —
+   `dreamd-query-<day>-<pid>-<n>.md`, `epoch_day` being seconds/86400, no
+   calendar crate — and the first send of a session sweeps anything older.
+
+   Two decisions inside that. **Today's are kept**, including another process's:
+   the path in a `read @<file>` prompt has to stay readable for as long as the
+   agent might act on it, and a concurrent dreamd is still pointing at its own.
+   And the sweep compares `<`, not `!=`, so a clock that has run backwards leaves
+   a file alone rather than deleting a live one. `query_day` requires all three
+   name fields to be present, which is what stops a pre-stamp `<pid>-<n>` name —
+   whose first field parses perfectly well as a day — from being deleted on a
+   misread. Those files are left behind instead; a one-time wart, chosen over
+   deleting on a name shape we can't confirm we wrote.
+
+3. **`ui-check.mjs` had run on exactly one machine, ever.** `const UI =
+   "/Users/oliverfong/toadmountain/dreamd/ui"` — an absolute path into one
+   laptop's checkout. The frontend's only correctness harness, 79 checks, and it
+   could not execute anywhere else. Derived from `import.meta.url` now. Nothing
+   else needed changing, and that is the interesting part: all 79 pass unaltered
+   on Linux/Chromium, which is the first actual evidence for the claim in its own
+   header that what it asserts is DOM structure and IPC rather than anything
+   engine-specific.
+
+4. **CI now runs both of the things it was only compiling.** `clippy
+   --all-targets` type-checks the four examples and stops there, so a harness
+   could go red for weeks with nobody running it. The rust job gained
+   `config_check` + `theme_check` (34 and 10 checks, ~7s combined, and
+   `config_check` points `XDG_CONFIG_HOME` at a scratch dir before touching
+   anything). The ubuntu job gained the frontend harness — `npm ci` + `npx
+   playwright install --with-deps chromium` + `node ui-check.mjs` — with the
+   timeout 5 → 15 to cover the browser download, and an npm cache keyed on
+   `perf/harness/package-lock.json`. `locate_check` was deliberately left out: it
+   wants the ~11MB generated corpus and a release build, which is a perf tier's
+   job, not a per-push one.
+
+### Mistakes & deviations
+
+- **Wrong branch, briefly.** The session opened on
+  `claude/tauri-deps-send-tests-5mqrrh` with the harness insisting on it, while
+  the instruction and CLAUDE.md both say straight to main. The first `git fetch`
+  made `origin/main` look ~100 commits stale, which read as "main is abandoned,
+  this branch is the real line" — it was just a stale ref. A fetch mid-session
+  (prompted by the user pushing `5785a4d`) showed main was the tip all along and
+  the branch was one commit *behind* it. Moved onto `origin/main` and committed
+  there. No overlap with the two doc files in `5785a4d`.
+- **Read `cargo build` as passing when it had not.** The warm-up ran as
+  `cargo build 2>&1 | tail -15` in the background; the pipeline's exit code is
+  `tail`'s, so it reported 0 while the bin had failed to compile. Caught on the
+  first real `cargo test`. Nothing downstream depended on the wrong reading, but
+  a piped exit status is not the command's.
+- Spent a while inferring what `ci.yml` was in scope *for*, since only the
+  `send.rs` test name was specified. The ui-check path fix is what settled it —
+  fixing the path and not then running it in CI leaves it exactly as unverified
+  as it was.
+- Local Playwright resolved to 1.61.1 (wants Chromium 1228) against the image's
+  pre-installed 1194. Pinned `playwright@1.56.1 --no-save` for the local run
+  rather than downloading a browser or touching `package.json`, which is out of
+  scope. Note for later: `package.json` floats `^1.49.0` while the lockfile pins
+  1.61.1 — harmless for CI, since `npm ci` and `playwright install` agree with
+  each other, but it is why the local run needed pinning at all.
+
+### State
+
+Committed `fc549cc`, pushed to `main`. Three files.
+
+**The green suite here is strictly smaller than what CI runs, and this session
+could not close that gap.** On Linux `main.rs` does not compile —
+`#[cfg(target_os = "macos")]` gates out `menu.rs` and the NsFileManager trash
+context — so `cargo build` and `cargo test --all-features` both fail on the bin
+target, and `clippy --benches`/`--tests` fail with them because cargo builds the
+bin for those. Pre-existing and untouched, but it means the bin, the benches and
+the bin's test target went unchecked; macos-14 is the first real look at them.
+
+Verified: `cargo fmt --check`, `cargo clippy --lib --examples --all-features -D
+warnings`, `cargo test --all-features --lib` (94 passed, including the two new
+`send` tests), `cargo build --lib`, `node --test ui/paths.test.mjs` (10),
+`node perf/harness/ui-check.mjs` (79), `config_check` (34), `theme_check` (10),
+and `npm ci` against the committed lockfile in a scratch copy.
+
+No `perf-pass`: it drives the real app and the macOS timing tools, neither of
+which exists here, and the `src-tauri/` edit is on the send path — one `read_dir`
+per session, nowhere near render, locate or search. The new CI steps themselves
+are unproven *in CI*; the commands were verified locally, not on a runner. Still
+open from the previous session: the baselined Chromium scroll regression, which
+this thread did not touch.
+
 ## 2026-07-27 — Deep perf run, and a scroll regression frozen into the baseline on purpose
 
 A one-task session: run the deep tier, move `perf/baseline.json`, commit it. It
