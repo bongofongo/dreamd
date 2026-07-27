@@ -21,6 +21,7 @@ pub mod perf;
 pub mod search;
 pub mod send;
 pub mod theme;
+pub mod untrusted;
 pub mod watcher;
 
 use std::path::{Path, PathBuf};
