@@ -227,6 +227,27 @@ causes were wrong.
 
 ## Recent updates
 
+- **2026-07-27** — **You can now search inside the document you're reading, and one CSS
+  rule turned out to be quietly taxing every page load.** Pressing `/` opens a search bar
+  at the foot of the reading pane; matches light up as you type, `n` and `N` step through
+  them, and `Esc` puts the highlight out the way vim does without forgetting what you
+  searched for. It searches the document *as you see it*, not the raw markdown behind it —
+  so a phrase running through a bit of **bold** is found normally, and the markdown
+  punctuation itself never matches. This is one file at a time; searching every file in
+  the repo by content is still not built.
+  The interesting part was the cost. Matches are drawn using a browser feature that
+  colours text without touching the page's structure — chosen deliberately, because the
+  obvious alternative (wrapping each match in a tag) can split one of the reader's own
+  highlights in two and corrupt it invisibly. But simply *declaring* the rule that gives
+  those matches a colour made the browser do extra work over every word in the document
+  on every render — a **27% slowdown**, on documents where nobody had ever searched for
+  anything. Measured, isolated to those two lines, and fixed by not installing them until
+  the first time you press `/`. It is a good reminder that "I only added a style rule" is
+  not the same as "I added nothing".
+  The reading-progress indicator added yesterday — the percentage in the top bar and the
+  hairline along the bottom — was **removed** at the author's request. No fault found; it
+  simply wasn't wanted.
+
 - **2026-07-27** — **The first review pass over the overnight batch, and it found what an
   untested batch was always going to hide.** Distraction-free view mode — the one that
   hides all the app's furniture — was showing a *blank window*. The cause is a single

@@ -1,5 +1,118 @@
 # Session log
 
+## 2026-07-27 — reading progress cut, `/` content search built, and a CSS rule that cost 27% by existing
+
+The reading-position indicator came out at the author's request, and
+`docs/plans/vim-style-content-search.md` was built as designed. Both landed. The
+session's one real finding was not in either: declaring a `::highlight()` rule
+costs a large, measurable amount on every render whether or not anything is ever
+highlighted.
+
+### What happened
+
+1. **Removed the reading progress indicator** (`5e2cad1`, one day old).
+   `#progress-pct`, `#progress-rail`, `#progress-fill`, `measureProgress` and its
+   four call sites, the passive scroll listener and the `ResizeObserver` in
+   `wireUi`, the print hide-list entry, the `body.view-mode` comment explaining
+   why the rail stayed, the harness's "view mode keeps the progress rail" check,
+   and the README bullet. `docs/plans/reading-progress-indicator.md` and the idea
+   log were left as history.
+
+2. **Built `/` content search**, following the plan's recommendations rather than
+   the idea file's:
+
+   - **Haystack is the flattened *rendered* text**, not the markdown source. The
+     plan had already overturned that decision and the code confirms why: the
+     source is never resident in the frontend, and `scanTextNodes` +
+     `nodeIndexAt` — built for `applyHighlights` — already do the whole
+     offset→DOM job. `te**s**t` matches the way the reader sees it; `](` matches
+     nothing. Index built lazily on first search, cached per render.
+   - **Matches painted with the CSS Custom Highlight API**, zero DOM mutation.
+     This is the requirement "search must not corrupt highlights" satisfied by
+     construction — a `<mark>` wrap of a hit straddling an existing `mark.hl`
+     takes `wrapRange`'s `extractContents` fallback and leaves two elements
+     sharing one `data-id`, which nothing repairs. No DOM-wrap fallback on old
+     WebKit either: the bar counts and steps unpainted, with a one-time toast.
+   - **`#find-bar` docks in `#main-wrap` after `#content-scroll`**, shrinking the
+     scroller instead of covering the last line. Absent from the view-mode hide
+     list (it belongs to the reading pane) and from the overlay guard
+     (`isEditable` already does that work, which is what makes typing a literal
+     `/` work with no new code); hidden in print, paint neutralised on paper.
+   - Smart case, `.*` regex toggle, `FIND_MAX_HITS = 2000`, 60ms debounce,
+     incremental search from the current scroll position via a **binary** search
+     over range rects, invalid regex flagged inline rather than toasted.
+   - `renderCurrent` calls `invalidateFind()` before the `innerHTML` write and
+     re-runs the scan after — the search equivalent of `reanchor`, without which
+     a `:w` under an open bar strands dead ranges.
+   - Keys `/`, `n`, `Shift+N` through all five places a field name has to exist:
+     `config.rs` (fields + defaults), `KEY_ACTIONS`, `wireKeys`, both
+     `ui-check.mjs` `KEYMAP` literals plus the third in the nav page and the
+     `rows === 21` → `24` assertion, and `fixtures.mjs`. Plus README's keybind
+     table and config sample. No Rust *logic* changed; `search.rs`, `nucleo` and
+     the `SearchIndex` are untouched and cross-file content search stays unbuilt.
+
+3. **Escape became `:nohlsearch`** on a follow-up request. It already closed an
+   open bar; now, with the bar closed and matches still lit (the state `Enter`
+   leaves), it puts the highlight out and claims the key, and only falls through
+   to leaving view mode when nothing is painted. Non-destructive: the pattern and
+   match set survive, so `n`/`N` step on and relight. Tracked by a `findLit` flag
+   set in `paintFind` and cleared in `clearFindPaint`, so it is false on a webview
+   with no Custom Highlight API and Escape never claims a key for an invisible
+   highlight.
+
+### Mistakes & deviations
+
+- **The quick perf tier was unusable, and the first read of it was nearly wrong.**
+  It flagged sixteen rows. An A/B against a stashed tree showed the
+  `chromium.scroll` rows flagging on unmodified code too, and three consecutive
+  runs of the *same* tree read +30%, +376% and +48% on
+  `scroll…renderer.raster_ms`. Relaying that as a regression would have been
+  false; dismissing all of it would have missed the real one below.
+
+- **`::highlight()` rules cost 27% on every render merely by being declared.**
+  `chromium.render.mixed-2m.forced_layout_ms` was the one row that reproduced.
+  Isolated by running `scenarios/render.mjs --size 2m` directly, three reps per
+  arm: 291±5ms without the change, 369±14ms with it, and 295±3ms with the change
+  in place but those two rules deleted — so the cost was theirs alone, with no
+  highlight ever registered. Chromium resolves highlight styles across every text
+  node once such a rule exists. Fixed by moving them into an empty
+  `<style id="find-css">` that `installFindCss()` fills on the first `/`: back to
+  294±5ms, and a reader who never searches pays nothing. A harness assertion now
+  pins the invariant in both directions so nobody folds the rules back into the
+  sheet. Chromium harness, relative signal only.
+
+- The plan's §6 reasoning about `/` versus the pending-mark state machine was
+  already stale — `587094e` cut `consumeMarkKey` and `pendingMark` the day before,
+  so `/`, `n` and `N` are ordinary single combos with nothing to interact with.
+  Noticed while checking, not discovered by breaking something.
+
+- One deviation from the plan, deliberate: the plan wrote the count as a bare
+  `3/17`. It now appends `+` when the scan hits `FIND_MAX_HITS`, because a
+  silently truncated count is a lie about how many matches there are.
+
+### State
+
+`cargo build` clean. `perf/harness/ui-check.mjs` **70 passed, 0 failed**, up from
+64 — sixteen new assertions covering the find bar, the paint, the lazy stylesheet,
+`n`/`Shift+N` with the bar closed, invalid regex, and both Escape behaviours.
+`cargo run --example config_check` 34/34. A throwaway Node harness drove
+`findCompile`/`findScan` straight out of `ui/app.js` (grepped, not copied) for
+eleven cases the browser harness cannot reach: smart case both ways, literal
+metacharacters, invalid patterns, zero-length matches terminating, `MAX_HITS`, and
+Unicode offset soundness (`İ`) — 11/11.
+
+Perf tiers **not run** at the author's request when wrapping up. The targeted
+render A/B above stands in for the render path; the scroll rows were not
+re-measured and the tier's `chromium.scroll` baseline drift noted in the first
+bullet is still outstanding.
+
+Left open, and it is the one thing this design cannot answer from here: **whether
+`CSS.highlights` paints in WKWebView at all.** The whole paint path is chosen for
+a structural guarantee, and it has only ever been seen in Chromium. Also unchecked
+by hand: that `/` reaches the handler on the author's keyboard layout, and that
+placing a highlight over a painted match still anchors. `MAX_HITS = 2000` and the
+60ms debounce remain guesses.
+
 ## 2026-07-27 — view mode showed a blank window, and the overnight batch's last plan landed
 
 Three things the overnight batch left in an odd state: view mode painted an

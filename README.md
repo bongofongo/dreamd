@@ -103,8 +103,8 @@ See `perf/README.md` for what each tier measures and how much to trust it.
 - **Open a file:** click it in the tree, or open the fuzzy palette.
 - **File options:** hover a file row and click `⋯` → **Copy path** or **Delete** (delete moves it to the OS Trash after a confirm).
 - **Collapse the tree:** press `Ctrl+B`, or click the `◀` arrow in the tree header; a floating `▶` at the left edge brings it back. The preview stays full-width.
-- **Top bar** (on the traffic-light row): the reading-position readout, then
-  contents, print, settings, highlighter, stack and send — all icons.
+- **Top bar** (on the traffic-light row): contents, print, settings,
+  highlighter, stack and send — all icons.
 - **Print / save as PDF:** the printer icon opens your OS print dialog over the
   open document; pick **Save as PDF** as the destination to export it. What
   prints is the document alone — no sidebar, no panels, no copy buttons, black
@@ -112,11 +112,17 @@ See `perf/README.md` for what each tier measures and how much to trust it.
   you had scrolled. Highlights print as plain text: they are session state, and
   the export is meant to be the document. dreamd chooses no filename and writes
   nothing itself; the save is entirely your dialog's.
-- **Reading position:** a percentage in the top bar and a hairline rail along
-  the bottom edge of the document, both tracking how far through the open file
-  you are. It is a bookmark cue, not a control — the rail is not clickable, and
-  neither shows anything for a document that already fits on screen. View mode
-  keeps the rail and drops the percentage with the rest of the top bar.
+- **Find in the document:** `/` opens a search bar at the foot of the reading
+  pane, and matches highlight as you type. `n` and `N` step forward and back —
+  including after `Enter`, which closes the bar but keeps the matches lit, the
+  way vim does. `Esc` in the bar closes it and clears the matches; `Esc` once
+  the bar is closed just puts the highlight out, like `:nohlsearch` — `n` steps
+  on from where you left off and lights it again. Lowercase searches ignore case, a
+  capital anywhere makes it exact (vim's `smartcase`), and the `.*` button
+  switches the pattern to a regular expression. It searches the document as
+  rendered, so a match spanning `**bold**` is found the way you see it, and
+  markdown syntax never matches. One file at a time — searching the whole repo's
+  contents is not built; the palette finds files by *name*.
 - **View mode:** `Ctrl+M` hides the top bar, the tree and both side panels at
   once, leaving just the document. `Ctrl+M` again or `Esc` brings the chrome
   back exactly as you left it — view mode never changes what you had collapsed
@@ -249,6 +255,9 @@ set_mark = "m"                           # bookmark this spot (one mark, global)
 jump_mark = "'"                          # ...and go back to it
 jump_back = "Ctrl+["                     # undo the last jump, wherever it came from
 jump_forward = "Ctrl+]"                  # ...and redo it
+find = "/"                               # find in the open document
+find_next = "n"                          # next match; works with the bar closed
+find_prev = "Shift+N"                    # ...previous; both wrap
 copy_stack = "Ctrl+C"
 settings = "Ctrl+,"
 save_annotation = "Ctrl+Y"

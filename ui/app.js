@@ -81,6 +81,9 @@ let keymap = {
   jump_bottom: "End",
   next_file: "]",
   prev_file: "[",
+  find: "/",
+  find_next: "n",
+  find_prev: "Shift+N",
   quick_highlight: true,
 };
 let pending = null; // { id, mark } while awaiting an annotation
@@ -427,13 +430,16 @@ async function renderCurrent({ preserveScroll, reanchor }) {
   if (!currentFile) return;
   const t0 = perf.now();
   const prevScroll = preserveScroll ? scrollEl.scrollTop : 0;
+  // Before the `innerHTML` write below, not after: every stored find `Range`
+  // points into the DOM about to be replaced.
+  invalidateFind();
   let html;
   try {
     html = await invoke("render_markdown", { path: currentFile });
   } catch (e) {
     contentEl.innerHTML = `<div class="empty">${escapeHtml(String(e))}</div>`;
     refreshOutline();
-    measureProgress();
+    if (findQuery) findRecompute(false);
     return;
   }
   perf.span("ipc_render_markdown", t0);
@@ -463,9 +469,11 @@ async function renderCurrent({ preserveScroll, reanchor }) {
   refreshOutline();
 
   scrollEl.scrollTop = prevScroll;
-  // Free, in practice: writing `scrollTop` on the line above already forced the
-  // layout this reads, so `progMax` costs nothing extra here.
-  measureProgress();
+  // The search equivalent of `reanchor`, and the reason `invalidateFind` above
+  // is not the whole story: without this, a `:w` in Neovim under an open find
+  // bar leaves stale paint and a dead `n`. `move: false` — the reader asked for
+  // a save, not a jump, so the pane stays where the line above put it.
+  if (findQuery) findRecompute(false);
   perf.span("render_total", t0);
 }
 
@@ -1302,81 +1310,309 @@ function forgetAllPositions() {
   mark = null;
 }
 
-// ---- reading progress ----------------------------------------------------
-// Answers "how far am I", and nothing else. Getting *around* the document is
-// the contents panel's job, so this is deliberately not clickable and not a
-// scrubber — a bookmark, not a navigation surface.
+// ---- find in document ----------------------------------------------------
+// Vim's `/`, `n` and `N` over the one document that is open. This is *not* the
+// v2 cross-file content index: nothing here touches `search.rs`, `nucleo` or
+// the `SearchIndex`. It is frontend-only, in-memory, and dies with the process.
 //
-// The two open questions, settled:
+// **The haystack is the flattened *rendered* text, not the markdown source.**
+// The source is not resident in the frontend and never has been — every
+// `read_source` happens Rust-side and `render_markdown` returns HTML — so
+// searching it would mean a new IPC surface or a per-keystroke round trip. The
+// rendered path costs nothing extra instead: `scanTextNodes` is already built
+// for `applyHighlights`, flattens the document once per render (~4ms at 2MB in
+// the Chromium harness, relative signal only), and `nodeIndexAt` already turns
+// an offset back into a `(node, offset)` pair. Per keystroke both approaches
+// run the same string scan. Searching what the reader can actually see also
+// drops two holes the source has: `[text](url)` syntax noise, and `te**s**t`,
+// where a match on screen is invisible in source.
 //
-// **Percentage, not "section 3 of 12".** A section counter measures structure,
-// and structure is what the outline panel already lists — and it misreports
-// position on the documents dreamd is actually pointed at, where one heading
-// owns eight screens and the next owns two lines. Distance through the text is
-// what a physical bookmark tells you, and scroll offset is exactly that. The
-// heading-aware variant is designed rather than dropped; see
-// `docs/plans/reading-progress-indicator.md`.
-//
-// **Both surfaces, split by what each one is.** The number sits in the titlebar
-// with the rest of the chrome and goes when view mode does; the 3px rail is
-// pinned to the foot of the reading pane and *stays*. Ctrl+M hides controls,
-// and a progress rail is not a control.
-//
-// Cost. The scroll path is built to touch no layout:
-//
-//   * the listener is `{ passive: true }` and only schedules;
-//   * work is coalesced into one `requestAnimationFrame`, so a trackpad burst
-//     that fires the event twenty times draws once;
-//   * `scrollHeight`/`clientHeight` are cached in `progMax` and refreshed from
-//     a `ResizeObserver`, whose callback runs *after* layout where the read is
-//     free — so the per-frame work is a single `scrollTop` read;
-//   * the fill moves by `transform: scaleX()` on its own layer, never `width`;
-//   * the readout is written only when the whole-number percent changes, into a
-//     fixed-width `contain: layout style` box, so a full-document scroll costs
-//     at most 100 text writes and none of them reflows anything outside it.
-//
-// None of that was measured — see the idea log. It is written for the case
-// where it cannot be.
-const railEl = $("progress-rail");
-const fillEl = $("progress-fill");
-const pctEl = $("progress-pct");
+// **Matches are painted, not wrapped.** See the `::highlight` comment in
+// index.html — DOM wrapping can split an existing `mark.hl` in two and durably
+// corrupt session state the reader cannot see. Nothing here mutates the DOM.
+const FIND_ALL = "dreamd-find";
+const FIND_CUR = "dreamd-find-current";
+// Bounds a pattern like `.` over a 2MB document. A guess, like the debounce.
+const FIND_MAX_HITS = 2000;
+// Below the threshold where typing feels laggy, and it collapses a burst of
+// keystrokes into one scan of what may be a megabyte. Also a guess — the first
+// thing to check on a real machine against the harness's large corpus.
+const FIND_DEBOUNCE_MS = 60;
 
-let progFrame = 0;    // pending rAF handle; 0 = idle
-let progMax = 0;      // cached scrollHeight - clientHeight
-let progShown = -1;   // last integer written; -1 means "nothing"
+const findBar = $("find-bar");
+const findInput = $("find-input");
+const findCountEl = $("find-count");
 
-function scheduleProgress() {
-  if (progFrame) return;
-  progFrame = requestAnimationFrame(drawProgress);
+let findIndex = null;    // { nodes, starts, text } | null — rebuilt per render
+let findQuery = "";
+let findRegex = false;   // the `.*` toggle; in memory only, see the plan's §9
+let findRanges = [];     // Range[], in document order
+let findCurrent = -1;
+let findCapped = false;  // the scan hit FIND_MAX_HITS
+let findTimer = null;
+let findWarned = false;  // the no-paint toast is shown once per session
+// Whether matches are painted *right now*, which is not the same as having a
+// match set: vim's `:nohlsearch` puts the highlight out while leaving `n` and
+// `N` armed to bring it back. Escape with the bar closed is that command here,
+// so this is what tells it whether there is anything to claim the key for.
+let findLit = false;
+
+// Safari 17.2 / WebKitGTK 2.44. Without it the bar still opens, still counts,
+// and n/N still step — the search works, it is just not painted. Deliberately
+// no DOM-wrapping fallback: that would trade a structural guarantee about the
+// app's core loop for a visual on old WebKit, which is the wrong way round.
+const findPaints = () =>
+  typeof Highlight === "function" && !!(window.CSS && CSS.highlights);
+
+/// Install the two `::highlight()` rules, once, on first use.
+///
+/// They are not in index.html's stylesheet because declaring them there is not
+/// free: a `::highlight()` rule in the sheet made Chromium resolve highlight
+/// styles across every text node, costing +27% on the forced layout after a 2MB
+/// render with nothing ever registered (291ms -> 369ms; deleting just these two
+/// rules restored it to 295ms — Chromium harness, relative signal only). A
+/// reader who never presses `/` should not pay that on every render. Same
+/// reasoning as the lazy `findIndex`, and the one-off style recalc this forces
+/// lands on the keystroke that was going to flatten the document anyway.
+///
+/// Both rules set a foreground as well as a background: this is the one place
+/// in the app whose colours cannot come from the palette's own light/dark
+/// blocks, so they have to be legible on either. `--find` / `--find-cur` let a
+/// palette say otherwise, and the fallbacks mean one that has never heard of
+/// them still renders (tenet 5).
+let findCssInstalled = false;
+function installFindCss() {
+  if (findCssInstalled) return;
+  findCssInstalled = true;
+  $("find-css").textContent =
+    "::highlight(dreamd-find) { background: var(--find, #3a5a8c); color: var(--find-text, #ffffff); }\n" +
+    "::highlight(dreamd-find-current) { background: var(--find-cur, var(--hl, #f2d16b)); color: var(--hl-text, #1a1a1a); }";
 }
 
-function drawProgress() {
-  progFrame = 0;
-  // Nothing open, or a document that already fits on screen: there is no "how
-  // far" to answer, so the indicator says nothing rather than claiming 100%.
-  if (!currentFile || progMax <= 0) {
-    railEl.classList.remove("on");
-    if (progShown !== -1) { progShown = -1; pctEl.textContent = ""; }
+function openFind() {
+  if (!currentFile) { toast("Nothing open to search"); return; }
+  installFindCss();
+  findBar.classList.add("open");
+  findInput.focus();
+  findInput.select();
+  if (!findPaints() && !findWarned) {
+    findWarned = true;
+    toast("This webview cannot paint matches — the count and next/previous still work");
+  }
+  // Re-run whatever is still in the box: vim keeps the last pattern, and
+  // re-opening on an empty count would read as the search having been lost.
+  if (findInput.value) { findQuery = findInput.value; findRecompute(true); }
+}
+
+/// Close the bar. `keep` is the Enter path — vim commits the search and leaves
+/// `n`/`N` live, so the match set and the paint survive. Escape does not.
+function closeFind({ keep } = {}) {
+  clearTimeout(findTimer); findTimer = null;
+  findBar.classList.remove("open");
+  // Focus has to leave the input or every bare-letter binding stays behind the
+  // `isEditable` guard and the reader's next `n` types an `n`.
+  findInput.blur();
+  if (keep) return;
+  findQuery = "";
+  findRanges = [];
+  findCurrent = -1;
+  findCapped = false;
+  clearFindPaint();
+  findCountEl.textContent = "";
+  findBar.classList.remove("invalid");
+}
+
+/// Everything gone, bar included. For the paths where the document itself is
+/// withdrawn — the watcher removing the open file, File → Open moving the root.
+function resetFind() {
+  findInput.value = "";
+  closeFind();
+}
+
+function clearFindPaint() {
+  findLit = false;
+  if (!findPaints()) return;
+  CSS.highlights.delete(FIND_ALL);
+  CSS.highlights.delete(FIND_CUR);
+}
+
+/// Drop everything that points into the DOM. Called at the top of
+/// `renderCurrent`, before the `innerHTML` write: a `Range` into a detached
+/// node is a live object that silently scrolls nowhere, so leaving one behind
+/// is a dead `n` rather than an error. `findCurrent` deliberately survives, so
+/// a re-render under an open bar can clamp back to roughly where it was.
+function invalidateFind() {
+  findIndex = null;
+  findRanges = [];
+  clearFindPaint();
+}
+
+/// One code path for the literal and regex cases. Escaping the literal into a
+/// `RegExp` rather than using `indexOf` + `toLowerCase()` is deliberate:
+/// case-folding both haystack and needle can change string *length* for some
+/// Unicode (`İ`), which silently corrupts every offset after it. The regex
+/// engine indexes the original string, so offsets are always sound.
+///
+/// Throws on a half-typed pattern — `(`, `[`, `*` — which is every other
+/// keystroke while a regex is being typed. Callers catch.
+function findCompile(q, regex) {
+  const src = regex ? q : q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  // Smart case: an all-lowercase pattern is case-insensitive, any uppercase
+  // makes it exact. Vim's `smartcase`, and the right default for a reader.
+  const flags = "g" + (/[A-Z]/.test(q) ? "" : "i");
+  return new RegExp(src, flags);
+}
+
+/// Every match as an `[start, end)` pair of offsets into the flattened text.
+function findScan(re, text) {
+  const out = [];
+  re.lastIndex = 0;
+  for (let m; (m = re.exec(text)); ) {
+    // `a*` and `(?:)` match empty and would spin here forever.
+    if (m[0].length === 0) { re.lastIndex++; continue; }
+    out.push([m.index, m.index + m[0].length]);
+    if (out.length >= FIND_MAX_HITS) break;
+  }
+  return out;
+}
+
+/// An offset span in the flattened text as a live `Range`. Unlike
+/// `locateInNodes` this does *not* skip spans that straddle a text-node
+/// boundary — that is the whole point, and the Custom Highlight API is what
+/// makes painting one safe.
+function findRange(idx, start, end) {
+  const i = nodeIndexAt(idx.starts, start);
+  const j = nodeIndexAt(idx.starts, end - 1);
+  const r = document.createRange();
+  r.setStart(idx.nodes[i], start - idx.starts[i]);
+  r.setEnd(idx.nodes[j], end - idx.starts[j]);
+  return r;
+}
+
+/// Rebuild the match set for `findQuery` against the DOM as it stands now.
+///
+/// `move` separates the two callers. Typing (and toggling `.*`) is incremental
+/// search: re-pick the current match from where the reader is looking and
+/// scroll to it. A re-render under an open bar is not — the reader asked for
+/// nothing, so the index is rebuilt, the current match clamped, and the pane
+/// left exactly where `renderCurrent` put it.
+function findRecompute(move) {
+  const prev = findCurrent;
+  clearFindPaint();
+  findRanges = [];
+  findCurrent = -1;
+  findCapped = false;
+  findBar.classList.remove("invalid");
+  if (!findQuery) { findCountEl.textContent = ""; return; }
+
+  let re;
+  try {
+    re = findCompile(findQuery, findRegex);
+  } catch (_) {
+    // No toast: the reader is mid-keystroke and one per character is noise.
+    findBar.classList.add("invalid");
+    findCountEl.textContent = "bad pattern";
     return;
   }
-  railEl.classList.add("on");
-  // Clamped: rubber-band overscroll reports past both ends.
-  const frac = Math.min(1, Math.max(0, scrollEl.scrollTop / progMax));
-  fillEl.style.transform = `scaleX(${frac})`;
-  const pct = Math.round(frac * 100);
-  if (pct !== progShown) { progShown = pct; pctEl.textContent = `${pct}%`; }
+
+  // Lazily, so a session that never presses `/` pays nothing for the flatten.
+  if (!findIndex) findIndex = scanTextNodes(contentEl);
+  const spans = findScan(re, findIndex.text);
+  findCapped = spans.length >= FIND_MAX_HITS;
+  findRanges = spans.map(([a, b]) => findRange(findIndex, a, b));
+  if (!findRanges.length) { findCountEl.textContent = "0/0"; return; }
+
+  findCurrent = move
+    ? findFirstBelow()
+    : Math.min(Math.max(prev, 0), findRanges.length - 1);
+  paintFind();
+  if (move) scrollToMatch();
 }
 
-/// Re-measure the scrollable extent, then repaint. Call after anything that can
-/// change the document's height or the pane's; a stale `progMax` is the only
-/// way this can be wrong.
-function measureProgress() {
-  progMax = scrollEl.scrollHeight - scrollEl.clientHeight;
-  // Draw now rather than scheduling, so the new extent lands in the same frame
-  // as the content that changed it. Dropping any frame already queued keeps
-  // that from becoming two draws.
-  if (progFrame) { cancelAnimationFrame(progFrame); progFrame = 0; }
-  drawProgress();
+/// The first match at or after the top of the visible pane — vim's `incsearch`
+/// starting point — falling back to the first match in the document.
+///
+/// Binary, not linear: the ranges come out of a forward scan of the flattened
+/// text, so they are in document order and their vertical positions are
+/// monotonic. That turns up to `FIND_MAX_HITS` layout reads per keystroke into
+/// about eleven.
+function findFirstBelow() {
+  const top = scrollEl.getBoundingClientRect().top;
+  let lo = 0, hi = findRanges.length - 1, best = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (findRanges[mid].getBoundingClientRect().top >= top) { best = mid; hi = mid - 1; }
+    else lo = mid + 1;
+  }
+  return best < 0 ? 0 : best;
+}
+
+function paintFind() {
+  findCountEl.textContent =
+    `${findCurrent + 1}/${findRanges.length}${findCapped ? "+" : ""}`;
+  if (!findPaints()) return;
+  CSS.highlights.set(FIND_ALL, new Highlight(...findRanges));
+  CSS.highlights.set(FIND_CUR, new Highlight(findRanges[findCurrent]));
+  findLit = true;
+}
+
+/// Step to the next/previous match, wrapping — the same choice `stepFile` makes,
+/// and for the same reason: stopping at the end is indistinguishable from a
+/// dead key.
+function stepFind(d) {
+  if (!findQuery) {
+    toast(`No search — press ${displayCombo(keymap.find)} first`);
+    return;
+  }
+  if (!findRanges.length) { toast("No matches"); return; }
+  findCurrent = (findCurrent + d + findRanges.length) % findRanges.length;
+  paintFind();
+  scrollToMatch();
+}
+
+/// `#content-scroll` is the scroller, never the window. Instant, not smooth,
+/// matching `jumpTop`/`jumpBottom` — and because `n` held down should step
+/// rather than animate.
+function scrollToMatch() {
+  const r = findRanges[findCurrent];
+  if (!r) return;
+  const box = r.getBoundingClientRect();
+  // A zero-height rect is a match inside a `display: none` subtree: there is
+  // nowhere to scroll to, and moving would be a lie about where you are.
+  if (!box.height) return;
+  const host = scrollEl.getBoundingClientRect();
+  scrollEl.scrollTop += box.top - host.top - scrollEl.clientHeight / 3;
+}
+
+function wireFind() {
+  findInput.oninput = () => {
+    findQuery = findInput.value;
+    clearTimeout(findTimer);
+    findTimer = setTimeout(() => { findTimer = null; findRecompute(true); }, FIND_DEBOUNCE_MS);
+  };
+  findInput.onkeydown = (e) => {
+    // Bare and Shift only. `Ctrl+Enter` is `send_stack` and must not be
+    // shadowed here; Escape is left to the global handler, which knows the
+    // ordering against view mode.
+    if (e.key !== "Enter" || e.ctrlKey || e.metaKey || e.altKey) return;
+    e.preventDefault();
+    // Flush a pending debounce, so Enter acts on what is in the box rather than
+    // on the match set from 60ms ago.
+    if (findTimer) { clearTimeout(findTimer); findTimer = null; findRecompute(true); }
+    // Commit, vim-style: the bar goes, the match set and the paint stay, and
+    // `n`/`N` carry on from here.
+    if (e.shiftKey) stepFind(-1);
+    else closeFind({ keep: true });
+  };
+  $("find-regex").onclick = () => {
+    findRegex = !findRegex;
+    $("find-regex").setAttribute("aria-pressed", String(findRegex));
+    findRecompute(true);
+    findInput.focus();
+  };
+  $("find-next").onclick = () => stepFind(1);
+  $("find-prev").onclick = () => stepFind(-1);
+  $("find-close").onclick = () => closeFind();
 }
 
 // ---- contents / outline panel --------------------------------------------
@@ -1626,7 +1862,7 @@ function wireEvents() {
       contentEl.innerHTML = `<div class="empty">File removed.</div>`;
       staleRail.innerHTML = "";
       refreshOutline();
-      measureProgress();
+      resetFind();
     }
   });
   listen("theme-reloaded", () => loadTheme());
@@ -1639,6 +1875,10 @@ function wireEvents() {
   listen("repo-changed", async (e) => {
     try {
       forgetAllPositions();
+      // A pattern survives a file change (vim's behaviour, and `renderCurrent`
+      // re-runs it against the new document); it does not survive the repo
+      // being swapped out from under it.
+      resetFind();
       await loadTheme();
       await adoptRepoInfo();
       await loadTree();
@@ -1649,7 +1889,6 @@ function wireEvents() {
         contentEl.innerHTML = `<div class="empty">Select a markdown file from the tree, or open the search palette.</div>`;
         staleRail.innerHTML = "";
         refreshOutline();
-        measureProgress();
       }
     } catch (err) { console.error(err); }
   });
@@ -1684,22 +1923,6 @@ function wireUi() {
     const m = e.target.closest && e.target.closest("mark.hl");
     if (m && contentEl.contains(m)) { e.preventDefault(); openEditHighlight(Number(m.dataset.id)); }
   });
-
-  // Reading progress. Passive so it can never block the compositor, and the
-  // handler itself only sets a flag and asks for a frame.
-  scrollEl.addEventListener("scroll", scheduleProgress, { passive: true });
-  // Two sources of a stale `progMax`, one observer. `#content` changes height
-  // when a render lands, when an image finishes loading, and when the content
-  // width or font changes; `#content-scroll` changes height when the window
-  // does. A `ResizeObserver` callback runs after layout, so measuring there is
-  // free — and nothing `measureProgress` writes (a transform on an element
-  // outside both, text inside a fixed-width box outside both) can resize either
-  // observed element, so it cannot feed itself.
-  if (window.ResizeObserver) {
-    const ro = new ResizeObserver(measureProgress);
-    ro.observe(scrollEl);
-    ro.observe(contentEl);
-  }
 
   $("btn-print").onclick = printDocument;
   $("btn-outline").onclick = toggleOutline;
@@ -1748,6 +1971,7 @@ function wireUi() {
   $("confirm-overlay").onclick = (e) => { if (e.target.id === "confirm-overlay") closeConfirm(); };
   $("settings-overlay").onclick = (e) => { if (e.target.id === "settings-overlay") closeSettings(); };
 
+  wireFind();
   wireSettings();
 }
 
@@ -1765,11 +1989,26 @@ function wireKeys() {
       // titlebar and leaves nothing to click. It is the *last* claim on the
       // key though: if any overlay or the file menu is open, this Escape
       // closes that and view mode survives.
+      // `find-bar` is in the list but *not* in the overlay guard below: it is a
+      // focused `<input>`, so `isEditable` already keeps every bare-letter
+      // binding away from it — including `/` itself, which is what makes typing
+      // a literal slash into the pattern work with no new code. Being here is
+      // only what stops Escape-out-of-find also leaving view mode.
+      //
+      // `findLit` extends that to the state Enter leaves behind: the bar closed
+      // but the matches still painted. Escape there is vim's `:nohlsearch` —
+      // put the highlight out, keep the search — so it has to claim the key the
+      // same way an open panel does.
       const claimed = ["palette-overlay", "annot-overlay", "confirm-overlay",
-                       "settings-overlay", "file-menu"]
-        .some((id) => $(id).classList.contains("open"));
+                       "settings-overlay", "file-menu", "find-bar"]
+        .some((id) => $(id).classList.contains("open")) || findLit;
       closePalette();
       closeFileMenu();
+      if (findBar.classList.contains("open")) closeFind();
+      // `:nohlsearch`, not `:let @/ = ""`. The match set and the pattern
+      // survive, so `n` and `N` step on from here and light it back up — which
+      // is exactly what vim does, and what makes this Escape non-destructive.
+      else if (findLit) clearFindPaint();
       if ($("annot-overlay").classList.contains("open")) cancelAnnot();
       if ($("confirm-overlay").classList.contains("open")) closeConfirm();
       if ($("settings-overlay").classList.contains("open")) closeSettings();
@@ -1805,6 +2044,9 @@ function wireKeys() {
     if (matchCombo(e, keymap.jump_bottom)) { e.preventDefault(); jumpBottom(); return; }
     if (matchCombo(e, keymap.next_file)) { e.preventDefault(); stepFile(1); return; }
     if (matchCombo(e, keymap.prev_file)) { e.preventDefault(); stepFile(-1); return; }
+    if (matchCombo(e, keymap.find)) { e.preventDefault(); openFind(); return; }
+    if (matchCombo(e, keymap.find_next)) { e.preventDefault(); stepFind(1); return; }
+    if (matchCombo(e, keymap.find_prev)) { e.preventDefault(); stepFind(-1); return; }
     if (matchCombo(e, keymap.set_mark)) { e.preventDefault(); setMark(); return; }
     if (matchCombo(e, keymap.jump_mark)) { e.preventDefault(); jumpMark(); return; }
     // `Ctrl+[` and `Ctrl+]` deliberately echo bare `[` / `]` above: those step
@@ -1942,6 +2184,9 @@ const KEY_ACTIONS = [
   { id: "jump_bottom", label: "Jump to bottom" },
   { id: "next_file", label: "Next file", sub: "Move through the sidebar's order without touching the tree — wraps at the ends" },
   { id: "prev_file", label: "Previous file" },
+  { id: "find", label: "Find in document", sub: "Search the open file's text; Enter keeps the matches and closes the bar, Esc clears them" },
+  { id: "find_next", label: "Next match", sub: "Works with the bar closed, like vim's n" },
+  { id: "find_prev", label: "Previous match" },
   { id: "set_mark", label: "Set mark", sub: "Remembers this file and scroll position until the app quits — one mark, replaced each time" },
   { id: "jump_mark", label: "Jump to mark", sub: "Back to the mark, across files" },
   { id: "jump_back", label: "Jump back", sub: "The position before the last link, tree, palette or mark jump" },

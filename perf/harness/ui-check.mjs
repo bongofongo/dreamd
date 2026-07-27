@@ -49,7 +49,8 @@ await page.addInitScript(({ base, palettes }) => {
     highlight: "Ctrl+H", send_stack: "Ctrl+Enter", toggle_stack: "Ctrl+O",
     toggle_outline: "Ctrl+I", toggle_tree: "Ctrl+B", toggle_view: "Ctrl+M",
     jump_top: "Home", jump_bottom: "End", set_mark: "m", jump_mark: "'",
-            jump_back: "Ctrl+[", jump_forward: "Ctrl+]",
+    jump_back: "Ctrl+[", jump_forward: "Ctrl+]",
+    find: "/", find_next: "n", find_prev: "Shift+N",
     next_file: "]", prev_file: "[",
     copy_stack: "Ctrl+C", settings: "Ctrl+,",
     save_annotation: "Ctrl+Y",
@@ -179,7 +180,7 @@ check("Ctrl+, opens settings", await page.locator("#settings-overlay.open").isVi
 
 // --- keys tab ---
 const rows = await page.locator("#st-keys .st-row").count();
-check("every action gets a row", rows === 21, `got ${rows}`);
+check("every action gets a row", rows === 24, `got ${rows}`);
 check(
   "a repo-shadowed key is flagged",
   (await page.locator("#st-keys .shadowed").count()) === 1,
@@ -362,6 +363,7 @@ await solo.addInitScript(({ base }) => {
             toggle_outline: "Ctrl+I", toggle_tree: "Ctrl+B", toggle_view: "Ctrl+M",
             jump_top: "Home", jump_bottom: "End", set_mark: "m", jump_mark: "'",
             jump_back: "Ctrl+[", jump_forward: "Ctrl+]",
+            find: "/", find_next: "n", find_prev: "Shift+N",
             next_file: "]", prev_file: "[",
             copy_stack: "Ctrl+C", settings: "Ctrl+,",
             save_annotation: "Ctrl+Y",
@@ -438,6 +440,7 @@ await nav.addInitScript(({ base }) => {
             toggle_outline: "Ctrl+I", toggle_tree: "Ctrl+B", toggle_view: "Ctrl+M",
             jump_top: "Home", jump_bottom: "End", set_mark: "m", jump_mark: "'",
             jump_back: "Ctrl+[", jump_forward: "Ctrl+]",
+            find: "/", find_next: "n", find_prev: "Shift+N",
             next_file: "]", prev_file: "[",
             copy_stack: "Ctrl+C", settings: "Ctrl+,", save_annotation: "Ctrl+Y",
             quick_highlight: true,
@@ -474,11 +477,9 @@ const vm = await nav.evaluate(() => ({
   content: Math.round(document.getElementById("content").getBoundingClientRect().width),
   pane: Math.round(document.getElementById("content-scroll").getBoundingClientRect().width),
   titlebar: getComputedStyle(document.getElementById("titlebar")).display,
-  rail: getComputedStyle(document.getElementById("progress-rail")).display,
 }));
 check("view mode leaves the document at full width", vm.pane === 1280 && vm.content > 400, JSON.stringify(vm));
 check("view mode hides the titlebar", vm.titlebar === "none", vm.titlebar);
-check("view mode keeps the progress rail", vm.rail !== "none", vm.rail);
 
 // Highlighting has to survive the chrome going away — it is the product loop,
 // and view mode is where a reader spends the most time.
@@ -549,6 +550,81 @@ check("a new jump clears the forward trail", (await lastToast()) === "No later p
 for (let i = 0; i < 12; i++) { await nav.keyboard.press("Control+["); await beat(120); }
 check("an exhausted trail says so rather than going silent",
   (await lastToast()) === "No earlier position", await lastToast());
+
+// --- find in document ---
+// `deep` appears three times in the fixture body — the two link labels and the
+// `<h2>` — and smart case makes a lowercase pattern find all of them. Scrolled
+// to the top first, because incremental search picks the first match at or
+// after where the reader is looking.
+const findCount = () => nav.evaluate(() => document.getElementById("find-count").textContent);
+const findCss = () => nav.evaluate(() => document.getElementById("find-css").textContent.length);
+await nav.keyboard.press("Home");
+await beat(150);
+// Merely *declaring* the paint rules costs +27% on the forced layout after a 2MB
+// render, so a session that never searches must not carry them. See
+// `installFindCss` in app.js.
+check("the paint rules are absent until the feature is used", (await findCss()) === 0);
+await nav.keyboard.press("/");
+await beat(120);
+check("/ opens the find bar", await nav.locator("#find-bar.open").isVisible());
+check("and installs the paint rules with it", (await findCss()) > 0);
+check("and focuses its input",
+  await nav.evaluate(() => document.activeElement === document.getElementById("find-input")));
+await nav.fill("#find-input", "deep");
+await beat(250);
+check("it finds every match, case-insensitively", (await findCount()) === "1/3", await findCount());
+// The whole reason the Custom Highlight API was chosen over `<mark>` wrapping:
+// painting must not put a single node into the tree highlight anchoring reads.
+check("and paints them without touching the DOM",
+  await nav.evaluate(() =>
+    CSS.highlights.get("dreamd-find").size === 3 &&
+    document.querySelectorAll("#content mark").length === 0));
+
+await nav.keyboard.press("Enter");
+await beat(150);
+check("Enter closes the bar and keeps the matches live",
+  !(await nav.locator("#find-bar.open").isVisible()) && (await findCount()) === "1/3",
+  await findCount());
+await nav.keyboard.press("n");
+await beat(150);
+check("n steps with the bar closed", (await findCount()) === "2/3", await findCount());
+await nav.keyboard.press("Shift+N");
+await beat(150);
+check("Shift+N steps back", (await findCount()) === "1/3", await findCount());
+
+// vim's `:nohlsearch`. Enter leaves the bar closed with the matches still lit,
+// and Escape there has to put them out rather than fall through to view mode.
+const lit = () => nav.evaluate(() => !!CSS.highlights.get("dreamd-find"));
+check("Enter leaves the matches painted", await lit());
+await nav.keyboard.press("Escape");
+await beat(150);
+check("Esc with the bar closed unlights the matches", !(await lit()));
+check("and does not leak through to view mode",
+  !(await nav.evaluate(() => document.body.classList.contains("view-mode"))));
+// Non-destructive: the pattern and the match set survive, so stepping relights.
+await nav.keyboard.press("n");
+await beat(150);
+check("n after unlighting steps and relights", (await lit()) && (await findCount()) === "2/3",
+  await findCount());
+await nav.keyboard.press("Escape");
+await beat(150);
+
+await nav.keyboard.press("/");
+await beat(120);
+await nav.locator("#find-regex").click();
+await beat(200);
+await nav.fill("#find-input", "(");
+await beat(250);
+check("a half-typed regex is flagged, not thrown",
+  (await findCount()) === "bad pattern" &&
+  (await nav.locator("#find-bar.invalid").count()) === 1,
+  await findCount());
+await nav.keyboard.press("Escape");
+await beat(150);
+check("Esc closes find and clears the paint",
+  !(await nav.locator("#find-bar.open").isVisible()) &&
+  (await findCount()) === "" &&
+  (await nav.evaluate(() => !CSS.highlights.get("dreamd-find"))));
 
 await browser.close();
 console.log(results.join("\n"));

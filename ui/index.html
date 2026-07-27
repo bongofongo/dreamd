@@ -69,17 +69,6 @@
       }
       body.mac #titlebar { padding-left: 78px; } /* clear the traffic lights */
       #tb-actions { margin-left: auto; display: flex; gap: 6px; align-items: center; }
-      /* Reading position readout. A *fixed* width, not `min-width`: the digits
-         change as the pane scrolls, and a box that cannot resize is what stops
-         each of those writes reflowing the titlebar around it. `contain` says
-         the same thing to the engine outright. Tabular figures so the number
-         does not shimmer between frames. */
-      #progress-pct {
-        flex: 0 0 42px; width: 42px; text-align: right;
-        font-size: 12px; opacity: 0.55; font-variant-numeric: tabular-nums;
-        user-select: none; -webkit-user-select: none;
-        contain: layout style;
-      }
       #btn-stack { position: relative; }
       #btn-stack .badge {
         position: absolute; top: -6px; right: -6px; display: none;
@@ -200,31 +189,51 @@
       button.code-copy[data-copied] .ic-copy { display: none; }
       button.code-copy[data-copied] .ic-check { display: block; }
 
-      /* reading progress rail — the ambient half of the indicator.
-         `z-index: 10` puts it under both side panels (20), which are opaque and
-         full-height: the rail belongs to the reading pane, so a panel covering
-         its own strip of it is right. `pointer-events: none` because this is a
-         bookmark cue, not a scrubber — clicking it must do nothing at all.
-         The track is `--border`, the same hairline as every other divider. */
-      #progress-rail {
-        position: absolute; left: 0; right: 0; bottom: 0; height: 3px;
-        z-index: 10; pointer-events: none;
-        background: var(--border, #2e2940);
-        opacity: 0; transition: opacity 0.2s ease;
+      /* find bar — vim's `/`, docked at the foot of the reading pane.
+         A *sibling* of `#content-scroll` inside the flex column, not an
+         overlay: the scroller is `flex: 1`, so a block child after it shrinks
+         the pane rather than covering it, and the last line of the document is
+         never hidden behind the box you are typing into. Closed is
+         `display: none`, so it costs no layout until it is opened. */
+      #find-bar {
+        display: none; align-items: center; gap: 8px;
+        flex: 0 0 auto; padding: 6px 10px;
+        border-top: 1px solid var(--border, #2e2940);
+        background: var(--sidebar-bg, #100e17);
+        border-left: 3px solid transparent;
       }
-      #progress-rail.on { opacity: 1; }
-      /* `transform: scaleX`, never `width`: the compositor can do this one
-         without laying anything out, which is the whole reason the scroll path
-         is cheap. No transition on it — the fill must track the pane 1:1, and
-         an eased one would lag behind the text under the reader's eye.
-         `will-change` gives it its own layer up front so the first scroll of a
-         document does not pay for the promotion. */
-      #progress-fill {
-        height: 100%; width: 100%;
-        transform: scaleX(0); transform-origin: left center;
-        will-change: transform;
-        background: var(--accent, #a48cf5);
+      #find-bar.open { display: flex; }
+      /* An invalid regex is a state the reader is mid-keystroke in, so it gets
+         a colour and no dialog: `--stale` is already this app's "this does not
+         resolve" red. */
+      #find-bar.invalid { border-left-color: var(--stale, #ef6a7d); }
+      #find-bar .find-sigil {
+        font-family: var(--font-mono, ui-monospace, Menlo, monospace);
+        opacity: 0.55; user-select: none; -webkit-user-select: none;
       }
+      #find-input {
+        flex: 1; min-width: 0; font: inherit;
+        background: transparent; color: inherit; border: none; outline: none;
+      }
+      /* Tabular figures and a fixed width: `3/17` becomes `12/17` as you step,
+         and a box that resizes would shuffle the two buttons beside it. */
+      #find-count {
+        flex: 0 0 84px; text-align: right;
+        font-size: 12px; opacity: 0.55; font-variant-numeric: tabular-nums;
+        user-select: none; -webkit-user-select: none;
+        contain: layout style;
+      }
+      #find-regex {
+        font-family: var(--font-mono, ui-monospace, Menlo, monospace); font-size: 12px;
+        opacity: 0.6;
+      }
+      #find-regex[aria-pressed="true"] {
+        opacity: 1; background: var(--accent-dim, #2b2447); border-color: var(--accent, #a48cf5);
+      }
+
+      /* The `::highlight()` rules that paint matches are deliberately NOT here.
+         They are written into `#find-css` the first time the bar is opened —
+         see the comment on that element and `installFindCss` in app.js. */
 
       /* contents / outline panel — same visual language as #stack-panel, but
          anchored left so both can be open at once. */
@@ -329,11 +338,10 @@
          decides. Overlays (palette, settings, annotation) are `position: fixed`
          above all of this and stay usable in view mode.
 
-         `#progress-rail` is absent from the list on purpose. View mode hides the
-         app's *controls*; a 3px progress hairline is not a control, it is the
-         reading aid a reader turned the chrome off to be alone with. So view
-         mode keeps the ambient rail and loses only the `#progress-pct` readout,
-         which goes with the titlebar it sits in. */
+         `#find-bar` is absent from the list on purpose. It belongs to the
+         reading pane rather than to the chrome, and hiding it would strand a
+         reader who just pressed `/` with no titlebar to click and no bar to
+         type into. */
       body.view-mode #titlebar,
       body.view-mode #sidebar,
       body.view-mode #btn-expand,
@@ -506,6 +514,24 @@
          wins, and is emptied the moment the settings panel stops previewing. -->
     <style id="theme-preview"></style>
 
+    <!-- Find-match painting, filled by `installFindCss` the first time `/` is
+         pressed and empty until then.
+
+         Empty on purpose, and measured: simply *declaring* a `::highlight()`
+         rule made Chromium resolve highlight styles across every text node,
+         costing +27% on the forced layout after a 2MB render (291ms -> 369ms,
+         Chromium harness, relative signal only) with no highlight ever
+         registered. Deleting the two rules put it back to 295ms, so the cost is
+         theirs alone. A reader who never searches should not pay it on every
+         render, so the rules arrive with the feature. The one-off style recalc
+         that installing them forces lands on the keystroke that also flattens
+         the document — already the expensive moment, and the right place for
+         it.
+
+         The `@media print` counterparts in #print-css stay unconditional: a
+         print-only rule costs nothing on screen, which the same A/B confirmed. -->
+    <style id="find-css"></style>
+
     <!-- Paper. Everything below is `@media print` and therefore inert on
          screen: nothing here can change what the reader is looking at.
 
@@ -599,7 +625,7 @@
            injected into every rendered code block and would otherwise print as
            a small empty box over each one. */
         #titlebar, #sidebar, #btn-expand,
-        #outline-panel, #stack-panel, #stale-rail, #progress-rail,
+        #outline-panel, #stack-panel, #stale-rail, #find-bar,
         #file-menu, #tooltip, #toast,
         #palette-overlay, .modal-overlay,
         button.code-copy { display: none !important; }
@@ -618,6 +644,12 @@
         #content mark.hl.stale {
           background: none; color: inherit; padding: 0; outline: none;
         }
+
+        /* Find matches go the same way, and for the same reason: a search you
+           happened to have open is session state, and a PDF is durable. The
+           bar itself is hidden above; this is the paint it left behind. */
+        ::highlight(dreamd-find),
+        ::highlight(dreamd-find-current) { background: transparent; color: inherit; }
 
         /* Anything that scrolls on screen is *clipped* on paper, and clipped
            means silently lost. Long code lines wrap instead, and a table stops
@@ -665,10 +697,6 @@
   <body class="nav-collapsed">
     <div id="titlebar" data-tauri-drag-region>
       <div id="tb-actions">
-        <!-- Reading position readout. Chrome, so view mode hides it with the
-             rest of the titlebar; the rail at the foot of the reading pane is
-             the half that stays. See the `reading progress` section in app.js. -->
-        <span id="progress-pct" data-tip="Reading position"></span>
         <button id="btn-outline" class="icon" data-tip="Toggle contents" data-tip-key="toggle_outline">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h2"/><path d="M9 6h11"/><path d="M7 12h2"/><path d="M12 12h8"/><path d="M10 18h2"/><path d="M15 18h5"/></svg>
         </button>
@@ -714,10 +742,19 @@
           <div id="content"><div class="empty">Select a markdown file from the tree, or open the search palette.</div></div>
         </div>
 
-        <!-- Reading progress rail: a hairline pinned to the foot of the reading
-             pane, filling left-to-right. Outside `#content-scroll` on purpose —
-             inside it, it would scroll away with the document. -->
-        <div id="progress-rail"><div id="progress-fill"></div></div>
+        <!-- Find bar. A sibling of the scroller, never inside it — inside, it
+             would scroll away with the document. See the `find` section in
+             app.js for why matches are painted rather than wrapped. -->
+        <div id="find-bar">
+          <span class="find-sigil">/</span>
+          <input id="find-input" autocomplete="off" spellcheck="false"
+                 aria-label="Find in document" placeholder="Find in document…" />
+          <button id="find-regex" class="icon" data-tip="Regular expression" aria-pressed="false">.*</button>
+          <span id="find-count" aria-live="polite"></span>
+          <button id="find-prev" class="icon" data-tip="Previous match" data-tip-key="find_prev">‹</button>
+          <button id="find-next" class="icon" data-tip="Next match" data-tip-key="find_next">›</button>
+          <button id="find-close" class="icon" data-tip="Close find">✕</button>
+        </div>
 
         <!-- Left edge of the reading area, so it can sit open alongside the
              stack panel on the right rather than fighting it for the slot. -->

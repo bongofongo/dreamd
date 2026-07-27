@@ -133,6 +133,11 @@ pub struct Keymap {
     /// from — link clicks, tree and palette opens, outline and mark jumps.
     pub jump_back: String,
     pub jump_forward: String,
+    /// Open the find bar, and step through its matches. Frontend-only, over the
+    /// one open document — nothing here reaches the fuzzy path index.
+    pub find: String,
+    pub find_next: String,
+    pub find_prev: String,
     /// Copy the assembled stack to the clipboard.
     pub copy_stack: String,
     /// Open the settings panel.
@@ -199,6 +204,16 @@ impl Default for Keymap {
             // ever grew a terminal surface; it is a webview and does not.
             jump_back: "Ctrl+[".into(),
             jump_forward: "Ctrl+]".into(),
+            // Vim's search keys, unchanged. `/` joins `]` and `[` as bare
+            // punctuation and `n`/`N` join `h`, `m` and `'` as bare letters —
+            // all of which dispatch below the `isEditable` guard, so none of
+            // them can reach a reader typing into a field, the find input very
+            // much included. `Shift+N` rather than bare `N` because
+            // `matchCombo` requires an exact modifier match: without the
+            // modifier named, `N` could never match the event that produces it.
+            find: "/".into(),
+            find_next: "n".into(),
+            find_prev: "Shift+N".into(),
             copy_stack: "Ctrl+C".into(),
             settings: "Ctrl+,".into(),
             save_annotation: "Ctrl+Y".into(),
