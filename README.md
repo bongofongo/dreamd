@@ -102,12 +102,41 @@ See `perf/README.md` for what each tier measures and how much to trust it.
 
 - **Open a file:** click it in the tree, or open the fuzzy palette.
 - **File options:** hover a file row and click `⋯` → **Copy path** or **Delete** (delete moves it to the OS Trash after a confirm).
-- **Collapse the tree:** click the `◀` arrow in the tree header; a floating `▶` at the left edge brings it back. The preview stays full-width.
-- **Top bar** (on the traffic-light row): highlighter, stack, and send — all icons.
+- **Collapse the tree:** press `Ctrl+B`, or click the `◀` arrow in the tree header; a floating `▶` at the left edge brings it back. The preview stays full-width.
+- **Top bar** (on the traffic-light row): the reading-position readout, then
+  contents, print, settings, highlighter, stack and send — all icons.
+- **Print / save as PDF:** the printer icon opens your OS print dialog over the
+  open document; pick **Save as PDF** as the destination to export it. What
+  prints is the document alone — no sidebar, no panels, no copy buttons, black
+  on white whatever theme you read in, and the whole file however far down it
+  you had scrolled. Highlights print as plain text: they are session state, and
+  the export is meant to be the document. dreamd chooses no filename and writes
+  nothing itself; the save is entirely your dialog's.
+- **Reading position:** a percentage in the top bar and a hairline rail along
+  the bottom edge of the document, both tracking how far through the open file
+  you are. It is a bookmark cue, not a control — the rail is not clickable, and
+  neither shows anything for a document that already fits on screen. View mode
+  keeps the rail and drops the percentage with the rest of the top bar.
+- **View mode:** `Ctrl+M` hides the top bar, the tree and both side panels at
+  once, leaving just the document. `Ctrl+M` again or `Esc` brings the chrome
+  back exactly as you left it — view mode never changes what you had collapsed
+  or open underneath. The palette and settings still open over it.
+- **Contents:** the outline icon (or `Ctrl+I`) opens a panel listing the open
+  document's headings, indented by level; click one to jump to it. It follows
+  the file while it is open, so a `:w` in Neovim updates it with the document.
+  In-document `[link](#a-heading)` links work too — headings carry GitHub-style
+  slug ids.
+- **Links:** a relative `[link](notes/other.md)` opens that file in place, and
+  `[link](notes/other.md#a-heading)` opens it *and* jumps to the section. Local
+  links that resolve outside the repo root, or to something that isn't markdown,
+  are ignored rather than handed to the OS. `http(s)` and `mailto:` links open
+  in your browser or mail client.
 - **Highlight → annotate:** select text in the preview, press the highlight key,
   type a question/comment, "Add to stack".
 - **Send:** press the send key (or the toolbar **Send ▸**) to push the whole
-  stack; open the stack panel to cherry-pick which pairs go.
+  stack; open the stack panel to cherry-pick which pairs go. Ticks stick — a
+  pair you untick stays unticked as you add and remove others, so **Send
+  selected** sends the selection you actually built.
 
 ### Send behavior (tmux optional)
 
@@ -129,9 +158,14 @@ See `perf/README.md` for what each tier measures and how much to trust it.
 | Highlight selection         | `h` (or `Ctrl+H`)          |
 | Add annotation (in modal)   | `Ctrl+Y`                   |
 | Toggle highlight mode       | toolbar highlighter icon   |
+| Toggle contents panel       | `Ctrl+I`                   |
+| Toggle file tree            | `Ctrl+B`                   |
 | Toggle stack panel          | `Ctrl+O`                   |
+| View mode (hide all chrome) | `Ctrl+M` (`Esc` exits)     |
 | Send stack                  | `Ctrl+Enter`               |
 | Copy stack to clipboard     | `Ctrl+C`                   |
+| Set a mark                  | `m` then a letter          |
+| Jump to a mark              | `'` then the same letter   |
 | Open settings               | `Ctrl+,`                   |
 
 Select text (a normal OS selection) and press `h` to turn it into a dreamd
@@ -143,6 +177,14 @@ falls back to the normal OS copy.
 The first two are native menu items, not dreamd keybinds, and they are not
 rebindable. They do not collide with `Ctrl+O`: modifier matching is exact, so a
 `⌘` chord never reaches a `Ctrl` binding.
+
+**Marks** are vim's, and they work the same way: `mq` remembers the file you are
+reading and where you are in it, `'q` returns there — from anywhere, including a
+different file. Any letter or digit is a mark, upper and lower case are separate
+ones, and a second `mq` overwrites the first. Nothing is written to disk: marks
+live for as long as the app does and are gone when you quit, like highlights and
+the stack. Only the leader keys are rebindable; the letter after them is an
+argument, not part of the binding.
 
 Rebind any of these in the settings panel, or in config. The bare `h` is an
 alias kept from before keybinds were configurable; turn it off with
@@ -189,6 +231,15 @@ palette_next = "Ctrl+N"
 highlight = "Ctrl+H"
 send_stack = "Ctrl+Enter"
 toggle_stack = "Ctrl+O"
+toggle_outline = "Ctrl+I"
+toggle_tree = "Ctrl+B"
+toggle_view = "Ctrl+M"                   # hide all chrome; Esc also exits
+jump_top = "Home"                        # scroll the document to the start
+jump_bottom = "End"                      # ...and to the end
+next_file = "]"                          # next file in the sidebar's order
+prev_file = "["                          # ...previous; both wrap at the ends
+set_mark = "m"                           # then a letter: `mq` bookmarks here
+jump_mark = "'"                          # then the same letter: `'q` goes back
 copy_stack = "Ctrl+C"
 settings = "Ctrl+,"
 save_annotation = "Ctrl+Y"

@@ -112,6 +112,24 @@ pub struct Keymap {
     pub send_stack: String,
     /// Toggle the stack panel.
     pub toggle_stack: String,
+    /// Toggle the contents / outline panel.
+    pub toggle_outline: String,
+    /// Collapse / restore the sidebar file tree.
+    pub toggle_tree: String,
+    /// Distraction-free view mode: hide the titlebar, sidebar and side panels
+    /// in one flip, leaving only the rendered document.
+    pub toggle_view: String,
+    /// Jump the reading pane to the top / bottom of the open document.
+    pub jump_top: String,
+    pub jump_bottom: String,
+    /// Open the next / previous markdown file in the sidebar's order.
+    pub next_file: String,
+    pub prev_file: String,
+    /// Leader keys for vim-style marks. Each is an ordinary single combo: the
+    /// *letter* that follows is captured as data by the frontend, so it is not
+    /// — and cannot be — part of the binding string.
+    pub set_mark: String,
+    pub jump_mark: String,
     /// Copy the assembled stack to the clipboard.
     pub copy_stack: String,
     /// Open the settings panel.
@@ -132,6 +150,42 @@ impl Default for Keymap {
             highlight: "Ctrl+H".into(),
             send_stack: "Ctrl+Enter".into(),
             toggle_stack: "Ctrl+O".into(),
+            // I for "index"; B is the sidebar, the way every editor spells it.
+            toggle_outline: "Ctrl+I".into(),
+            toggle_tree: "Ctrl+B".into(),
+            // M for "minimal". Ctrl+M is free here and unclaimed by the
+            // webview; the macOS menubar's Cmd-chords can't reach it because
+            // `matchCombo` requires an exact modifier match.
+            toggle_view: "Ctrl+M".into(),
+            // Vim's `gg`/`G` would be the obvious pair, but `gg` is a two-key
+            // sequence and `matchCombo` only knows single combos — see
+            // docs/plans/jump-top-bottom-keybind.md. `Home`/`End` are single
+            // keys with the same effect, and do nothing else in the app, so
+            // they cost no keyspace; a vim user rebinds jump_bottom to
+            // "Shift+G" in one line.
+            jump_top: "Home".into(),
+            jump_bottom: "End".into(),
+            // `]`/`[` is the near-universal "next/prev thing" convention, and
+            // unlike a bare letter it costs no typing keyspace a reader wants:
+            // the dispatch sits below the `isEditable` and overlay guards, so
+            // the annotation box and the palette input never see these. They
+            // are the only bare-punctuation defaults; rebind if your layout
+            // buries the brackets behind a modifier.
+            next_file: "]".into(),
+            prev_file: "[".into(),
+            // Vim's marks. `m` is a bare letter, which is a real claim on the
+            // keyspace — but the same claim `quick_highlight`'s bare `h` has
+            // made since before keybinds were configurable, and `m` does
+            // nothing else in a reader.
+            //
+            // `'` rather than vim's other spelling, `` ` ``: both are correct
+            // vim (`'a` jumps to the line, `` `a `` to the column — a
+            // distinction a reader has no use for), and backtick is a dead key
+            // on several international layouts, where it arrives as
+            // `e.key === "Dead"` and can never match. Rebind in one line if you
+            // want it.
+            set_mark: "m".into(),
+            jump_mark: "'".into(),
             copy_stack: "Ctrl+C".into(),
             settings: "Ctrl+,".into(),
             save_annotation: "Ctrl+Y".into(),

@@ -74,6 +74,13 @@ let keymap = {
   copy_stack: "Ctrl+C",
   settings: "Ctrl+,",
   save_annotation: "Ctrl+Y",
+  toggle_outline: "Ctrl+I",
+  toggle_tree: "Ctrl+B",
+  toggle_view: "Ctrl+M",
+  jump_top: "Home",
+  jump_bottom: "End",
+  next_file: "]",
+  prev_file: "[",
   quick_highlight: true,
 };
 let pending = null; // { id, mark } while awaiting an annotation
@@ -361,6 +368,42 @@ function cssEscape(s) {
   return window.CSS && CSS.escape ? CSS.escape(s) : s.replace(/["\\]/g, "\\$&");
 }
 
+// Open the next / previous file in the sidebar's own order.
+//
+// The sidebar DOM *is* the flattened tree: `renderNode` emits `.tree-item.file`
+// depth-first, so document order here is already exactly the order on screen.
+// Reading it back beats re-deriving a flat list from `FileNode` in Rust — there
+// is only ever one ordering, and it follows every repaint (`rebuild_index`, the
+// watcher's add/remove, File ▸ Open moving the root) with no second thing to
+// keep in step and no new IPC round trip per keystroke.
+//
+// Collapsed directories are deliberately **not** skipped. Collapsing sets
+// `display:none` on the children and leaves them in the DOM, and the whole point
+// of this binding is to move without touching the tree — which may be collapsed
+// entirely (`nav-collapsed`) or hidden outright by view mode. Skipping would make
+// files unreachable by keyboard depending on state the user may not be looking at.
+//
+// Wraps at both ends, matching `movePalette`. There is no affordance for "that
+// was the last file", so stopping would be a silent no-op indistinguishable from
+// a dead key.
+function stepFile(d) {
+  const files = $("tree").querySelectorAll(".tree-item.file");
+  if (!files.length) return;
+  // `activeTreeItem` is one of these nodes by construction (`markActiveInTree`
+  // queries the same list, `paintTree` re-resolves it), so this avoids a scan
+  // over `dataset.path` on every keypress. -1 when it is null, and also when the
+  // open file isn't in the tree at all — a gitignored target reached by a link —
+  // in which case stepping from just outside the list puts `next` on the first
+  // entry and `prev` on the last.
+  const i = [].indexOf.call(files, activeTreeItem);
+  const el = files[i < 0 ? (d > 0 ? 0 : files.length - 1)
+                        : (i + d + files.length) % files.length];
+  // The sidebar scrolls independently of the reading pane; without this the
+  // active row walks off the top of it after a few presses.
+  el.scrollIntoView({ block: "nearest" });
+  openFile(el.dataset.path);
+}
+
 // ---- open / render -------------------------------------------------------
 async function openFile(path) {
   currentFile = path;
@@ -384,6 +427,8 @@ async function renderCurrent({ preserveScroll, reanchor }) {
     html = await invoke("render_markdown", { path: currentFile });
   } catch (e) {
     contentEl.innerHTML = `<div class="empty">${escapeHtml(String(e))}</div>`;
+    refreshOutline();
+    measureProgress();
     return;
   }
   perf.span("ipc_render_markdown", t0);
@@ -397,6 +442,10 @@ async function renderCurrent({ preserveScroll, reanchor }) {
   perf.span("intercept_links", t);
 
   t = perf.now();
+  decorateCodeBlocks();
+  perf.span("decorate_code", t);
+
+  t = perf.now();
   const highlights = reanchor
     ? await invoke("reanchor", { path: currentFile })
     : await invoke("get_highlights", { path: currentFile });
@@ -406,7 +455,12 @@ async function renderCurrent({ preserveScroll, reanchor }) {
   applyHighlights(highlights);
   perf.span("apply_highlights", t);
 
+  refreshOutline();
+
   scrollEl.scrollTop = prevScroll;
+  // Free, in practice: writing `scrollTop` on the line above already forced the
+  // layout this reads, so `progMax` costs nothing extra here.
+  measureProgress();
   perf.span("render_total", t0);
 }
 
@@ -418,20 +472,32 @@ function interceptLinks() {
     if (/^[a-z]+:\/\//i.test(href) || href.startsWith("mailto:")) {
       a.onclick = (e) => { e.preventDefault(); invoke("open_external", { url: href }); };
     } else if (href.startsWith("#")) {
-      a.onclick = (e) => {
-        e.preventDefault();
-        const t = contentEl.querySelector(href) || document.getElementById(href.slice(1));
-        if (t) t.scrollIntoView();
-      };
+      a.onclick = (e) => { e.preventDefault(); scrollToFragment(href.slice(1)); };
     } else {
       // relative path -> only navigate to markdown inside the repo; other
       // relative targets are dropped (never handed to the OS opener).
       a.onclick = (e) => {
         e.preventDefault();
         const base = currentFile.replace(/[^\/]*$/, "");
-        const target = normalizePath(base + href.split("#")[0]);
-        if (/\.(md|markdown|mdown|mkd)$/i.test(target)) openFile(target);
-        else toast("Ignored non-markdown local link");
+        // Split on the *first* `#` only: everything after it is the fragment,
+        // even if it contains further `#`s.
+        const cut = href.indexOf("#");
+        const rel = cut === -1 ? href : href.slice(0, cut);
+        const frag = cut === -1 ? "" : href.slice(cut + 1);
+        const target = normalizePath(base + rel);
+        if (!/\.(md|markdown|mdown|mkd)$/i.test(target)) {
+          toast("Ignored non-markdown local link");
+        } else if (!insideRepo(target)) {
+          // Enough `../` segments resolve outside the root; images have always
+          // refused that and links now do too.
+          toast("Ignored link outside the repo");
+        } else if (frag) {
+          // Cross-file section link. `renderCurrent` sets scrollTop last, so
+          // awaiting the open is what makes this land after the reset.
+          openFile(target).then(() => scrollToFragment(frag), () => {});
+        } else {
+          openFile(target);
+        }
       };
     }
   });
@@ -442,10 +508,134 @@ function interceptLinks() {
       const base = currentFile.replace(/[^\/]*$/, "");
       const abs = normalizePath(base + src);
       // Only load local images that live inside the repo root.
-      if (repoRoot && abs.startsWith(repoRoot)) img.src = "file://" + abs;
+      if (insideRepo(abs)) img.src = "file://" + abs;
       else img.removeAttribute("src");
     }
   });
+}
+
+// ---- code blocks ---------------------------------------------------------
+
+// The copy button's contents. Author-written and static — nothing from the
+// document is interpolated into it, so `innerHTML` here parses only this
+// string. Deliberately no text and no <svg><title>: the button must contribute
+// zero text nodes to #content (see the CSS note in index.html). The two icons
+// are both present and CSS picks one, so toggling state never touches the DOM
+// shape.
+const COPY_ICON_SVG =
+  '<svg class="ic-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor"' +
+  ' stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+  '<rect x="9" y="9" width="11" height="11" rx="2"></rect>' +
+  '<path d="M5 15V5a2 2 0 0 1 2-2h10"></path></svg>' +
+  '<svg class="ic-check" viewBox="0 0 24 24" fill="none" stroke="currentColor"' +
+  ' stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+  '<path d="M20 6 9 17l-5-5"></path></svg>';
+
+/// Give every rendered code block a copy button, top right.
+///
+/// Post-render DOM decoration rather than markup from `markdown::render`: the
+/// button is chrome, not document content, and keeping it out of the render
+/// pass keeps it out of anything that reads the rendered HTML. It runs on the
+/// fresh DOM after each render, like `interceptLinks` — `renderCurrent`'s
+/// `innerHTML` assignment throws the previous buttons away, which is also what
+/// makes them survive a `file-changed` re-render with nothing to clean up.
+///
+/// Called *before* `applyHighlights` so the DOM shape is settled before any
+/// mark is placed; the button adds no text nodes either way, so neither the
+/// text-node scan nor `getSelection().toString()` can see it.
+function decorateCodeBlocks() {
+  for (const pre of contentEl.querySelectorAll("pre")) {
+    const parent = pre.parentNode;
+    if (!parent) continue;
+    // Idempotent: a re-run over an already-decorated block is a no-op. Nothing
+    // calls it twice today, but it is one line and removes the whole class of
+    // double-button bug.
+    if (parent.classList && parent.classList.contains("code-block")) continue;
+
+    const wrap = document.createElement("div");
+    wrap.className = "code-block";
+    parent.insertBefore(wrap, pre);
+    wrap.appendChild(pre);
+
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "icon code-copy";
+    btn.setAttribute("aria-label", "Copy code");
+    btn.dataset.tip = "Copy code";
+    btn.innerHTML = COPY_ICON_SVG;
+    btn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      copyCodeBlock(pre, btn);
+    });
+    // #content's own `mouseup` listener starts a highlight whenever the
+    // selection is non-empty, and a leftover selection elsewhere in the
+    // document would otherwise make a copy click open the annotation modal.
+    btn.addEventListener("mouseup", (e) => e.stopPropagation());
+    wrap.appendChild(btn);
+  }
+}
+
+/// Copy one block's source to the clipboard.
+///
+/// The text comes from `textContent`, never from re-parsing the highlighted
+/// markup: syntect's <span>s and any `mark.hl` the reader has placed are
+/// markup we would have to strip, and stripping it by hand is exactly the
+/// "execute, don't escape" mistake tenet 4 exists to prevent. `textContent` is
+/// the code the reader sees, with the marks contributing nothing.
+///
+/// Delivery goes through the existing `copy_to_clipboard` command (arboard,
+/// text only) rather than `navigator.clipboard`, so it uses the same path as
+/// "Copy path" and the send fallback, and does not depend on the webview's
+/// clipboard permissions.
+async function copyCodeBlock(pre, btn) {
+  // syntect emits no <code>; the plain fallback does. Either way this is the
+  // element holding the code text.
+  const inner = pre.querySelector("code") || pre;
+  // syntect opens with a newline after `<pre …>`, and a fenced block always
+  // ends in one. Neither is part of the code.
+  const text = (inner.textContent || "").replace(/^\n/, "").replace(/\s+$/, "");
+  if (!text) return;
+  try {
+    await invoke("copy_to_clipboard", { text });
+  } catch (e) {
+    toast("Copy failed: " + String(e));
+    return;
+  }
+  btn.dataset.copied = "1";
+  clearTimeout(btn._copiedTimer);
+  btn._copiedTimer = setTimeout(() => delete btn.dataset.copied, 1400);
+  toast("Code copied");
+}
+
+/// Is this already-normalized absolute path inside the open repo root?
+///
+/// A bare `startsWith(repoRoot)` is *not* containment: with a root of
+/// `/w/notes` it also accepts `/w/notes-private/secret.md`, because the check
+/// never reaches a path separator. The boundary has to be the separator, so
+/// the test is "equal to the root, or under root + `/`". With no repo open
+/// nothing is inside, which is what the image handler has always done.
+function insideRepo(abs) {
+  if (!repoRoot) return false;
+  const root = repoRoot.replace(/\/+$/, "");
+  return abs === root || abs.startsWith(root + "/");
+}
+
+/// Scroll to an element by id within #content, returning whether it was found.
+///
+/// Shared by same-document `#anchor` links and the fragment half of a
+/// cross-file `other.md#anchor` link. Headings are the only things inside
+/// #content carrying an id, so scanning them beats `querySelector("#" + id)`
+/// twice over: a slug like `1-intro` (from `## 1. Intro`) is a valid *id* but
+/// an invalid CSS *id selector*, and `querySelector("#1-intro")` throws rather
+/// than returning null. Scoping to #content also stops a document's own
+/// `#content` or `#tree` link resolving to the app's chrome.
+function scrollToFragment(frag) {
+  let id = frag;
+  try { id = decodeURIComponent(id); } catch (_) {}
+  const t = [...contentEl.querySelectorAll("[id]")].find((el) => el.id === id);
+  if (t) t.scrollIntoView();
+  return !!t;
 }
 
 function normalizePath(p) {
@@ -720,42 +910,461 @@ async function deleteHighlight() {
 }
 
 // ---- stack panel ---------------------------------------------------------
+// The stack is the ledger of the app's core loop, so this render path has one
+// rule above every other: what the panel shows, in the order it shows it, is
+// exactly what `get_stack` just returned. The animation below is in service of
+// that, never at its expense.
+//
+// It *reconciles* rather than rebuilds. The old version wiped `innerHTML` and
+// re-created every card on every change, which is correct but leaves no node
+// alive long enough for a transition to attach to — and it silently re-checked
+// every checkbox, so "Send selected" could only differ from "Send all" if you
+// unchecked something in the seconds before pressing it. Keying each card by
+// the highlight id fixes both: a pair that is still on the stack keeps its
+// node (and therefore its checkbox), a new pair mounts with the enter
+// animation, a departed one leaves with the exit animation.
+//
+// The hazard the exit animation introduces, and the reason for the two guards
+// in `exitPair`/`checkedIds`: a leaving card is still in the DOM for ~170ms
+// after its pair is gone from the store, and `send_stack(ids)` resolves ids
+// against the *highlight* list rather than against the stack — so a checkbox
+// that outlived its pair would put a just-removed pair back into the send.
+
+// Monotonic, the same idiom as `paletteSeq`. Two refreshes can be in flight at
+// once (a remove racing an annotation save); with stable keys an older reply
+// landing last would resurrect a card that is already gone, where the old
+// teardown-and-rebuild merely painted a stale list.
+let stackSeq = 0;
+
+// Mirrors the `.pair.leaving` transition in `index.html`, plus a little slack.
+// Removal is on a timer rather than on `transitionend`: a card that outlives
+// its pair is the one failure this file must not have, and `transitionend` can
+// simply never arrive — close the panel or press Ctrl+M 50ms into an exit and
+// the card is `display: none`, its transition abandoned. The timer does not
+// care. (It also sidesteps `transitionend` firing once per property, which
+// would otherwise cut the collapse short at whichever property finishes first.)
+const STACK_EXIT_MS = 170;
+
+// Motion is only ever attempted on a panel the reader can actually see. A
+// closed (`display: none`) panel runs neither animations nor transitions, so
+// animating into one buys nothing and would leave `.enter`'s `both` fill mode
+// holding a card at `opacity: 0` until the panel is next opened. Reduced
+// motion opts out for the same reason it always does.
+function stackAnimates() {
+  if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) return false;
+  if (document.body.classList.contains("view-mode")) return false;
+  return $("stack-panel").classList.contains("open");
+}
+
 async function refreshStack() {
+  const seq = ++stackSeq;
   const pairs = await invoke("get_stack");
+  if (seq !== stackSeq) return; // superseded by a later refresh
   const badge = $("stack-badge");
   badge.textContent = pairs.length;
   badge.classList.toggle("show", pairs.length > 0);
-  const list = $("stack-list");
-  list.innerHTML = "";
-  if (pairs.length === 0) {
-    list.innerHTML = `<div class="empty">No pairs yet. Select text and press ${keymap.highlight}.</div>`;
-    return;
-  }
+  reconcileStack($("stack-list"), pairs);
+}
+
+// A live card: a `.pair` that still stands for something on the stack.
+function isLivePair(n) {
+  return !!n && !!n.classList && n.classList.contains("pair") && !n.classList.contains("leaving");
+}
+
+function reconcileStack(list, pairs) {
+  // Decided once per refresh, so an enter and an exit in the same pass cannot
+  // disagree about whether this render is animated.
+  const animate = stackAnimates();
+
+  // The empty-state notice is removed up front so it can never be mistaken for
+  // a position in the ordering pass below.
+  const empty = list.querySelector(".empty");
+  if (empty && pairs.length) empty.remove();
+
+  // `.leaving` cards are deliberately not adoptable: a pair that comes right
+  // back (annotate → remove → annotate) mounts a fresh card rather than
+  // inheriting one mid-exit with its checkbox already torn out.
+  const live = new Map();
+  for (const el of [...list.children]) if (isLivePair(el)) live.set(el.dataset.id, el);
+
+  const ordered = [];
+  const seen = new Set();
   for (const p of pairs) {
-    const el = document.createElement("div");
-    el.className = "pair";
-    const loc = p.highlight.line_start === p.highlight.line_end
-      ? `L${p.highlight.line_start}`
-      : `L${p.highlight.line_start}-${p.highlight.line_end}`;
-    const rel = p.highlight.file_path.replace(/^.*\//, "");
-    el.innerHTML =
-      `<div class="top"><input type="checkbox" checked data-id="${p.highlight.id}" />` +
-      `<span class="loc">${escapeHtml(rel)} · ${loc}${p.highlight.state === "stale" ? " · ⚠ stale" : ""}</span></div>` +
-      `<div class="ev">${escapeHtml(p.highlight.quote.slice(0, 200))}</div>` +
-      `<div class="an">${escapeHtml(p.annotation)}</div>`;
-    const rm = document.createElement("button");
-    rm.textContent = "remove";
-    rm.style.marginTop = "6px";
-    rm.onclick = async () => { await invoke("remove_pair", { id: p.highlight.id }); refreshStack(); };
-    el.appendChild(rm);
-    list.appendChild(el);
+    const id = String(p.highlight.id);
+    seen.add(id);
+    let el = live.get(id);
+    if (el) updatePair(el, p);
+    else {
+      el = buildPair(p);
+      if (animate) el.classList.add("enter");
+    }
+    ordered.push(el);
+  }
+  for (const [id, el] of live) if (!seen.has(id)) exitPair(el, animate);
+
+  // Place the cards in `pairs` order, moving only the nodes actually out of
+  // place. Re-inserting a node restarts its CSS animation, so a blanket
+  // append-everything sweep would replay the enter snap on every card on every
+  // refresh. `.leaving` cards hold their old slot until they collapse and are
+  // stepped over rather than counted as a position.
+  let cursor = list.firstChild;
+  for (const el of ordered) {
+    while (cursor && cursor !== el && !isLivePair(cursor)) cursor = cursor.nextSibling;
+    if (cursor === el) cursor = el.nextSibling;
+    else list.insertBefore(el, cursor); // a null cursor appends
+  }
+
+  // Appended last, so it sits *below* any card still animating out rather than
+  // claiming the list is empty above one the reader can still see.
+  if (!pairs.length && !list.querySelector(".empty")) {
+    const msg = document.createElement("div");
+    msg.className = "empty";
+    msg.textContent = `No pairs yet. Select text and press ${keymap.highlight}.`;
+    list.appendChild(msg);
   }
 }
 
+function buildPair(p) {
+  const id = String(p.highlight.id);
+  const el = document.createElement("div");
+  el.className = "pair";
+  el.dataset.id = id;
+
+  const top = document.createElement("div");
+  top.className = "top";
+  const cb = document.createElement("input");
+  cb.type = "checkbox";
+  cb.checked = true;
+  cb.dataset.id = id;
+  const loc = document.createElement("span");
+  loc.className = "loc";
+  // Shares `button.icon`/`button.danger` from index.html instead of the inline
+  // `marginTop` this used to carry, and moves up into the header row where the
+  // rest of the card's chrome already lives.
+  const rm = document.createElement("button");
+  rm.className = "icon danger rm";
+  rm.textContent = "✕";
+  rm.setAttribute("aria-label", "Remove from stack");
+  rm.dataset.tip = "Remove from stack"; // `wireTooltips()` delegates on [data-tip]
+  rm.onclick = async () => {
+    await invoke("remove_pair", { id: p.highlight.id });
+    refreshStack();
+  };
+  top.append(cb, loc, rm);
+
+  const ev = document.createElement("div");
+  ev.className = "ev";
+  const an = document.createElement("div");
+  an.className = "an";
+  el.append(top, ev, an);
+
+  // Drop `.enter` once it has played, so a later reorder of this node does not
+  // replay it. The class is only ever added on a visible panel (see
+  // `stackAnimates`), so the event does arrive; if a Ctrl+M mid-animation
+  // cancels it, the class simply survives and the snap replays on the way back.
+  el.addEventListener("animationend", () => el.classList.remove("enter"), { once: true });
+
+  updatePair(el, p);
+  return el;
+}
+
+// Everything a refresh can legitimately change about an existing card. The
+// checkbox is pointedly *not* touched: it is the reader's selection, and the
+// old rebuild resetting it on every unrelated refresh was the bug that made
+// "Send selected" indistinguishable from "Send all".
+function updatePair(el, p) {
+  const h = p.highlight;
+  const span = h.line_start === h.line_end ? `L${h.line_start}` : `L${h.line_start}-${h.line_end}`;
+  const rel = h.file_path.replace(/^.*\//, "");
+  const stale = h.state === "stale";
+  // `textContent` throughout, so none of this needs `escapeHtml` at all — the
+  // quote and the annotation are user text and never markup (tenet 4).
+  el.querySelector(".loc").textContent = `${rel} · ${span}${stale ? " · ⚠ stale" : ""}`;
+  el.querySelector(".ev").textContent = h.quote.slice(0, 200);
+  el.querySelector(".an").textContent = p.annotation;
+  el.classList.toggle("stale", stale);
+}
+
+// Snap a removed card out toward the panel edge while collapsing its box, then
+// drop it. Idempotent: a second call on an already-leaving card does nothing.
+function exitPair(el, animate) {
+  if (el.classList.contains("leaving")) return;
+  el.classList.remove("enter");
+  el.classList.add("leaving");
+  el.setAttribute("aria-hidden", "true");
+  // Guard 1 of 2. The checkbox goes *now*, the moment the pair leaves the
+  // stack, so it cannot be picked up by `checkedIds()` — or by anything else
+  // that queries `#stack-list` — during the exit. Guard 2 is the `.leaving`
+  // filter in `checkedIds()` itself.
+  const cb = el.querySelector('input[type="checkbox"]');
+  if (cb) cb.remove();
+
+  if (!animate) { el.remove(); return; }
+  // Lock the height the collapse animates from.
+  el.style.height = `${el.offsetHeight}px`;
+  requestAnimationFrame(() => {
+    el.style.height = "0px"; // inline, to beat the inline height set just above
+    el.classList.add("out");
+  });
+  setTimeout(() => el.remove(), STACK_EXIT_MS);
+}
+
+// The file tree's collapsed state is one class on <body> and nothing else —
+// `#workspace` drops the sidebar column in CSS. Nothing is torn down, so this
+// is a pure style flip and the tree survives being hidden.
+function toggleTree() { document.body.classList.toggle("nav-collapsed"); }
+
 function toggleStack() { $("stack-panel").classList.toggle("open"); refreshStack(); }
 
+// Distraction-free reading: `body.view-mode` hides the titlebar, the sidebar
+// and both side panels together. Same shape as `toggleTree` — one class, no
+// teardown — and deliberately *additive*: it never writes `nav-collapsed` or a
+// panel's `open` class, so exiting restores whatever chrome was there before.
+// It is a plain toggle, not a mode that auto-exits: the palette and settings
+// float above view mode and leaving them puts you back where you were.
+//
+// The toast is the discoverability cost of hiding the titlebar — there is no
+// button left to click, so entering names both ways out.
+function toggleView() {
+  const on = document.body.classList.toggle("view-mode");
+  if (on) toast(`View mode — ${displayCombo(keymap.toggle_view)} or Esc to exit`);
+}
+
+function exitView() { document.body.classList.remove("view-mode"); }
+
+// Jump the reading pane to the ends of the document. `#content-scroll` is the
+// scroller, not the window, so the browser's own Home/End would do nothing
+// unless focus happened to be inside it — which is why these are worth binding
+// at all. Instant, not smooth: everything else that moves this pane
+// (`scrollIntoView`, restoring `scrollTop` after a re-render) is instant, and a
+// smooth animation over a long document is the one place scrolling can jank.
+function jumpTop() { scrollEl.scrollTo({ top: 0 }); }
+function jumpBottom() { scrollEl.scrollTo({ top: scrollEl.scrollHeight }); }
+
+// ---- marks ---------------------------------------------------------------
+// Vim's marks: `m{letter}` remembers where you are, `'{letter}` goes back.
+// Explicit and user-placed — not a browser-style automatic history.
+//
+// In memory, and only in memory. Tenet 2: this dies with the process, and
+// nothing here is ever written to disk.
+//
+// **Global across the repo, not per file.** The open question in the idea, and
+// the answer is not close. dreamd shows one document at a time out of a whole
+// repo, so the useful move is "bookmark the spot in the architecture doc, come
+// back to it from wherever I've wandered to" — which is cross-file by
+// definition. Per-file marks would be a bookmark you can only use once you have
+// already navigated to the thing you were trying to navigate to. It is also the
+// simpler build: one flat map keyed by letter, and a jump is `openFile` plus a
+// scroll, both of which already exist. Vim splits a–z (buffer) from A–Z
+// (global) because it has a buffer list and a reader does not; here every
+// letter is global and case-sensitive, which buys 62 marks instead of 26.
+const marks = new Map(); // letter -> { path, top }
+
+// The single keystroke a leader key is waiting on, or null. Nothing else in the
+// frontend keeps input state between events, so this is the whole of it.
+let pendingMark = null;  // { kind: "set" | "jump", at }
+const MARK_TIMEOUT_MS = 1500;
+
+function armMark(kind) { pendingMark = { kind, at: Date.now() }; }
+function clearMark() { pendingMark = null; }
+
+/// The second half of a mark chord. Returns true when it consumed the event.
+///
+/// Every branch here was written against one question: *can this swallow a
+/// keystroke someone meant for something else?* The guarantee it settles on is
+/// narrow enough to state in a sentence — **the only event this can consume is
+/// a bare alphanumeric arriving within `MARK_TIMEOUT_MS` of a leader key, plus
+/// key repeats while the leader itself is held down.** Everything else returns
+/// false and falls through to the normal chain untouched. That is why the
+/// modified-combo and non-alphanumeric cases cancel and fall through rather
+/// than swallowing: a mark chord going wrong should cost the mark, never the
+/// keystroke.
+function consumeMarkKey(e) {
+  if (!pendingMark) return false;
+  // A modifier pressed on its own is part of *typing* the letter — `Shift`
+  // before `A` — not the letter. Stay armed and let it by.
+  if (MODIFIER_KEYS.includes(e.key)) return false;
+  // Holding the leader down repeats its keydown. Swallow those and stay armed,
+  // or `m` held for half a second sets the mark `m`.
+  if (e.repeat) { e.preventDefault(); return true; }
+
+  const { kind, at } = pendingMark;
+  // Disarmed from here on, whatever happens next: an action that throws must
+  // not leave a leader armed, and every non-modifier key ends the chord.
+  clearMark();
+
+  // A leader pressed and then abandoned must not turn a keystroke a minute
+  // later into a mark.
+  if (Date.now() - at > MARK_TIMEOUT_MS) return false;
+  // A modified combo is a command, not a mark letter. Cancel and fall through
+  // so the palette key still opens the palette.
+  if (e.ctrlKey || e.altKey || e.metaKey) return false;
+  // Arrows, function keys, `Dead` and `Process` from an IME: not marks, and not
+  // ours to eat either.
+  const key = e.key || "";
+  if (!/^[0-9a-z]$/i.test(key)) return false;
+
+  e.preventDefault();
+  if (kind === "set") setMark(key); else jumpMark(key);
+  return true;
+}
+
+function setMark(key) {
+  if (!currentFile) return;
+  marks.set(key, { path: currentFile, top: scrollEl.scrollTop });
+  toast(`Mark ${key} set`);
+}
+
+async function jumpMark(key) {
+  const m = marks.get(key);
+  if (!m) { toast(`No mark ${key}`); return; }
+  // `openFile` resolves once the document is rendered and its scroll reset to
+  // 0, so the scroll below lands on a laid-out document rather than an empty
+  // one. Skipped when the mark is in the file already open, which is the common
+  // case and would otherwise re-render for nothing.
+  if (m.path !== currentFile) await openFile(m.path);
+  // A stored offset is a pixel position, so it drifts if the file changed on
+  // disk since the mark was dropped — a heading anchor would be sturdier, and
+  // is the obvious follow-up. `scrollTo` clamps to the scrollable range on its
+  // own, so a document that has since got shorter lands at its end rather than
+  // failing.
+  scrollEl.scrollTo({ top: m.top });
+}
+
+// ---- reading progress ----------------------------------------------------
+// Answers "how far am I", and nothing else. Getting *around* the document is
+// the contents panel's job, so this is deliberately not clickable and not a
+// scrubber — a bookmark, not a navigation surface.
+//
+// The two open questions, settled:
+//
+// **Percentage, not "section 3 of 12".** A section counter measures structure,
+// and structure is what the outline panel already lists — and it misreports
+// position on the documents dreamd is actually pointed at, where one heading
+// owns eight screens and the next owns two lines. Distance through the text is
+// what a physical bookmark tells you, and scroll offset is exactly that. The
+// heading-aware variant is designed rather than dropped; see
+// `docs/plans/reading-progress-indicator.md`.
+//
+// **Both surfaces, split by what each one is.** The number sits in the titlebar
+// with the rest of the chrome and goes when view mode does; the 3px rail is
+// pinned to the foot of the reading pane and *stays*. Ctrl+M hides controls,
+// and a progress rail is not a control.
+//
+// Cost. The scroll path is built to touch no layout:
+//
+//   * the listener is `{ passive: true }` and only schedules;
+//   * work is coalesced into one `requestAnimationFrame`, so a trackpad burst
+//     that fires the event twenty times draws once;
+//   * `scrollHeight`/`clientHeight` are cached in `progMax` and refreshed from
+//     a `ResizeObserver`, whose callback runs *after* layout where the read is
+//     free — so the per-frame work is a single `scrollTop` read;
+//   * the fill moves by `transform: scaleX()` on its own layer, never `width`;
+//   * the readout is written only when the whole-number percent changes, into a
+//     fixed-width `contain: layout style` box, so a full-document scroll costs
+//     at most 100 text writes and none of them reflows anything outside it.
+//
+// None of that was measured — see the idea log. It is written for the case
+// where it cannot be.
+const railEl = $("progress-rail");
+const fillEl = $("progress-fill");
+const pctEl = $("progress-pct");
+
+let progFrame = 0;    // pending rAF handle; 0 = idle
+let progMax = 0;      // cached scrollHeight - clientHeight
+let progShown = -1;   // last integer written; -1 means "nothing"
+
+function scheduleProgress() {
+  if (progFrame) return;
+  progFrame = requestAnimationFrame(drawProgress);
+}
+
+function drawProgress() {
+  progFrame = 0;
+  // Nothing open, or a document that already fits on screen: there is no "how
+  // far" to answer, so the indicator says nothing rather than claiming 100%.
+  if (!currentFile || progMax <= 0) {
+    railEl.classList.remove("on");
+    if (progShown !== -1) { progShown = -1; pctEl.textContent = ""; }
+    return;
+  }
+  railEl.classList.add("on");
+  // Clamped: rubber-band overscroll reports past both ends.
+  const frac = Math.min(1, Math.max(0, scrollEl.scrollTop / progMax));
+  fillEl.style.transform = `scaleX(${frac})`;
+  const pct = Math.round(frac * 100);
+  if (pct !== progShown) { progShown = pct; pctEl.textContent = `${pct}%`; }
+}
+
+/// Re-measure the scrollable extent, then repaint. Call after anything that can
+/// change the document's height or the pane's; a stale `progMax` is the only
+/// way this can be wrong.
+function measureProgress() {
+  progMax = scrollEl.scrollHeight - scrollEl.clientHeight;
+  // Draw now rather than scheduling, so the new extent lands in the same frame
+  // as the content that changed it. Dropping any frame already queued keeps
+  // that from becoming two draws.
+  if (progFrame) { cancelAnimationFrame(progFrame); progFrame = 0; }
+  drawProgress();
+}
+
+// ---- contents / outline panel --------------------------------------------
+// Built by walking the rendered DOM rather than as a side channel from Rust:
+// the headings are already in the tree the render just produced, and they
+// already carry the ids `markdown::Slugger` minted, so the whole outline is one
+// `querySelectorAll` and no extra IPC.
+//
+// Live-update vs rebuild-on-open is settled as both. A render rebuilds the list
+// only when the panel is *open*, and otherwise marks it dirty — so an open
+// panel tracks `file-changed` the way every other surface does, and a closed
+// one costs a boolean per render instead of a walk of a document nobody is
+// looking at the outline of.
+let outlineDirty = true;
+
+function toggleOutline() {
+  const open = $("outline-panel").classList.toggle("open");
+  if (open && outlineDirty) buildOutline();
+}
+
+function refreshOutline() {
+  outlineDirty = true;
+  if ($("outline-panel").classList.contains("open")) buildOutline();
+}
+
+function buildOutline() {
+  outlineDirty = false;
+  const list = $("outline-list");
+  list.innerHTML = "";
+  const heads = currentFile ? contentEl.querySelectorAll("h1, h2, h3, h4, h5, h6") : [];
+  if (!heads.length) {
+    list.innerHTML = `<div class="hint">${currentFile ? "No headings in this document." : "No document open."}</div>`;
+    return;
+  }
+  // One fragment, one insertion: a long document carries hundreds of headings
+  // and appending each to the live list would lay the panel out once per entry.
+  const frag = document.createDocumentFragment();
+  for (const h of heads) {
+    const btn = document.createElement("button");
+    btn.className = `oi l${h.tagName[1]}`;
+    // `textContent`, never `innerHTML`: a heading may contain inline markup (and
+    // by now a `mark.hl` or two), and the outline wants the text the reader
+    // sees. It is also the only reason this needs no escaping.
+    btn.textContent = h.textContent.trim();
+    // The element, not its id — a jump that cannot miss, and one that still
+    // works for a heading whose slug is not a valid CSS selector.
+    btn.onclick = () => h.scrollIntoView({ block: "start" });
+    frag.appendChild(btn);
+  }
+  list.appendChild(frag);
+}
+
+// `.leaving` cards are excluded: a pair removed from the stack lingers in the
+// DOM for the length of its exit animation, and `send_stack` resolves ids
+// against the highlight list rather than against the stack — so a checkbox that
+// outlived its pair would send a pair the reader just took off. `exitPair`
+// already deletes that checkbox; this is the second, cheaper guard.
 function checkedIds() {
-  return [...document.querySelectorAll('#stack-list input[type="checkbox"]:checked')]
+  return [...document.querySelectorAll('#stack-list .pair:not(.leaving) input[type="checkbox"]:checked')]
     .map((c) => Number(c.dataset.id));
 }
 
@@ -763,6 +1372,39 @@ async function sendStack(ids) {
   try {
     const res = await invoke("send_stack", { ids: ids || [] });
     toast(`${res.method}: ${res.detail}`);
+  } catch (e) {
+    toast(String(e));
+  }
+}
+
+// ---- print / export to PDF -----------------------------------------------
+// Export is the OS print dialog and its "Save as PDF" destination. No PDF
+// crate, no bundled renderer, nothing added to the dependency tree: the whole
+// feature is an `@media print` stylesheet (see the `#print-css` block in
+// index.html) plus this one call.
+//
+// **Tenet 1 holds.** dreamd picks no path and writes no file — the dialog is
+// the OS's, the destination is the user's, and if they aim it at somewhere
+// inside the repo that is their save dialog doing what they told it. The tenet
+// is about the app not mutating repo content on its own, and nothing here
+// touches the markdown at all.
+//
+// **This goes through Rust, and that is not incidental.** `window.print()` is a
+// no-op in WKWebView: WebKit routes it to the UI delegate's `_webView:
+// printFrame:`, which wry does not implement, so the JS call returns having
+// done nothing whatsoever on the one platform dreamd is built for. The Rust
+// side calls `NSPrintOperation` directly. See `print_document` in main.rs.
+//
+// Nothing is closed or toggled first. Both side panels are absolutely
+// positioned overlays and the print sheet hides them along with the rest of the
+// chrome, unconditionally — so what comes out is the same document whatever was
+// open on screen, view mode included.
+async function printDocument() {
+  // A blank page, or worse the "Select a markdown file" placeholder, is not
+  // something to hand to a printer.
+  if (!currentFile) { toast("Nothing open to print"); return; }
+  try {
+    await invoke("print_document");
   } catch (e) {
     toast(String(e));
   }
@@ -905,6 +1547,8 @@ function wireEvents() {
       currentFile = null;
       contentEl.innerHTML = `<div class="empty">File removed.</div>`;
       staleRail.innerHTML = "";
+      refreshOutline();
+      measureProgress();
     }
   });
   listen("theme-reloaded", () => loadTheme());
@@ -925,6 +1569,8 @@ function wireEvents() {
         currentFile = null;
         contentEl.innerHTML = `<div class="empty">Select a markdown file from the tree, or open the search palette.</div>`;
         staleRail.innerHTML = "";
+        refreshOutline();
+        measureProgress();
       }
     } catch (err) { console.error(err); }
   });
@@ -945,6 +1591,8 @@ function wireEvents() {
 function wireUi() {
   $("btn-collapse").onclick = () => document.body.classList.add("nav-collapsed");
   $("btn-expand").onclick = () => document.body.classList.remove("nav-collapsed");
+  // The two buttons stay one-way on purpose — each is only visible in the state
+  // it acts on — so the keybind is the only caller that has to flip either way.
   $("btn-hl-mode").onclick = () => toggleHighlightMode();
   // In highlight mode, finishing a text selection auto-starts the flow.
   contentEl.addEventListener("mouseup", () => {
@@ -958,6 +1606,25 @@ function wireUi() {
     if (m && contentEl.contains(m)) { e.preventDefault(); openEditHighlight(Number(m.dataset.id)); }
   });
 
+  // Reading progress. Passive so it can never block the compositor, and the
+  // handler itself only sets a flag and asks for a frame.
+  scrollEl.addEventListener("scroll", scheduleProgress, { passive: true });
+  // Two sources of a stale `progMax`, one observer. `#content` changes height
+  // when a render lands, when an image finishes loading, and when the content
+  // width or font changes; `#content-scroll` changes height when the window
+  // does. A `ResizeObserver` callback runs after layout, so measuring there is
+  // free — and nothing `measureProgress` writes (a transform on an element
+  // outside both, text inside a fixed-width box outside both) can resize either
+  // observed element, so it cannot feed itself.
+  if (window.ResizeObserver) {
+    const ro = new ResizeObserver(measureProgress);
+    ro.observe(scrollEl);
+    ro.observe(contentEl);
+  }
+
+  $("btn-print").onclick = printDocument;
+  $("btn-outline").onclick = toggleOutline;
+  $("outline-close").onclick = () => $("outline-panel").classList.remove("open");
   $("btn-stack").onclick = toggleStack;
   $("stack-close").onclick = () => $("stack-panel").classList.remove("open");
   $("btn-send").onclick = () => sendStack([]);
@@ -1015,25 +1682,49 @@ function wireKeys() {
     if (e.key === "Escape") {
       // Recording a keybind swallows Escape as "cancel", not "close panel".
       if (cancelRecording()) { e.preventDefault(); return; }
+      // So does a half-typed mark chord, for the same reason: both are
+      // transient input modes, and Escape backing out of the mode you are
+      // visibly in beats Escape reaching past it.
+      if (pendingMark) { clearMark(); e.preventDefault(); return; }
+      // Escape is also the way out of view mode, because view mode hides the
+      // titlebar and leaves nothing to click. It is the *last* claim on the
+      // key though: if any overlay or the file menu is open, this Escape
+      // closes that and view mode survives.
+      const claimed = ["palette-overlay", "annot-overlay", "confirm-overlay",
+                       "settings-overlay", "file-menu"]
+        .some((id) => $(id).classList.contains("open"));
       closePalette();
       closeFileMenu();
       if ($("annot-overlay").classList.contains("open")) cancelAnnot();
       if ($("confirm-overlay").classList.contains("open")) closeConfirm();
       if ($("settings-overlay").classList.contains("open")) closeSettings();
+      if (!claimed) exitView();
       return;
     }
-    // While an overlay is open, let its own inputs handle keys.
+    // While an overlay is open, let its own inputs handle keys. Any overlay
+    // reachable by mouse can be opened with a mark leader still armed, so this
+    // is also the central place that disarms it — cheaper and harder to forget
+    // than a `clearMark()` in each of the four open paths.
     if ($("palette-overlay").classList.contains("open") ||
         $("annot-overlay").classList.contains("open") ||
         $("confirm-overlay").classList.contains("open") ||
-        $("settings-overlay").classList.contains("open")) return;
+        $("settings-overlay").classList.contains("open")) { clearMark(); return; }
 
     // Palette works from anywhere.
-    if (matchCombo(e, keymap.palette)) { e.preventDefault(); openPalette(); return; }
-    if (matchCombo(e, keymap.settings)) { e.preventDefault(); openSettings(); return; }
+    if (matchCombo(e, keymap.palette)) { e.preventDefault(); clearMark(); openPalette(); return; }
+    if (matchCombo(e, keymap.settings)) { e.preventDefault(); clearMark(); openSettings(); return; }
 
-    // Bare-letter shortcuts must not fire while typing in a field.
-    if (isEditable(e.target)) return;
+    // Bare-letter shortcuts must not fire while typing in a field. Same reason
+    // as the overlay guard for the `clearMark`: focus can reach a field by
+    // mouse while a leader is armed, and a mark must never eat what someone is
+    // typing into a textarea.
+    if (isEditable(e.target)) { clearMark(); return; }
+
+    // The second half of a mark chord outranks every single-combo binding: with
+    // `m` armed, `h` is the mark letter, not the highlight shortcut. Sits below
+    // both guards above so it can only ever see keystrokes aimed at the
+    // document.
+    if (consumeMarkKey(e)) return;
 
     // The configured highlight key turns the current selection into a dreamd
     // highlight and prompts for an annotation. It does NOT toggle mode. Bare
@@ -1043,7 +1734,19 @@ function wireKeys() {
       triggerHighlight();
       return;
     }
+    if (matchCombo(e, keymap.toggle_view)) { e.preventDefault(); toggleView(); return; }
+    if (matchCombo(e, keymap.toggle_tree)) { e.preventDefault(); toggleTree(); return; }
+    if (matchCombo(e, keymap.toggle_outline)) { e.preventDefault(); toggleOutline(); return; }
     if (matchCombo(e, keymap.toggle_stack)) { e.preventDefault(); toggleStack(); return; }
+    if (matchCombo(e, keymap.jump_top)) { e.preventDefault(); jumpTop(); return; }
+    if (matchCombo(e, keymap.jump_bottom)) { e.preventDefault(); jumpBottom(); return; }
+    if (matchCombo(e, keymap.next_file)) { e.preventDefault(); stepFile(1); return; }
+    if (matchCombo(e, keymap.prev_file)) { e.preventDefault(); stepFile(-1); return; }
+    // Arming only. The letter that follows is captured by `consumeMarkKey` at
+    // the top of the next keydown, which is why these stay ordinary combos and
+    // the settings panel needs no idea marks exist.
+    if (matchCombo(e, keymap.set_mark)) { e.preventDefault(); armMark("set"); return; }
+    if (matchCombo(e, keymap.jump_mark)) { e.preventDefault(); armMark("jump"); return; }
     if (matchCombo(e, keymap.send_stack)) { e.preventDefault(); sendStack([]); return; }
     if (matchCombo(e, keymap.copy_stack)) {
       // Don't hijack a real copy: if text is selected, let the OS copy it.
@@ -1054,6 +1757,12 @@ function wireKeys() {
       return;
     }
   });
+
+  // Switching away with a leader armed and coming back minutes later must not
+  // find it still waiting. The timeout would catch this anyway; blur catches it
+  // without waiting for the timeout to be *checked*, which only happens on the
+  // next keydown.
+  window.addEventListener("blur", clearMark);
 }
 
 // ---- tooltips ------------------------------------------------------------
@@ -1166,7 +1875,16 @@ const KEY_ACTIONS = [
   { id: "palette_prev", label: "Palette: previous result" },
   { id: "highlight", label: "Highlight selection", sub: "Turn the selection into evidence and ask for an annotation" },
   { id: "save_annotation", label: "Save annotation", sub: "From inside the annotation box" },
+  { id: "toggle_outline", label: "Toggle contents panel", sub: "Outline of the open document's headings" },
+  { id: "toggle_tree", label: "Toggle file tree", sub: "Collapse or restore the sidebar" },
+  { id: "toggle_view", label: "Toggle view mode", sub: "Hide the titlebar, sidebar and panels — Esc also exits" },
   { id: "toggle_stack", label: "Toggle stack panel" },
+  { id: "jump_top", label: "Jump to top", sub: "Scroll the open document to the start" },
+  { id: "jump_bottom", label: "Jump to bottom" },
+  { id: "next_file", label: "Next file", sub: "Move through the sidebar's order without touching the tree — wraps at the ends" },
+  { id: "prev_file", label: "Previous file" },
+  { id: "set_mark", label: "Set mark", sub: "Then a letter or digit: remembers this file and scroll position until the app quits" },
+  { id: "jump_mark", label: "Jump to mark", sub: "Then the same letter — marks work across files" },
   { id: "send_stack", label: "Send stack to agent" },
   { id: "copy_stack", label: "Copy stack", sub: "Ignored while text is selected, so OS copy still works" },
   { id: "settings", label: "Open settings" },
