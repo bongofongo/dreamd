@@ -528,3 +528,243 @@ fn parse_hex(value: &str) -> Option<(u8, u8, u8)> {
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ---- user_path: the path-traversal guard ------------------------------
+
+    #[test]
+    fn a_theme_name_may_not_escape_the_themes_directory() {
+        for name in [
+            "",
+            ".",
+            "..",
+            "../evil",
+            "a/b",
+            "a\\b",
+            "/etc/passwd",
+            "with space",
+            "semi;colon",
+            "~root",
+            &"x".repeat(65),
+        ] {
+            assert!(user_path(name).is_none(), "should refuse {name:?}");
+        }
+    }
+
+    #[test]
+    fn ordinary_theme_names_are_accepted() {
+        for name in ["nord", "my-theme_1.2", "A", &"x".repeat(64)] {
+            let path = user_path(name).unwrap_or_else(|| panic!("should accept {name:?}"));
+            assert_eq!(path.parent(), Some(user_dir().as_path()));
+            assert_eq!(
+                path.file_name().and_then(|f| f.to_str()),
+                Some(format!("{name}.css").as_str())
+            );
+        }
+    }
+
+    // ---- custom_property --------------------------------------------------
+
+    #[test]
+    fn the_last_declaration_wins() {
+        let css = ":root { --bg: #111; --bg: #222; }";
+        assert_eq!(
+            custom_property(css, "--bg", Scheme::Dark).as_deref(),
+            Some("#222")
+        );
+    }
+
+    #[test]
+    fn a_property_match_must_start_on_a_boundary() {
+        // `--panel--bg:` must not answer a query for `--bg`.
+        let css = ":root { --panel--bg: #999; }";
+        assert_eq!(custom_property(css, "--bg", Scheme::Dark), None);
+        let css = ":root { --panel--bg: #999; --bg: #111; }";
+        assert_eq!(
+            custom_property(css, "--bg", Scheme::Dark).as_deref(),
+            Some("#111")
+        );
+    }
+
+    #[test]
+    fn a_final_declaration_without_a_semicolon_stops_at_the_brace() {
+        let css = ":root { --bg: #abc }\nbody { color: red }";
+        assert_eq!(
+            custom_property(css, "--bg", Scheme::Dark).as_deref(),
+            Some("#abc")
+        );
+    }
+
+    #[test]
+    fn a_commented_out_declaration_cannot_win() {
+        let css = ":root { --bg: #111; /* --bg: #222; */ }";
+        assert_eq!(
+            custom_property(css, "--bg", Scheme::Dark).as_deref(),
+            Some("#111")
+        );
+        // An unterminated comment swallows the rest of the file.
+        let css = ":root { --bg: #111; } /* :root { --bg: #222; }";
+        assert_eq!(
+            custom_property(css, "--bg", Scheme::Dark).as_deref(),
+            Some("#111")
+        );
+    }
+
+    // ---- mode_slice -------------------------------------------------------
+
+    #[test]
+    fn a_flat_palette_reads_the_same_in_both_schemes() {
+        // The compatibility guarantee for every pre-family user file.
+        let css = ":root { --bg: #123456; }";
+        assert_eq!(
+            custom_property(css, "--bg", Scheme::Light),
+            custom_property(css, "--bg", Scheme::Dark)
+        );
+        assert!(!has_mode_blocks(css));
+    }
+
+    #[test]
+    fn each_scheme_reads_only_its_own_block() {
+        let css = concat!(
+            ":root { --bg: #shared; }\n",
+            ":root[data-mode=\"light\"] { --bg: #fbf1c7; }\n",
+            ":root[data-mode=\"dark\"] { --bg: #282828; }\n",
+        );
+        assert_eq!(
+            custom_property(css, "--bg", Scheme::Light).as_deref(),
+            Some("#fbf1c7")
+        );
+        assert_eq!(
+            custom_property(css, "--bg", Scheme::Dark).as_deref(),
+            Some("#282828")
+        );
+        assert!(has_mode_blocks(css));
+    }
+
+    #[test]
+    fn a_mode_block_written_first_still_wins() {
+        // The reason this scheme's blocks are *moved to the end* rather than
+        // merely kept: CSS ranks `:root[data-mode=…]` above `:root` whatever
+        // the source order, and a textual last-wins scan would disagree.
+        let css = concat!(
+            ":root[data-mode=\"dark\"] { --bg: #282828; }\n",
+            ":root { --bg: #shared; }\n",
+        );
+        assert_eq!(
+            custom_property(css, "--bg", Scheme::Dark).as_deref(),
+            Some("#282828")
+        );
+        // ...and Light, having no block of its own, falls back to the shared.
+        assert_eq!(
+            custom_property(css, "--bg", Scheme::Light).as_deref(),
+            Some("#shared")
+        );
+    }
+
+    #[test]
+    fn a_brace_inside_a_string_does_not_desynchronise_the_scan() {
+        let css = concat!(
+            ":root[data-mode=\"dark\"] { --quote: \"}\"; --bg: #282828; }\n",
+            ":root { --bg: #shared; }\n",
+        );
+        assert_eq!(
+            custom_property(css, "--bg", Scheme::Dark).as_deref(),
+            Some("#282828")
+        );
+    }
+
+    #[test]
+    fn a_mode_block_nested_in_a_media_query_is_still_found() {
+        let css = concat!(
+            ":root { --bg: #shared; }\n",
+            "@media print {\n",
+            "  :root[data-mode=\"dark\"] { --bg: #000; }\n",
+            "}\n",
+        );
+        assert_eq!(
+            custom_property(css, "--bg", Scheme::Dark).as_deref(),
+            Some("#000")
+        );
+    }
+
+    #[test]
+    fn mode_attr_accepts_the_forms_css_allows() {
+        assert_eq!(
+            mode_attr(":root[data-mode=\"dark\"]"),
+            Some(Some(Scheme::Dark))
+        );
+        assert_eq!(
+            mode_attr(":root[data-mode='light']"),
+            Some(Some(Scheme::Light))
+        );
+        assert_eq!(
+            mode_attr(":root[data-mode = \"dark\"]"),
+            Some(Some(Scheme::Dark))
+        );
+        assert_eq!(mode_attr("html[data-mode=dark]"), Some(Some(Scheme::Dark)));
+        assert_eq!(mode_attr("[DATA-MODE~=\"dark\"]"), Some(Some(Scheme::Dark)));
+        // A selector naming a mode we don't know belongs to neither scheme.
+        assert_eq!(mode_attr(":root[data-mode=\"sepia\"]"), Some(None));
+        // No `data-mode` at all.
+        assert_eq!(mode_attr(":root"), None);
+        assert_eq!(mode_attr("body > .reader"), None);
+    }
+
+    #[test]
+    fn a_block_for_an_unknown_mode_is_dropped_from_both_schemes() {
+        let css = concat!(
+            ":root { --bg: #shared; }\n",
+            ":root[data-mode=\"sepia\"] { --bg: #f4ecd8; }\n",
+        );
+        for scheme in [Scheme::Light, Scheme::Dark] {
+            assert_eq!(
+                custom_property(css, "--bg", scheme).as_deref(),
+                Some("#shared"),
+                "{scheme:?} picked up the sepia block"
+            );
+        }
+    }
+
+    // ---- values -----------------------------------------------------------
+
+    #[test]
+    fn hex_colours_parse_in_every_css_length() {
+        assert_eq!(parse_hex("#abcdef"), Some((0xab, 0xcd, 0xef)));
+        assert_eq!(parse_hex("#abc"), Some((0xaa, 0xbb, 0xcc)));
+        // Alpha is accepted and ignored — the window frame has no alpha.
+        assert_eq!(parse_hex("#abcdef80"), Some((0xab, 0xcd, 0xef)));
+        assert_eq!(parse_hex("#abcd"), Some((0xaa, 0xbb, 0xcc)));
+    }
+
+    #[test]
+    fn a_non_hex_colour_yields_none_rather_than_a_wrong_one() {
+        for value in ["rebeccapurple", "rgb(1,2,3)", "#gg0011", "#12345", "", "#"] {
+            assert_eq!(parse_hex(value), None, "should refuse {value:?}");
+        }
+    }
+
+    #[test]
+    fn syntax_theme_is_unquoted_and_trimmed() {
+        let css = ":root { --syntax-theme: \"base16-ocean.dark\" ; }";
+        assert_eq!(
+            syntax_theme(css, Scheme::Dark).as_deref(),
+            Some("base16-ocean.dark")
+        );
+        // An empty declaration is None, not Some("").
+        let css = ":root { --syntax-theme: \"\"; }";
+        assert_eq!(syntax_theme(css, Scheme::Dark), None);
+    }
+
+    #[test]
+    fn background_reads_the_scheme_it_was_asked_for() {
+        let css = concat!(
+            ":root[data-mode=\"light\"] { --bg: #ffffff; }\n",
+            ":root[data-mode=\"dark\"] { --bg: #000000; }\n",
+        );
+        assert_eq!(background(css, Scheme::Light), Some((255, 255, 255)));
+        assert_eq!(background(css, Scheme::Dark), Some((0, 0, 0)));
+    }
+}

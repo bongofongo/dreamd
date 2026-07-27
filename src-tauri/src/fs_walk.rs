@@ -124,3 +124,71 @@ pub fn markdown_paths(repo_root: &Path, extra_ignores: &[String]) -> Vec<PathBuf
     files.sort();
     files
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tree(files: &[&str]) -> FileNode {
+        let root = Path::new("/repo");
+        let paths: Vec<PathBuf> = files.iter().map(|f| root.join(f)).collect();
+        build_tree(root, &paths)
+    }
+
+    fn names(node: &FileNode) -> Vec<&str> {
+        node.children.iter().map(|c| c.name.as_str()).collect()
+    }
+
+    #[test]
+    fn a_flat_list_becomes_a_nested_tree() {
+        let t = tree(&["a.md", "docs/b.md", "docs/deep/c.md"]);
+        assert!(t.is_dir);
+        assert_eq!(t.name, "repo");
+        assert_eq!(t.rel, "");
+        assert_eq!(names(&t), vec!["docs", "a.md"]);
+
+        let docs = &t.children[0];
+        assert!(docs.is_dir);
+        assert_eq!(docs.rel, "docs");
+        assert_eq!(names(docs), vec!["deep", "b.md"]);
+
+        let deep = &docs.children[0];
+        assert_eq!(deep.children.len(), 1);
+        assert_eq!(deep.children[0].rel, "docs/deep/c.md");
+        assert_eq!(deep.children[0].path, "/repo/docs/deep/c.md");
+        assert!(!deep.children[0].is_dir);
+    }
+
+    #[test]
+    fn directories_come_before_files_and_both_are_sorted() {
+        // `BTreeMap`s give the ordering; `to_node` chains dirs then files.
+        let t = tree(&["z.md", "a.md", "zeta/x.md", "alpha/y.md"]);
+        assert_eq!(names(&t), vec!["alpha", "zeta", "a.md", "z.md"]);
+    }
+
+    #[test]
+    fn a_directory_appears_once_however_many_files_it_holds() {
+        let t = tree(&["docs/a.md", "docs/b.md", "docs/c.md"]);
+        assert_eq!(names(&t), vec!["docs"]);
+        assert_eq!(names(&t.children[0]), vec!["a.md", "b.md", "c.md"]);
+    }
+
+    #[test]
+    fn an_empty_repo_is_an_empty_root_not_a_missing_one() {
+        let t = tree(&[]);
+        assert!(t.is_dir);
+        assert!(t.children.is_empty());
+        assert_eq!(t.name, "repo");
+    }
+
+    #[test]
+    fn a_path_outside_the_root_keeps_its_own_components() {
+        // `strip_prefix` falls back to the full path, so nothing is silently
+        // dropped or re-rooted — the absolute path nests under a `/` node.
+        let t = build_tree(Path::new("/repo"), &[PathBuf::from("/elsewhere/a.md")]);
+        assert_eq!(names(&t), vec!["/"]);
+        let elsewhere = &t.children[0].children[0];
+        assert_eq!(elsewhere.name, "elsewhere");
+        assert_eq!(elsewhere.children[0].path, "/elsewhere/a.md");
+    }
+}

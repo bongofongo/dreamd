@@ -433,3 +433,148 @@ fn deep_merge(base: &mut Table, over: Table) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! Only the pure table plumbing is exercised here. Anything reaching
+    //! `config_dir()` reads the *real* `~/.config/dreamd` — `config_check.rs`
+    //! owns those paths, because it can sandbox `XDG_CONFIG_HOME` for the whole
+    //! process without racing tests running in parallel threads.
+    use super::*;
+    use crate::theme::Scheme;
+
+    fn table(toml: &str) -> Table {
+        toml.parse::<Table>().expect("valid toml fixture")
+    }
+
+    // ---- deep_merge -------------------------------------------------------
+
+    #[test]
+    fn a_local_file_that_never_mentions_a_key_leaves_it_alone() {
+        // The regression this whole module is shaped around: merging at the
+        // struct level made "absent" and "defaulted" indistinguishable, so a
+        // `.dreamd.toml` setting only `theme` blanked the global `[keymap]`.
+        let mut base = table(
+            "tmux_autodetect = false\n\
+             [keymap]\n\
+             palette = \"Ctrl+Space\"\n\
+             highlight = \"Ctrl+H\"\n",
+        );
+        deep_merge(&mut base, table("theme = \"nord\"\n"));
+        assert_eq!(
+            get_key(&base, "keymap.palette").and_then(|v| v.as_str()),
+            Some("Ctrl+Space")
+        );
+        assert_eq!(
+            get_key(&base, "tmux_autodetect").and_then(|v| v.as_bool()),
+            Some(false)
+        );
+        assert_eq!(
+            get_key(&base, "theme").and_then(|v| v.as_str()),
+            Some("nord")
+        );
+    }
+
+    #[test]
+    fn merging_recurses_into_sub_tables_key_by_key() {
+        let mut base = table("[keymap]\npalette = \"Ctrl+Space\"\nhighlight = \"Ctrl+H\"\n");
+        deep_merge(&mut base, table("[keymap]\nhighlight = \"Ctrl+B\"\n"));
+        assert_eq!(
+            get_key(&base, "keymap.palette").and_then(|v| v.as_str()),
+            Some("Ctrl+Space"),
+            "an untouched sibling keybind was lost"
+        );
+        assert_eq!(
+            get_key(&base, "keymap.highlight").and_then(|v| v.as_str()),
+            Some("Ctrl+B")
+        );
+    }
+
+    #[test]
+    fn a_non_table_value_is_replaced_wholesale() {
+        // Arrays are values, not tables — a local `extra_ignores` overrides
+        // rather than appending to the global one.
+        let mut base = table("extra_ignores = [\"a\", \"b\"]\n");
+        deep_merge(&mut base, table("extra_ignores = [\"c\"]\n"));
+        let got = get_key(&base, "extra_ignores").and_then(|v| v.as_array());
+        assert_eq!(got.map(|a| a.len()), Some(1));
+    }
+
+    #[test]
+    fn a_table_replacing_a_scalar_does_not_recurse() {
+        let mut base = table("keymap = \"nonsense\"\n");
+        deep_merge(&mut base, table("[keymap]\npalette = \"Ctrl+P\"\n"));
+        assert_eq!(
+            get_key(&base, "keymap.palette").and_then(|v| v.as_str()),
+            Some("Ctrl+P")
+        );
+    }
+
+    // ---- nest / get_key / flat_keys --------------------------------------
+
+    #[test]
+    fn a_dotted_key_nests_into_tables() {
+        let t = nest("keymap.palette", "Ctrl+P".into());
+        assert_eq!(
+            get_key(&t, "keymap.palette").and_then(|v| v.as_str()),
+            Some("Ctrl+P")
+        );
+        // A key with no dots is a plain leaf.
+        let t = nest("theme", "nord".into());
+        assert_eq!(get_key(&t, "theme").and_then(|v| v.as_str()), Some("nord"));
+    }
+
+    #[test]
+    fn get_key_returns_none_rather_than_walking_off_a_scalar() {
+        let t = table("theme = \"nord\"\n[keymap]\npalette = \"Ctrl+P\"\n");
+        assert!(get_key(&t, "theme.deeper").is_none());
+        assert!(get_key(&t, "keymap.missing").is_none());
+        assert!(get_key(&t, "nothing").is_none());
+        // A sub-table is itself addressable.
+        assert!(get_key(&t, "keymap").and_then(|v| v.as_table()).is_some());
+    }
+
+    #[test]
+    fn flat_keys_lists_leaves_not_tables() {
+        let t = table("theme = \"nord\"\n[keymap]\npalette = \"Ctrl+P\"\nhighlight = \"Ctrl+H\"\n");
+        let mut keys = flat_keys(&t);
+        keys.sort();
+        assert_eq!(keys, vec!["keymap.highlight", "keymap.palette", "theme"]);
+    }
+
+    // ---- parse_value ------------------------------------------------------
+
+    #[test]
+    fn a_cli_value_is_parsed_as_toml_when_it_can_be() {
+        assert_eq!(parse_value("true").as_bool(), Some(true));
+        assert_eq!(parse_value("42").as_integer(), Some(42));
+        assert_eq!(parse_value("\"nord\"").as_str(), Some("nord"));
+        assert_eq!(
+            parse_value("[\"a\", \"b\"]").as_array().map(|a| a.len()),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn an_unparseable_value_falls_back_to_a_bare_string() {
+        // `dreamd config set theme nord` — no quotes typed, and none needed.
+        assert_eq!(parse_value("nord").as_str(), Some("nord"));
+        assert_eq!(parse_value("Ctrl+Space").as_str(), Some("Ctrl+Space"));
+        assert_eq!(parse_value("").as_str(), Some(""));
+    }
+
+    // ---- Mode -------------------------------------------------------------
+
+    #[test]
+    fn system_mode_defers_to_the_os_and_the_others_do_not() {
+        assert_eq!(Mode::System.resolve(Scheme::Light), Scheme::Light);
+        assert_eq!(Mode::System.resolve(Scheme::Dark), Scheme::Dark);
+        assert_eq!(Mode::Light.resolve(Scheme::Dark), Scheme::Light);
+        assert_eq!(Mode::Dark.resolve(Scheme::Light), Scheme::Dark);
+    }
+
+    #[test]
+    fn mode_defaults_to_system() {
+        assert_eq!(Mode::default(), Mode::System);
+    }
+}

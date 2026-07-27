@@ -13,7 +13,9 @@ use dreamd::catalog::Catalog;
 use dreamd::config::{Config, Keymap};
 use dreamd::fs_walk::FileNode;
 use dreamd::send::SendResult;
-use dreamd::{cli, config, home_relative, markdown, perf, read_source, send, theme, watcher};
+use dreamd::{
+    cli, config, guard, home_relative, markdown, perf, read_source, send, theme, watcher,
+};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -502,7 +504,7 @@ fn delete_file(state: State<AppState>, path: String) -> Result<(), String> {
         .map_err(|e| format!("cannot resolve {path}: {e}"))?;
     let root = state.root();
     let root = root.canonicalize().unwrap_or(root);
-    if !target.starts_with(&root) {
+    if !guard::inside_root(&root, &target) {
         return Err("refusing to delete outside the repo root".into());
     }
     trash_context().delete(&target).map_err(|e| e.to_string())
@@ -622,13 +624,10 @@ fn adopt_root(app: &tauri::AppHandle, path: PathBuf) {
 fn open_external(url: String) -> Result<(), String> {
     // Markdown content is untrusted, so restrict to safe schemes: a document
     // must not be able to hand `file:`, `javascript:`, or arbitrary app URL
-    // schemes to the OS opener.
-    let scheme = url.split_once(':').map(|(s, _)| s.to_ascii_lowercase());
-    match scheme.as_deref() {
-        Some("http" | "https" | "mailto") => open::that(&url).map_err(|e| e.to_string()),
-        Some(other) => Err(format!("refusing to open scheme: {other}")),
-        None => Err("refusing to open URL without a scheme".into()),
-    }
+    // schemes to the OS opener. The allowlist lives in `guard` so it is
+    // reachable from a test; this function is the I/O half.
+    guard::allowed_scheme(&url)?;
+    open::that(&url).map_err(|e| e.to_string())
 }
 
 /// Frontend-side timing mark, forwarded into the same NDJSON stream as the Rust

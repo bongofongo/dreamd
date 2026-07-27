@@ -641,3 +641,200 @@ impl Stripped {
         Some((start, end))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ---- tenet 4: raw HTML is escaped, never executed ---------------------
+
+    #[test]
+    fn block_html_is_escaped_not_emitted() {
+        let html = render("<script>alert(1)</script>\n");
+        assert!(!html.contains("<script"), "live script tag in {html:?}");
+        assert!(html.contains("&lt;script&gt;"), "not escaped: {html:?}");
+    }
+
+    #[test]
+    fn inline_html_is_escaped_not_emitted() {
+        let html = render("Some *text* <img src=x onerror=alert(1)> more.\n");
+        assert!(!html.contains("<img"), "live img tag in {html:?}");
+        assert!(html.contains("&lt;img"), "not escaped: {html:?}");
+        // The surrounding markdown still renders — escaping is not a bail-out.
+        assert!(html.contains("<em>text</em>"), "markdown lost: {html:?}");
+    }
+
+    #[test]
+    fn escaping_does_not_double_encode_its_own_output() {
+        // `&` must be replaced first, or `<` -> `&lt;` -> `&amp;lt;`.
+        assert_eq!(escape_html("a & b < c > d"), "a &amp; b &lt; c &gt; d");
+        assert_eq!(escape_html("&lt;"), "&amp;lt;");
+    }
+
+    #[test]
+    fn a_link_destination_is_not_a_way_to_smuggle_markup() {
+        // pulldown-cmark escapes attribute values itself; assert it, because a
+        // future switch of renderer is exactly when this would regress.
+        let html = render("[x](https://e.com/\"onmouseover=\"alert(1))\n");
+        assert!(!html.contains("onmouseover=\"alert"), "{html:?}");
+    }
+
+    // ---- heading slugs ----------------------------------------------------
+
+    #[test]
+    fn slug_follows_the_github_scheme() {
+        let mut s = Slugger::default();
+        assert_eq!(s.slug("  Hello, World!  "), "hello-world");
+        assert_eq!(s.slug("Keep_under-scores"), "keep_under-scores");
+        // Whitespace runs are *not* collapsed, matching github-slugger.
+        assert_eq!(s.slug("a  b"), "a--b");
+        // Punctuation is dropped, not turned into a separator.
+        assert_eq!(s.slug("C++ / Rust"), "c--rust");
+        // Lowercasing is Unicode-aware.
+        assert_eq!(s.slug("ÉCOLE"), "école");
+    }
+
+    #[test]
+    fn a_heading_that_slugs_to_nothing_gets_the_fallback() {
+        let mut s = Slugger::default();
+        assert_eq!(s.slug("***"), EMPTY_SLUG);
+        // ...and a second one is still distinct.
+        assert_eq!(s.slug("!!!"), format!("{EMPTY_SLUG}-1"));
+    }
+
+    #[test]
+    fn repeats_are_numbered_in_document_order() {
+        let mut s = Slugger::default();
+        assert_eq!(s.slug("Intro"), "intro");
+        assert_eq!(s.slug("Intro"), "intro-1");
+        assert_eq!(s.slug("Intro"), "intro-2");
+    }
+
+    #[test]
+    fn a_numbered_candidate_is_itself_collision_checked() {
+        // The guarantee that goes beyond GitHub: `## A`, `## A 1`, `## A`
+        // must still produce three distinct ids.
+        let mut s = Slugger::default();
+        assert_eq!(s.slug("A"), "a");
+        assert_eq!(s.slug("A 1"), "a-1");
+        assert_eq!(s.slug("A"), "a-2");
+    }
+
+    #[test]
+    fn slugs_are_stable_across_renders_of_the_same_source() {
+        let src = "# Intro\n\ntext\n\n## Intro\n\nmore\n";
+        assert_eq!(render(src), render(src));
+        assert!(render(src).contains("id=\"intro-1\""), "{}", render(src));
+    }
+
+    // ---- occurrences ------------------------------------------------------
+
+    #[test]
+    fn occurrences_includes_overlapping_matches() {
+        // `str::match_indices` yields only 0 and 4 here.
+        let hits: Vec<_> = occurrences("aaaa", "aa").collect();
+        assert_eq!(hits, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn occurrences_steps_over_whole_chars() {
+        // Advancing by one *byte* into a multi-byte char would panic on the
+        // next slice; the scan rounds up to a char boundary instead.
+        let hits: Vec<_> = occurrences("ééé", "é").collect();
+        assert_eq!(hits, vec![0, 2, 4]);
+    }
+
+    // ---- locate: the three tiers -----------------------------------------
+
+    #[test]
+    fn tier1_exact_match_with_context_picks_the_right_copy() {
+        let src = "one dup two\n\nthree dup four\n";
+        let loc = locate(src, "three ", "dup", " four").expect("located");
+        assert_eq!((loc.line_start, loc.line_end), (3, 3));
+    }
+
+    #[test]
+    fn tier2_exact_quote_alone_when_there_is_no_context() {
+        let src = "alpha\nbeta\ngamma\n";
+        let loc = locate(src, "", "beta", "").expect("located");
+        assert_eq!((loc.line_start, loc.line_end), (2, 2));
+    }
+
+    #[test]
+    fn tier3_matches_a_rendered_selection_across_a_line_break() {
+        // What `getSelection().toString()` yields: whitespace collapsed, so it
+        // matches no substring of the source. Only the stripped index can.
+        let src = "a paragraph that\nwraps across lines\n";
+        let loc = locate(src, "", "paragraph that wraps", "").expect("located");
+        assert_eq!((loc.line_start, loc.line_end), (1, 2));
+    }
+
+    #[test]
+    fn the_span_runs_first_to_last_non_whitespace_char() {
+        // A selection ending in a newline must not claim the following line.
+        let src = "first line\nsecond line\nthird line\n";
+        let loc = locate(src, "", "second line\n", "").expect("located");
+        assert_eq!((loc.line_start, loc.line_end), (2, 2));
+        // Leading whitespace likewise does not claim the line above.
+        let loc = locate(src, "", "\nsecond line", "").expect("located");
+        assert_eq!((loc.line_start, loc.line_end), (2, 2));
+    }
+
+    #[test]
+    fn an_edited_quote_is_not_found() {
+        // What makes a highlight Stale rather than silently re-anchoring.
+        assert!(locate("alpha\nbeta\n", "", "no such text", "").is_none());
+        assert!(locate("alpha\n", "", "   ", "").is_none());
+    }
+
+    #[test]
+    fn a_hint_separates_two_byte_identical_copies() {
+        // Identical block *including* its context — scoring cannot separate
+        // these, so the hint is the only evidence left.
+        let block = "before para\n\nshared line one\nshared line two\n\nafter para\n";
+        let src = format!("{block}\n---\n\n{block}");
+        let quote = "shared line one shared line two";
+        let (prefix, suffix) = ("before para ", " after para");
+        // Copies start on lines 3 and 12.
+        let at = |hint| {
+            SourceIndex::new(&src)
+                .locate_near(prefix, quote, suffix, hint)
+                .expect("located")
+                .line_start
+        };
+        assert_eq!(at(3), 3);
+        assert_eq!(at(12), 12);
+        // A hint is a hint: a stale one that lands nearer the second copy
+        // still resolves there, and never produces a worse answer than none.
+        assert_eq!(at(11), 12);
+    }
+
+    #[test]
+    fn without_context_the_first_occurrence_wins() {
+        // `best_match` short-circuits to `find` when there is nothing to score
+        // against, so a hint alone cannot move the answer. Documented here
+        // because it is the difference between this and the test above.
+        let src = "dup\n\ndup\n";
+        let mut index = SourceIndex::new(src);
+        assert_eq!(index.locate_near("", "dup", "", 3).unwrap().line_start, 1);
+    }
+
+    #[test]
+    fn a_shared_index_agrees_with_a_one_shot_locate() {
+        // `reanchor_file` reuses one index across every highlight in a file;
+        // that must not change any answer.
+        let src = "alpha beta\n\ngamma delta\n\nalpha beta\n";
+        let mut index = SourceIndex::new(src);
+        for (prefix, quote, suffix) in [
+            ("", "gamma delta", ""),
+            ("", "alpha beta", ""),
+            ("delta\n\n", "alpha beta", "\n"),
+        ] {
+            assert_eq!(
+                index.locate(prefix, quote, suffix).map(|l| l.line_start),
+                locate(src, prefix, quote, suffix).map(|l| l.line_start),
+                "disagreement on {quote:?}",
+            );
+        }
+    }
+}

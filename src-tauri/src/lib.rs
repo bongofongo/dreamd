@@ -11,6 +11,7 @@ pub mod catalog;
 pub mod cli;
 pub mod config;
 pub mod fs_walk;
+pub mod guard;
 pub mod markdown;
 #[cfg(target_os = "macos")]
 pub mod menu;
@@ -97,4 +98,100 @@ pub fn home_relative(path: &Path) -> String {
         }
     }
     path.to_string_lossy().into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn markdown_extensions_are_recognised() {
+        for name in ["a.md", "a.markdown", "a.mdown", "a.mkd", "deep/dir/a.md"] {
+            assert!(is_markdown(Path::new(name)), "should accept {name}");
+        }
+    }
+
+    #[test]
+    fn near_miss_extensions_are_not_markdown() {
+        // `.mdx` in particular: it is JSX, and rendering it as markdown would
+        // silently escape half the file.
+        for name in ["a.mdx", "a.txt", "a.rs", "a", "a.md.bak", "README"] {
+            assert!(!is_markdown(Path::new(name)), "should refuse {name}");
+        }
+    }
+
+    #[test]
+    fn extension_matching_is_case_sensitive() {
+        // Documented rather than desired: the walker and the frontend's own
+        // regex agree on lowercase, so a `.MD` file is invisible to both.
+        assert!(!is_markdown(Path::new("a.MD")));
+    }
+
+    #[test]
+    fn a_directory_with_no_git_reports_no_repo() {
+        // The false is what stops a Finder-launched `.app` — which gets cwd `/`
+        // — handing `/` to the walker as a tree root.
+        let dir = std::env::temp_dir().join(format!("dreamd-lib-test-{}", std::process::id()));
+        let nested = dir.join("no").join("repo").join("here");
+        std::fs::create_dir_all(&nested).expect("temp dirs");
+
+        let (root, found) = resolve_repo_root_found(Some(nested.clone()));
+        assert!(!found, "found a repo at {}", root.display());
+        assert_eq!(root, nested.canonicalize().unwrap_or(nested.clone()));
+
+        // Plant a `.git` two levels up and the walk stops there.
+        let repo = dir.join("no");
+        std::fs::create_dir_all(repo.join(".git")).expect("fake .git");
+        let (root, found) = resolve_repo_root_found(Some(nested));
+        assert!(found);
+        assert_eq!(root, repo.canonicalize().unwrap_or(repo));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_explicit_directory_is_honoured_repo_or_not() {
+        // Someone who types `dreamd ~/notes` means it, so `has_repo` is true
+        // even when the walk found nothing.
+        let dir = std::env::temp_dir().join(format!("dreamd-lib-arg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let (_, file, has_repo) = resolve_target(Some(dir.clone()));
+        assert!(has_repo, "an explicit path must not disable the walker");
+        assert_eq!(file, None, "a directory pre-opens nothing");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_non_markdown_file_argument_opens_nothing() {
+        let dir = std::env::temp_dir().join(format!("dreamd-lib-file-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let md = dir.join("a.md");
+        let txt = dir.join("a.txt");
+        std::fs::write(&md, "# hi\n").expect("write");
+        std::fs::write(&txt, "hi\n").expect("write");
+
+        let (_, file, _) = resolve_target(Some(md.clone()));
+        assert!(file.is_some(), "a markdown file argument opens");
+        let (_, file, _) = resolve_target(Some(txt));
+        assert_eq!(file, None, "a non-markdown argument opens nothing");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn home_relative_only_rewrites_paths_under_home() {
+        assert_eq!(
+            home_relative(Path::new("/nowhere/near/home")),
+            "/nowhere/near/home"
+        );
+        if let Some(home) = dirs::home_dir() {
+            assert_eq!(home_relative(&home.join("notes")), "~/notes");
+        }
+    }
+
+    #[test]
+    fn read_source_reports_the_path_it_could_not_read() {
+        let err = read_source("/definitely/not/a/file.md").unwrap_err();
+        assert!(err.contains("/definitely/not/a/file.md"), "got {err:?}");
+    }
 }

@@ -173,3 +173,126 @@ pub fn send(config: &Config, repo_root: &Path, pairs: &[Pair]) -> Result<SendRes
         temp_path: temp_str,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::annotations::Highlight;
+
+    fn pair(quote: &str, annotation: &str, line_start: usize, line_end: usize) -> Pair {
+        Pair {
+            highlight: Highlight {
+                id: 1,
+                file_path: "/repo/docs/a.md".into(),
+                line_start,
+                line_end,
+                quote: quote.into(),
+                prefix: String::new(),
+                suffix: String::new(),
+                state: HighlightState::Active,
+                annotation: Some(annotation.into()),
+            },
+            annotation: annotation.into(),
+        }
+    }
+
+    fn query(pairs: &[Pair]) -> String {
+        assemble_query(Path::new("/repo"), pairs)
+    }
+
+    #[test]
+    fn the_header_names_the_repo_root() {
+        let out = query(&[]);
+        assert!(out.starts_with("# dreamd query\n"), "{out:?}");
+        assert!(out.contains("Repo root: `/repo`"), "{out:?}");
+    }
+
+    #[test]
+    fn paths_are_reported_relative_to_the_repo_root() {
+        let out = query(&[pair("evidence", "why?", 4, 4)]);
+        assert!(out.contains("## 1. docs/a.md:4\n"), "{out}");
+        assert!(
+            !out.contains("/repo/docs/a.md"),
+            "absolute path leaked: {out}"
+        );
+    }
+
+    #[test]
+    fn a_path_outside_the_repo_root_is_left_absolute() {
+        let mut p = pair("evidence", "why?", 1, 1);
+        p.highlight.file_path = "/elsewhere/b.md".into();
+        assert!(
+            query(&[p]).contains("## 1. /elsewhere/b.md:1"),
+            "not absolute"
+        );
+    }
+
+    #[test]
+    fn a_single_line_highlight_reports_one_line_number() {
+        let out = query(&[pair("evidence", "why?", 7, 7)]);
+        assert!(out.contains("docs/a.md:7\n"), "{out}");
+        assert!(!out.contains("7-7"), "{out}");
+    }
+
+    #[test]
+    fn a_multi_line_highlight_reports_a_range() {
+        let out = query(&[pair("evidence", "why?", 7, 9)]);
+        assert!(out.contains("docs/a.md:7-9"), "{out}");
+    }
+
+    #[test]
+    fn pairs_are_numbered_in_stack_order() {
+        let out = query(&[
+            pair("first", "q1", 1, 1),
+            pair("second", "q2", 2, 2),
+            pair("third", "q3", 3, 3),
+        ]);
+        let at = |needle: &str| {
+            out.find(needle)
+                .unwrap_or_else(|| panic!("{needle} missing"))
+        };
+        assert!(at("## 1. ") < at("## 2. "));
+        assert!(at("## 2. ") < at("## 3. "));
+        assert!(at("q1") < at("q2") && at("q2") < at("q3"));
+    }
+
+    #[test]
+    fn every_evidence_line_is_block_quoted() {
+        // Otherwise a quote containing a `#` or a `-` reads as the agent's own
+        // markdown structure rather than as evidence.
+        let out = query(&[pair("# not a heading\n- not a list", "why?", 1, 2)]);
+        assert!(out.contains("> # not a heading\n"), "{out}");
+        assert!(out.contains("> - not a list\n"), "{out}");
+    }
+
+    #[test]
+    fn a_stale_highlight_is_labelled_as_such() {
+        let mut p = pair("evidence", "why?", 1, 1);
+        p.highlight.state = HighlightState::Stale;
+        assert!(query(&[p]).contains("this highlight is stale"));
+        // ...and an active one carries no note.
+        assert!(!query(&[pair("evidence", "why?", 1, 1)]).contains("stale"));
+    }
+
+    #[test]
+    fn the_annotation_is_carried_verbatim() {
+        let out = query(&[pair("evidence", "Why `this` and not $that?", 1, 1)]);
+        assert!(
+            out.contains("**Question:** Why `this` and not $that?"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn nothing_a_user_wrote_can_reach_a_command_line() {
+        // Tenet 3, the assertable half: the query is a document. `send` writes
+        // it to a temp file and tmux receives a fixed `read @<path>` prompt, so
+        // the shell never sees any of this — but assert the assembler itself
+        // does no escaping, quoting or interpolation of its own that would
+        // suggest otherwise.
+        let nasty = "$(rm -rf /) `id` \"; echo pwned; #";
+        let out = query(&[pair(nasty, nasty, 1, 1)]);
+        assert!(out.contains(&format!("> {nasty}\n")), "{out}");
+        assert!(out.contains(&format!("**Question:** {nasty}")), "{out}");
+    }
+}
