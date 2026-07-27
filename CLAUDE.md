@@ -67,7 +67,8 @@ paints; don't claim coverage beyond that.
 packaging/set-version.sh 0.2.0       # Cargo.toml + website/src/consts.ts + Cargo.lock
 packaging/check-version.sh 0.2.0     # CI assertion; tag must match the tree
 packaging/check-signing.sh           # CI preflight; the six APPLE_* secrets, from env
-NO_SIGN=1 packaging/build.sh aarch64-apple-darwin   # full release artifact, local
+NO_SIGN=1 packaging/build.sh aarch64-apple-darwin      # full release artifact, local
+NO_SIGN=1 packaging/build.sh x86_64-unknown-linux-gnu  # AppImage + .deb + .tar.gz
 ```
 
 ## Packaging
@@ -75,9 +76,19 @@ NO_SIGN=1 packaging/build.sh aarch64-apple-darwin   # full release artifact, loc
 `packaging/build.sh <triple>` is the entire pipeline — build, sign, notarize,
 staple, zip, checksum. `.github/workflows/release.yml` only wraps it, so a release
 is reproducible locally. Everything platform-specific is derived from the triple
-inside the script, never from the CI matrix: a Linux target is one matrix entry
-plus one `case` arm. Tag `v*` → draft release; **publishing** it bumps the
-Homebrew cask from `packaging/cask.rb.tmpl`.
+inside the script, never from the CI matrix. Tag `v*` → draft release;
+**publishing** it bumps the Homebrew cask from `packaging/cask.rb.tmpl`, and (if
+`vars.PUBLISH_AUR` is true) renders `packaging/PKGBUILD.tmpl` as an artifact.
+
+**Linux** is `x86_64-unknown-linux-gnu`, built on `ubuntu-22.04` — the oldest
+supported image, because the ELF links the runner's glibc and 2.35 runs on
+everything newer. Three artifacts: `.AppImage` and `.deb` from the bundler, plus
+a `.tar.gz` of the bundler's *staged deb tree* (`usr/bin/dreamd` + the generated
+`.desktop` + hicolor icons) — so the tarball, the deb and the AppImage carry
+byte-identical desktop integration, and `install.sh` and the PKGBUILD both just
+copy it. `tauri-bundler` has **no pacman backend**, which is why Arch goes
+through a hand-written `PKGBUILD.tmpl` instead of a fourth `--bundles` entry.
+Nothing on Linux is signed; the `.sha256` files are the integrity story.
 
 **Releases are signed and notarized.** Turned on 2026-07-26; `packaging/SIGNING.md`
 is the runbook, including rotation and back-out. The identity is
@@ -259,9 +270,30 @@ the upgrade procedure.
 - `watcher` — `notify` thread emitting `file-changed` / `file-added` / `file-removed` /
   `theme-reloaded`; the frontend responds by re-rendering and calling `reanchor`. It
   watches the repo, the user themes directory, and an explicit `theme_css` path — changing
-  `theme_css` needs a restart to re-arm that watch.
+  `theme_css` needs a restart to re-arm that watch. `Recursive` is one FSEvents
+  stream on macOS but one inotify watch **per directory** on Linux, against a
+  machine-wide `fs.inotify.max_user_watches` budget — the one place the same call
+  has a materially different cost per platform.
 - `send` — assembles markdown, writes a temp file, then tmux `send-keys` a fixed
   `read @<file>` prompt (falling back to clipboard). See tenet 3.
+- `menu` — the native menubar, and the only module with two whole `build`
+  implementations. muda exposes every `PredefinedMenuItem` on every platform but
+  its GTK backend silently *drops* all but Separator/Cut/Copy/Paste/SelectAll/About
+  and custom items, so the macOS bar would render two empty submenus on Linux;
+  Linux gets File/Edit/Help instead. Only custom items register a real GTK
+  accelerator, which is why Open Folder is `Ctrl+Shift+O` there — `CmdOrCtrl+O`
+  would be consumed before the webview saw it and `keymap.toggle_stack` would
+  simply stop working.
+
+**Platform surface.** After Linux became a shipping target the whole
+`#[cfg(target_os = "macos")]` surface is three things: `menu::build`'s two arms,
+`trash_context`'s `DeleteMethod::NsFileManager`, and `pty`'s `DEFAULT_SHELL`.
+Everything else — including `adopt_root`, which carries the config reload,
+re-walk, watcher re-arm, marks flush and socket retirement — compiles on both, on
+purpose: gating it was what kept it from ever being built off macOS.
+`config_dir()` already resolved to `~/.config/dreamd` on both platforms
+(`dirs::config_dir()` is deliberately its last resort), so the socket, the marks
+file and the themes directory need no per-platform anything.
 
 **Highlight anchoring is the subtle part.** A quote is located in the *source* by
 `markdown::locate` in three fallbacks: exact `prefix+quote+suffix`, exact quote, then
@@ -285,19 +317,30 @@ highlights from a corpus fixture.
 - Commits go **straight to main** — no branches, no PRs.
 - `cargo build` must pass before any commit touching `src-tauri/`.
 - `.github/workflows/ci.yml` runs fmt + clippy (`-D warnings`) + test + build on
-  **macos-14** for every push and PR, then `config_check`, `theme_check`,
-  `mcp_check`, `marks_check` and `locate_check` (the last against a cached
-  corpus), plus `node --test ui/paths.test.mjs` and `ui-check.mjs` on
-  ubuntu. macOS is not a preference: Tauri on Linux needs webkit2gtk, and the
-  `#[cfg(target_os = "macos")]` paths compile nowhere else. Run those harnesses
-  locally before pushing — CI is the backstop, not the first check.
-  Its toolchain is **pinned** (`dtolnay/rust-toolchain@1.97.1`); bumping it is a
-  deliberate commit that also clears whatever the new clippy found.
+  a **macos-14 / ubuntu-22.04 matrix** for every push and PR, then `config_check`,
+  `theme_check`, `mcp_check`, `marks_check` and `locate_check` (the last against a
+  cached corpus) on both, plus `node --test ui/paths.test.mjs` and `ui-check.mjs`
+  in a separate ubuntu job. The Linux arm is what keeps the untaken `cfg` arm from
+  rotting — that is exactly what happened to the Linux one while CI was macOS-only.
+  Run those harnesses locally before pushing — CI is the backstop, not the first
+  check. The toolchain is **pinned** (`dtolnay/rust-toolchain@1.97.1`); bumping it
+  is a deliberate commit that also clears whatever the new clippy found.
+- `.github/workflows/perf.yml` runs the quick tier and an unsigned
+  `packaging/build.sh` on **both** platforms. It gates nothing and moves no
+  baseline — a shared runner is not a quiet machine. Dispatch it with
+  `compare_ref` set for a same-runner A/B; the `package-smoke` job is the real
+  value, because a tagged release is frozen and a broken Linux arm found at tag
+  time cannot be re-run.
 - Repeatable flows become skills in `.claude/skills/`.
 - Performance is measured, not guessed. `/perf-quick` (~60s) after an edit,
   `/perf-pass` (~5min) before a large commit touching `src-tauri/` or `ui/` (do `/perf-quick` for smaller commits), `/perf-deep`
   (~20min) to profile or move the baseline only on user request. `perf/baseline.json` changes only via
   `perf-deep`, in the same commit as the change that justified it.
+  **The baseline is macOS-only and `run.sh` now enforces it**: off Darwin the tiers
+  still run and still write `perf/results/`, but no comparison is made and
+  `--update-baseline` is refused. To detect a regression on Linux, A/B two trees on
+  the same machine — a diff against one arm64 Mac's numbers is noise wearing a
+  regression's clothes.
 - Numbers from `perf/harness/` are Chromium, **not** WKWebView — relative regression
   signal only. Say so whenever quoting one. `perf/harness/ui-check.mjs` is the exception:
   it lives there for the Playwright install, asserts on DOM and IPC rather than timings,

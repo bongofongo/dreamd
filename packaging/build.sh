@@ -78,17 +78,52 @@ case "$TARGET" in
     ( cd "$(dirname "$APP")" && ditto -c -k --sequesterRsrc --keepParent "$(basename "$APP")" "$DIST/$NAME.zip" )
     ;;
   *-unknown-linux-gnu)
-    echo "build.sh: linux packaging not written yet" >&2
-    exit 1
+    # Nothing to verify: there is no Gatekeeper, no notarization ticket and no
+    # signature to check, so the codesign/spctl/stapler block above has no Linux
+    # counterpart. The bundler's own output is the artifact.
+    APPIMAGE="$(find "$BUNDLE/appimage" -maxdepth 1 -name '*.AppImage' -print -quit 2>/dev/null || true)"
+    DEB="$(find "$BUNDLE/deb" -maxdepth 1 -name '*.deb' -print -quit 2>/dev/null || true)"
+    [[ -n "$APPIMAGE" ]] || { echo "build.sh: no .AppImage under $BUNDLE/appimage" >&2; exit 1; }
+    [[ -n "$DEB" ]]      || { echo "build.sh: no .deb under $BUNDLE/deb" >&2; exit 1; }
+
+    echo "==> packaging $NAME.AppImage, $NAME.deb, $NAME.tar.gz"
+    rm -f "$DIST/$NAME.AppImage" "$DIST/$NAME.deb" "$DIST/$NAME.tar.gz"
+    cp "$APPIMAGE" "$DIST/$NAME.AppImage"
+    cp "$DEB" "$DIST/$NAME.deb"
+
+    # The third artifact is a plain FHS tree, and it is not redundant: one binary
+    # is both the GUI and the CLI (`dreamd mcp`, `theme`, `config`, `marks`), so
+    # a headless session, a container, install.sh and the PKGBUILD all want it
+    # without an AppImage's FUSE requirement or dpkg. tar is correct here in a
+    # way it is not on macOS — an ELF carries no signature in xattrs.
+    #
+    # It is tarred from the .deb's *staging* tree rather than from the release
+    # binary directly. The bundler leaves that tree in place after packing, and
+    # it already holds the generated .desktop entry and the hicolor icons — so
+    # the tarball, the .deb and the AppImage all carry byte-identical desktop
+    # integration instead of this script inventing a second copy that drifts.
+    DEBDATA="$(find "$BUNDLE/deb" -maxdepth 2 -type d -name data -print -quit 2>/dev/null || true)"
+    [[ -n "$DEBDATA" && -x "$DEBDATA/usr/bin/dreamd" ]] \
+      || { echo "build.sh: no staged deb tree with usr/bin/dreamd under $BUNDLE/deb" >&2; exit 1; }
+    tar -czf "$DIST/$NAME.tar.gz" -C "$DEBDATA" usr
     ;;
 esac
 
-# The checksums are the artifacts of record: the cask reads these files rather
-# than re-downloading and re-hashing, so its sha256s are provably the same bytes
-# that were signed here.
+# The checksums are the artifacts of record: the cask and the PKGBUILD read
+# these files rather than re-downloading and re-hashing, so their sha256s are
+# provably the same bytes that were built here.
+#
+# `shasum` is perl's and ships with macOS; most Linux images have `sha256sum`
+# from coreutils and not `shasum` at all. Both print "<hash>  <name>".
+if command -v shasum >/dev/null 2>&1; then
+  sha256() { shasum -a 256 "$1"; }
+else
+  sha256() { sha256sum "$1"; }
+fi
+
 ( cd "$DIST" && for f in "$NAME".*; do
     [[ "$f" == *.sha256 ]] && continue
-    shasum -a 256 "$f" | awk '{print $1}' > "$f.sha256"
+    sha256 "$f" | awk '{print $1}' > "$f.sha256"
     echo "    $f  $(cat "$f.sha256")"
   done )
 

@@ -64,10 +64,17 @@ const PANE_COMMAND: &str = "exec claude";
 
 /// The user's login shell, or a sane default. `SHELL` is what every terminal
 /// emulator reads; the fallback matters only for an environment that stripped
-/// it, where zsh is macOS's default since Catalina.
+/// it. zsh is macOS's default since Catalina, but it is not guaranteed to exist
+/// on Linux at all — `/bin/sh` is the only interactive shell POSIX promises, and
+/// `-l -c` is portable across every implementation of it.
 fn login_shell() -> String {
-    std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into())
+    std::env::var("SHELL").unwrap_or_else(|_| DEFAULT_SHELL.into())
 }
+
+#[cfg(target_os = "macos")]
+const DEFAULT_SHELL: &str = "/bin/zsh";
+#[cfg(not(target_os = "macos"))]
+const DEFAULT_SHELL: &str = "/bin/sh";
 
 impl Pty {
     /// Open a pty, spawn the pane's command in it, and start pumping output at

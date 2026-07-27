@@ -72,12 +72,21 @@ arboard = { version = "3", default-features = false }
 open = "5"
 trash = "5"
 portable-pty = "0.9.0"
-
 # The File -> Open picker, driven straight from the native menu handler. The
 # Tauri dialog plugin wraps this same crate; going direct avoids a plugin
-# registration and an ACL entry to reach the same NSOpenPanel.
-[target.'cfg(target_os = "macos")'.dependencies]
+# registration and an ACL entry to reach the same NSOpenPanel (GtkFileChooser on
+# Linux). Not target-gated: the picker exists on both platforms, and gating it
+# was what kept `adopt_root` — the config reload, re-walk, watcher re-arm and
+# marks swap — from ever being compiled off macOS.
 rfd = "0.17"
+
+# `arboard`'s defaults are off for `image-data`; Wayland's clipboard protocol is
+# a separate feature and dreamd needs it back, or the clipboard fallback in
+# `send.rs` fails on any Wayland session — which is the Arch default.
+[target.'cfg(target_os = "linux")'.dependencies]
+arboard = { version = "3", default-features = false, features = [
+  "wayland-data-control",
+] }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }

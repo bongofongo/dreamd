@@ -1,5 +1,157 @@
 # Session log
 
+## 2026-07-27 — Linux as a shipping target
+
+Asked for three things at once: cloud sessions that can actually run CI/CD, full
+testthroughs on Linux, and an Arch dev machine that is not a second-class
+citizen. All three turned out to be downstream of a single five-error build
+failure. They landed; the Linux half is written but has never run — CI is its
+first execution.
+
+### What happened
+
+1. **The one blocker.** `main.rs:1292-1295` referenced `dreamd::menu::build`,
+   `menu::OPEN_FOLDER/OPEN_FILE` and `open_target`, all
+   `#[cfg(target_os = "macos")]`. The library had always compiled on Linux; the
+   `[[bin]]` had not, since `docs/session-log.md:1189` recorded it. Ungated
+   `menu` (`lib.rs:20`), `open_target` and `adopt_root` (`main.rs`), and moved
+   `rfd` out of `[target.'cfg(target_os = "macos")'.dependencies]`. The call site
+   needed no edit at all — that was the test that the fix was the right shape.
+
+   Ungating `adopt_root` was the point of the exercise, not a side effect: it
+   carries the config reload, the re-walk, the watcher re-arm, the marks flush
+   and the socket retirement, and gating it was what kept all of that from ever
+   being *compiled* off macOS.
+
+2. **The menu could not simply be shared, and finding out why changed the
+   plan.** The plan said "ungate `menu.rs`, muda exposes every
+   `PredefinedMenuItem` on every platform". True of the API, false of the
+   backend: `is_item_supported!` in muda 0.19.3's `platform_impl/gtk` admits only
+   `Separator`, `Cut`, `Copy`, `Paste`, `SelectAll`, `About` and custom items.
+   `Undo`, `Redo`, `Minimize`, `Maximize`, `Fullscreen`, `Hide`, `HideOthers`,
+   `ShowAll`, `Services`, `CloseWindow` and `Quit` are *silently dropped*, so the
+   macOS bar would have rendered a "dreamd" submenu and a Window submenu with
+   nothing in either.
+
+   Worse, and caught in the same read: Cut/Copy/Paste/SelectAll only `set_accel`
+   on their label (cosmetic — `Ctrl+C` still reaches the webview), but **custom
+   items register a real accelerator on the window's accel group**. So
+   `CmdOrCtrl+O` on Linux would be consumed before the webview saw it and
+   `keymap.toggle_stack` (`Ctrl+O`, `config.rs:162`) would silently stop working
+   — not a double-fire, a disappearance. `menu::build` now has two arms: macOS
+   unchanged, Linux gets File/Edit/Help with `Ctrl+Shift+O` / `Ctrl+Alt+O`.
+
+3. **Dropped the per-platform window config, deliberately.** The plan (following
+   `docs/todo2.md:51-60`) wanted `titleBarStyle`/`hiddenTitle` moved into a
+   `tauri.macos.conf.json`. Tauri merges platform overlays with `json_patch`
+   (RFC 7386), which **replaces arrays wholesale** — so the overlay would have
+   had to duplicate the entire `app.windows[0]` object and then drift from the
+   base. `titleBarStyle` is already inert on Linux, so the split bought nothing.
+   Only `tauri.linux.conf.json` was added, carrying `bundle.targets` and the deb
+   dependencies.
+
+4. **Runtime papercuts.** `pty::login_shell`'s `/bin/zsh` fallback became a
+   `DEFAULT_SHELL` const — zsh on macOS, `/bin/sh` elsewhere, since zsh is not
+   guaranteed to exist on Linux. `arboard` is `default-features = false`, which
+   drops `wayland-data-control`; re-enabled for `cfg(target_os = "linux")` only,
+   or the clipboard fallback in `send.rs` would fail on every Wayland session —
+   the Arch default. Documented the inotify asymmetry in `watcher.rs`: one
+   FSEvents stream on macOS is one watch *per directory* on Linux against a
+   machine-wide budget.
+
+5. **Packaging, and a better tarball than planned.** `build.sh`'s first `case`
+   already yielded `appimage,deb` for `*-unknown-linux-gnu`; only the packaging
+   arm was `exit 1`. The plan said tar the bare release binary. Instead it tars
+   the bundler's **staged deb tree** (`$BUNDLE/deb/*/data`), which the bundler
+   leaves in place and which already holds the generated `.desktop` and the
+   hicolor icons — so the `.tar.gz`, the `.deb` and the AppImage carry
+   byte-identical desktop integration and `install.sh` and the PKGBUILD both
+   just copy it, instead of two scripts inventing a second copy that drifts.
+   `shasum` gained a `sha256sum` fallback (macOS ships one, Linux the other).
+
+   `install.sh` grew a Linux branch: `~/.local/bin` for the binary,
+   `~/.local/share` for the desktop entry and icons, never root, `ditto` and
+   `codesign` confined to the Darwin arm. New `packaging/PKGBUILD.tmpl` — a
+   `-bin` package in the same shape as `cask.rb.tmpl`, forced by the fact that
+   `tauri-bundler 2.9.4` has **no pacman backend** (verified against the crate
+   source: its `bundle/linux/` is appimage, debian, rpm).
+
+6. **CI parity.** `ci.yml`'s `rust` job is now a `macos-14` / `ubuntu-22.04`
+   matrix running identical steps — fmt, clippy `-D warnings`, test, build, then
+   `config_check`, `theme_check`, `mcp_check`, `marks_check`, `locate_check`.
+   The four `config_dir()` harnesses gain the most: the socket, the 0600/0700
+   modes and the atomic rename are the same code on a different kernel, and none
+   of it had ever run anywhere but macOS. `release.yml`'s commented Linux row is
+   live, plus an `aur` job behind `vars.PUBLISH_AUR` that renders and *uploads*
+   the PKGBUILD without pushing — pushing needs an AUR deploy key, which is its
+   own decision.
+
+7. **Perf on both platforms.** `stat -f%z` → BSD-then-GNU fallback. The `time`
+   fix mattered more than the flag suggests: macOS `/usr/bin/time -l` reports
+   peak RSS in **bytes**, GNU `time -v` in **kilobytes**, so parsing one with the
+   other's assumption is a silent 1024x error, plausible enough to sit in a
+   results file unnoticed. `startup.sh` now branches and normalises to bytes, and
+   reports `null` rather than a fabricated `0` when GNU time is absent.
+   `run.sh` refuses to diff against `perf/baseline.json` off Darwin, and refuses
+   `--update-baseline` outright — the baseline is one arm64 Mac's numbers, and a
+   Linux diff against it is noise wearing a regression's clothes.
+
+   New `.github/workflows/perf.yml`, per the user's ask for a not-too-deep CI
+   perf framework covering both pipelines: a `bench` job running the quick tier
+   on both (informational, gating nothing, with an opt-in same-runner A/B via a
+   `compare_ref` dispatch input) and a `package-smoke` job running
+   `NO_SIGN=1 packaging/build.sh` on both. The second is the one that earns its
+   keep — a tagged release is frozen, so a Linux arm found broken at tag time
+   cannot be re-run.
+
+### Mistakes & deviations
+
+- **Two plan items were wrong and were corrected mid-implementation**, both
+  found by reading the dependency source rather than trusting the API surface:
+  the shared menu (item 2) and the per-platform window config (item 3). Neither
+  had shown up in planning because both look correct from the outside.
+- The plan's `Ctrl+O` accelerator for Linux would have silently broken
+  `toggle_stack`. Caught by checking the default keymap against what muda's GTK
+  backend actually registers, not by testing — there is no Linux machine here to
+  test on.
+- The plan proposed a `src-tauri/src/platform/` module per `docs/todo2.md`. It
+  was not needed: the whole cfg surface came to three items (`menu::build`'s
+  arms, `trash_context`, `pty::DEFAULT_SHELL`), each already living in the module
+  it belongs to. Noted in `todo2.md` that `platform/` should wait until the
+  Mac-only window chrome gives it something to hold.
+- First draft of `perf.yml`'s step summary dumped whole nested JSON blobs for the
+  Chromium section; rewritten to walk to numeric leaves and keep `p50`/
+  `total_ms`/`wall_ms`.
+
+### State
+
+`cargo build`, `cargo fmt --check`, `cargo clippy --all-targets --all-features
+-D warnings` and 205 tests all green on macOS. `config_check` 34, `theme_check`
+20, `mcp_check` 46, `marks_check` 75, `locate_check` 0 disagreements,
+`paths.test.mjs`, `ui-check.mjs` 108. `NO_SIGN=1 packaging/build.sh
+aarch64-apple-darwin` produces a correct `dist/`, and `perf.yml`'s artifact
+assertion was dry-run against it.
+
+Both new guards were proven to bite rather than assumed to: re-gating
+`open_target` reproduces the same `E0425`s, and inverting the Darwin test makes
+`--update-baseline` exit 2 without touching `perf/baseline.json`. The Linux menu
+arm was type-checked by temporarily flipping its `cfg` and building it.
+
+`perf-pass`: 11 rows red against the committed baseline, but that baseline is a
+`deep` run and drifts. A/B'd against the previous `pass` run on the same machine
+it is 5 regressed / 23 improved with the entire Rust bench section unmoved, and
+the alarming baseline rows (`d:ipc_get_highlights` +7385%, `spread_ms` +1591%)
+are absent from the A/B. The 5 remaining are integer- or sub-millisecond-
+quantized and have no mechanism in this diff — on macOS these changes compile to
+essentially the same code. The loop improved: `save_to_paint_ms` 3055 → 2246ms
+(−26.5%), `events_per_save` 0.875. The machine was not quiet (load 2.31).
+`perf/results/pass-055dbbf-20260727-223410.json`.
+
+**Nothing here has run on Linux.** `cargo build`, the five harnesses, the
+AppImage/deb/tarball and the GTK menu shape are all first-run-in-CI. Left open:
+`README.md:11` still claims "No session state is persisted", which tenet 2's
+step-4 amendment made false — flagged to the user, not fixed, as out of scope.
+
 ## 2026-07-27 — Step 5: the embedded Claude Code pane, and a spike that opened the gate
 
 Step 5 of `docs/plans/agentic-mcp-persistence.md`, the last one and the one

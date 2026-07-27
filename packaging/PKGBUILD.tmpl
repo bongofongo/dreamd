@@ -1,0 +1,40 @@
+# Arch package for dreamd. The source of truth lives HERE, in the dreamd repo;
+# the rendered PKGBUILD is generated from it by the `aur` job in
+# .github/workflows/release.yml, which substitutes the two tokens below.
+#
+# This is a `-bin` package: it repackages the release tarball rather than
+# building from source, because tauri-bundler 2.9 has no pacman backend at all
+# (its linux bundlers are appimage, deb and rpm) and a from-source PKGBUILD would
+# have to re-derive the .desktop entry and the icon set that the bundler already
+# generates. The tarball is the bundler's own staged FHS tree, so this package
+# ships byte-identical desktop integration to the .deb and the AppImage.
+#
+#   makepkg -si          # from a directory holding the rendered PKGBUILD
+#
+# Maintainer: Oliver Fong <fongo02@proton.me>
+pkgname=dreamd-bin
+pkgver=@@VERSION@@
+pkgrel=1
+pkgdesc="GUI markdown reader with a highlight-to-agent loop"
+arch=('x86_64')
+url="https://fongo.uk/dreamd"
+license=('Apache-2.0')
+# webkit2gtk-4.1 is the engine and gtk3 the toolkit — the same two the README
+# names for a source build. gcc-libs and glibc are what the prebuilt ELF links
+# against; it is built on an older glibc than Arch ships, which is the direction
+# that works.
+depends=('webkit2gtk-4.1' 'gtk3' 'gcc-libs' 'glibc')
+optdepends=('tmux: zero-paste delivery of the stack to a running agent')
+provides=('dreamd')
+conflicts=('dreamd')
+options=('!strip')
+source=("dreamd-${pkgver}-x86_64-unknown-linux-gnu.tar.gz::https://github.com/bongofongo/dreamd/releases/download/v${pkgver}/dreamd-${pkgver}-x86_64-unknown-linux-gnu.tar.gz")
+sha256sums=('@@SHA_LINUX@@')
+
+package() {
+  # The tarball is already an FHS tree — usr/bin/dreamd, the .desktop entry and
+  # the hicolor icons — so this is a copy, not a layout decision. One binary is
+  # both the window and the CLI (`dreamd mcp`, `theme`, `config`, `marks`), so
+  # the two can never be different versions of each other.
+  cp -a "${srcdir}/usr" "${pkgdir}/usr"
+}

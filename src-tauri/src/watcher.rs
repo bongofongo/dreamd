@@ -72,6 +72,13 @@ pub fn spawn(
             }
         };
 
+        // `Recursive` is one FSEvents stream on macOS but one inotify watch per
+        // *directory* on Linux, against a `fs.inotify.max_user_watches` budget
+        // shared with every other watcher on the machine — an editor's LSP, a
+        // bundler, another dreamd. A repo deep enough to exhaust it fails here
+        // rather than silently going half-watched, which is why this reports
+        // instead of `let _ =`: the message is the only clue that live reload
+        // stopped working. See the troubleshooting note in the README.
         if let Err(e) = watcher.watch(&repo_root, RecursiveMode::Recursive) {
             eprintln!("dreamd: failed to watch {}: {e}", repo_root.display());
         }

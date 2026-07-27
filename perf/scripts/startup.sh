@@ -192,10 +192,35 @@ else
 fi
 
 # ---- peak memory ---------------------------------------------------------
-# macOS /usr/bin/time -l reports "maximum resident set size" in bytes.
+#
+# The two `time`s disagree about both the flag and the *unit*, and the unit is
+# the trap: macOS `/usr/bin/time -l` prints "maximum resident set size" in
+# **bytes**, GNU `/usr/bin/time -v` prints "Maximum resident set size (kbytes)"
+# in **kilobytes**. Parsing either with the other's assumption yields a number
+# that is silently wrong by 1024x — plausible enough to sit in a results file
+# unnoticed, which is why this normalises to bytes here rather than at the
+# reporting end.
+#
+# GNU time is a separate package (`time`) on most distros and is not the shell
+# builtin; when it is missing, report null rather than a fabricated zero.
 
-rss_bytes="$(/usr/bin/time -l "$BIN" --bench-startup "$LARGE" 2>&1 >/dev/null \
-  | awk '/maximum resident set size/ {print $1}')"
+case "$(uname -s)" in
+  Darwin)
+    rss_bytes="$(/usr/bin/time -l "$BIN" --bench-startup "$LARGE" 2>&1 >/dev/null \
+      | awk '/maximum resident set size/ {print $1}')"
+    ;;
+  *)
+    if [[ -x /usr/bin/time ]]; then
+      rss_kb="$(/usr/bin/time -v "$BIN" --bench-startup "$LARGE" 2>&1 >/dev/null \
+        | awk -F: '/Maximum resident set size/ {gsub(/ /,"",$2); print $2}')"
+      [[ -n "${rss_kb:-}" ]] && rss_bytes="$(( rss_kb * 1024 ))"
+    fi
+    if [[ -z "${rss_bytes:-}" ]]; then
+      echo "  note: GNU time not available — peak RSS not measured" >&2
+      rss_bytes=""
+    fi
+    ;;
+esac
 
 jq -n \
   --argjson prewindow "$prewindow" \
@@ -203,7 +228,7 @@ jq -n \
   --argjson phases_large "${phases_large:-null}" \
   --argjson launch "$launch" \
   --argjson launch_small "${launch_small:-null}" \
-  --argjson rss "${rss_bytes:-0}" \
+  --argjson rss "${rss_bytes:-null}" \
   --arg profile "$PROFILE" \
   '{
      source: "real-app",

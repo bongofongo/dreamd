@@ -712,12 +712,13 @@ fn trash_context() -> trash::TrashContext {
 /// The picker is `rfd` called straight from Rust rather than
 /// `tauri-plugin-dialog`: the trigger is a native menu event that is already on
 /// the Rust side, so routing it through IPC would mean a plugin registration and
-/// an ACL entry to reach the same NSOpenPanel.
-#[cfg(target_os = "macos")]
+/// an ACL entry to reach the same NSOpenPanel. `rfd` drives GTK3 on Linux — the
+/// toolkit tauri already links there — so the same call covers both.
 fn open_target(app: &tauri::AppHandle, want_file: bool) {
     let app = app.clone();
-    // NSOpenPanel must run its modal loop on the main thread. Menu events
-    // already arrive there, but going through `run_on_main_thread` says so.
+    // NSOpenPanel must run its modal loop on the main thread, and so must a GTK
+    // dialog. Menu events already arrive there, but going through
+    // `run_on_main_thread` says so.
     let handle = app.clone();
     let _ = handle.run_on_main_thread(move || {
         let dialog = rfd::FileDialog::new().set_title(if want_file {
@@ -740,7 +741,6 @@ fn open_target(app: &tauri::AppHandle, want_file: bool) {
 
 /// Point the whole app at `path`: swap the root, re-read config for the new
 /// repo, re-walk, re-arm the watcher, and tell the frontend to reload.
-#[cfg(target_os = "macos")]
 fn adopt_root(app: &tauri::AppHandle, path: PathBuf) {
     // A picked *file* roots the tree at its own repo, not at the process cwd
     // the way the CLI does. The cwd is meaningless here — for a Finder launch

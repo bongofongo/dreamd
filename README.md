@@ -12,7 +12,9 @@ highlights, annotations, and the stack live in memory and are gone when the
 process exits. Your preferences do persist — config and themes under
 `~/.config/dreamd/` — and that is the only thing dreamd ever writes.
 
-## Install (macOS)
+## Install
+
+### macOS
 
 ```sh
 brew install --cask bongofongo/tap/dreamd
@@ -34,15 +36,57 @@ Double-clicking the app opens no window: with no repo to show there is nothing
 to show, so it waits in the Dock with its menubar. **File ▸ Open Folder…**
 (`⌘O`) picks one. From a terminal, `dreamd` in a repo behaves as it always has.
 
-Linux: build from source for now.
+### Linux
+
+`x86_64` only for now. Three channels, all from the same
+[release](https://github.com/bongofongo/dreamd/releases):
+
+```sh
+# 1. AppImage — no install, runs anywhere with a WebKitGTK runtime
+chmod +x dreamd-*.AppImage && ./dreamd-*.AppImage
+
+# 2. Debian/Ubuntu
+sudo dpkg -i dreamd-*.deb
+
+# 3. anything else, no root: the binary into ~/.local/bin, desktop entry
+#    and icons into ~/.local/share
+curl -fsSL https://raw.githubusercontent.com/bongofongo/dreamd/main/packaging/install.sh | sh
+```
+
+Arch: render `packaging/PKGBUILD.tmpl` (the `aur` job in
+`.github/workflows/release.yml` does it with the release's version and checksum)
+and `makepkg -si`.
+
+There is no signing or notarization on Linux — nothing to strip, nothing to
+prompt. The `.sha256` files next to each artifact are the integrity check, and
+`install.sh` verifies them before it unpacks anything.
+
+The menubar differs from macOS's on purpose: GTK draws File, Edit and Help only,
+and **Open Folder…** is `Ctrl+Shift+O` rather than `Ctrl+O`, which is already
+bound to the stack panel inside the window.
 
 ## Requirements (building from source)
 
 - Rust (stable) + the Tauri CLI: `cargo install tauri-cli --version "^2"`
-- **Linux only:** WebKitGTK runtime — e.g. `webkit2gtk-4.1` (Debian/Ubuntu:
-  `libwebkit2gtk-4.1-dev`), plus `libgtk-3-dev`. macOS uses the system WKWebView,
-  no extra deps.
+- **Linux only:** the WebKitGTK runtime and the GTK3 toolkit. macOS uses the
+  system WKWebView and needs no extra deps.
+  - Debian/Ubuntu: `libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libssl-dev
+    libxdo-dev patchelf`
+  - Arch: `webkit2gtk-4.1 gtk3 librsvg openssl patchelf`
+  - Fedora: `webkit2gtk4.1-devel gtk3-devel librsvg2-devel openssl-devel patchelf`
 - Optional: `tmux` — not required, but it upgrades send-to-Claude to zero-paste.
+
+### If live reload stops working on Linux
+
+dreamd watches the repo recursively. That is one FSEvents stream on macOS but
+one **inotify watch per directory** on Linux, drawn from a machine-wide budget
+that an editor's LSP or a bundler is also spending. A repo deep enough to exhaust
+it makes dreamd print `failed to watch …` at startup and then never notice a
+save. Raise the budget:
+
+```sh
+sudo sysctl fs.inotify.max_user_watches=524288   # persist in /etc/sysctl.d/
+```
 
 ## Run
 

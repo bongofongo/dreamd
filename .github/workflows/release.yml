@@ -71,10 +71,11 @@ jobs:
       matrix:
         include:
           # Native runners per arch rather than cross-compiling: it sidesteps
-          # cross-linking under codesign entirely, and both are free on a public
-          # repo. Adding Linux later is one more entry here plus one `case` arm
-          # in packaging/build.sh — everything platform-specific is derived from
-          # the triple, never encoded in this matrix.
+          # cross-linking under codesign entirely, and all three are free on a
+          # public repo. Adding Linux was one more entry here plus one `case` arm
+          # in packaging/build.sh, exactly as this comment predicted —
+          # everything platform-specific is derived from the triple, never
+          # encoded in this matrix.
           - { target: aarch64-apple-darwin, runner: macos-14 }
           # macos-13 was retired 2025-12-04. A retired label does not error —
           # the job queues for a runner that will never exist and burns the 24h
@@ -82,13 +83,30 @@ jobs:
           # successor is the last Intel image Actions will offer; it goes away
           # in autumn 2027, at which point this row is deleted, not relabelled.
           - { target: x86_64-apple-darwin, runner: macos-15-intel }
-          # - { target: x86_64-unknown-linux-gnu, runner: ubuntu-22.04 }
+          # ubuntu-22.04 rather than -24.04 on purpose: the produced ELF links
+          # the runner's glibc, and 2.35 runs on everything newer while a 2.39
+          # build would refuse to start on anything older. There is no aarch64
+          # Linux row — no free native runner, and cross-linking webkit2gtk is a
+          # different problem from cross-linking nothing.
+          - { target: x86_64-unknown-linux-gnu, runner: ubuntu-22.04 }
     runs-on: ${{ matrix.runner }}
     # A cold build is ~8 minutes. This exists so that the *next* dead runner
     # label fails in half an hour instead of pinning the run for a day.
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+
+      # Kept identical to ci.yml's list. It is duplicated rather than factored
+      # into a composite action because two files of five lines each is cheaper
+      # to read than a third file, and apt is the one thing here that genuinely
+      # cannot come from the triple.
+      - name: Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev \
+            libssl-dev libxdo-dev patchelf file
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -241,3 +259,57 @@ jobs:
           # with no upstream and a bare push aborts with "no upstream branch"
           # — after notarizing, publishing, and rendering the cask.
           git push -u origin HEAD
+
+  # The Arch counterpart to `tap`, and deliberately one step short of it: it
+  # renders the PKGBUILD and uploads it, but does not push. Pushing needs an AUR
+  # account and an SSH deploy key in secrets, which is its own decision — until
+  # then the artifact is something to `makepkg -si` by hand or drop into the AUR
+  # manually, and the rendering is already proven correct by having run.
+  #
+  # Gated on PUBLISH_AUR, mirroring PUBLISH_CASK:
+  #
+  #   gh variable set PUBLISH_AUR --body true
+  #
+  # There is no signing to disarm here — pacman verifies the sha256 in the
+  # PKGBUILD, which is the same checksum file the build wrote.
+  aur:
+    if: >-
+      github.event_name == 'release' && !github.event.release.prerelease
+      && vars.PUBLISH_AUR == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Render the PKGBUILD
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # Via env rather than inline ${{ }} so the value is never spliced into
+          # the shell as source text.
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          V="${TAG#v}"
+          A=x86_64-unknown-linux-gnu
+          # The checksum the build already computed, not a re-hash: the .tar.gz
+          # is the bundler's staged FHS tree and this file is the record of it.
+          gh release download "$TAG" -R bongofongo/dreamd \
+            -p "dreamd-$V-$A.tar.gz.sha256" -O linux.sha256
+          SHA_LINUX="$(tr -d '[:space:]' < linux.sha256)"
+          sed -e "s|@@VERSION@@|$V|" \
+              -e "s|@@SHA_LINUX@@|$SHA_LINUX|" \
+              packaging/PKGBUILD.tmpl > PKGBUILD
+          # Token-shaped from the start, not a bare '@@': the template's own
+          # header comment says "the two tokens below", sed never touches a
+          # comment, and a bare match would fire on every single run — which is
+          # exactly what the cask guard above did until v0.1.0.
+          grep -n '@@[A-Z_]\+@@' PKGBUILD && { echo "unsubstituted token left in PKGBUILD" >&2; exit 1; }
+          # A PKGBUILD is a bash script; a syntax error here is a package nobody
+          # can build, and it costs nothing to catch before upload.
+          bash -n PKGBUILD
+          cat PKGBUILD
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PKGBUILD
+          path: PKGBUILD
+          if-no-files-found: error

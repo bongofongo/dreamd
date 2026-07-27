@@ -6,11 +6,15 @@ items out as they land, see `docs/session-log.md` for history.
 
 ## What I want to build
 
-- [ ] Start letting the Mac and Linux builds diverge a little — not a fork,
+- [x] Start letting the Mac and Linux builds diverge a little — not a fork,
       just: same engine and almost all functionality shared, but each target
       gets its own small UI tweaks and its own performance tuning. Baseline
       feel should stay close to identical on both; the divergence is additive
       polish, not a different app.
+      *Landed 2026-07-27, as the base rather than the polish: the binary now
+      compiles and packages on Linux, CI is a two-platform matrix, and the
+      first real divergence is `menu::build`'s two arms — forced by what muda's
+      GTK backend will actually draw, not chosen.*
 - [ ] Mac: a settings option to remove the traffic-light window controls
       (close/minimize/fullscreen) entirely.
 - [ ] Mac: make the top bar semi-transparent, Preview-style — content shows
@@ -19,10 +23,12 @@ items out as they land, see `docs/session-log.md` for history.
       off completely, but only as a package with the traffic lights also
       being off — no title bar and no window buttons, content edge-to-edge.
       Another settings-panel toggle.
-- [ ] Whatever this turns into on the Mac side, keep day-to-day development
+- [x] Whatever this turns into on the Mac side, keep day-to-day development
       streamlined across both platforms — a contributor working on the
       "engine" (fs walk, search, markdown, annotations, send) shouldn't have
       to think about which OS they're on at all.
+      *Landed 2026-07-27. Same commands on both, and the two-platform CI matrix
+      is what enforces it — see the note below on how this quietly goes wrong.*
 
 ## Deliberations — how this should actually work
 
@@ -101,3 +107,14 @@ if it can't run a full GUI test), or a habit of explicitly building on both
 platforms before merging anything that touches `platform/`. Keeping the
 platform-specific surface small (a couple of files, not scattered `cfg`s) is
 what makes that check cheap enough to actually happen.
+
+*Settled 2026-07-27, and the prediction was right in the mirror image: it was
+the **Linux** arm that rotted, because CI was macOS-only. `cargo build` had been
+failing on Linux with five errors since `docs/session-log.md:1189` recorded it.
+The answer is a `matrix: [macos-14, ubuntu-22.04]` on ci.yml's `rust` job running
+identical steps, plus `perf.yml`'s `package-smoke` for the release path. Note
+also that the `src-tauri/src/platform/` module this file proposes was not needed
+for the port — the whole cfg surface came to three items (`menu::build`'s arms,
+`trash_context`, `pty::DEFAULT_SHELL`), each already isolated in the module it
+belongs to. Introduce `platform/` when the Mac-only window chrome above lands
+and there is actually something to put in it.*

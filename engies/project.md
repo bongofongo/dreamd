@@ -235,6 +235,34 @@ causes were wrong.
 
 ## Recent updates
 
+- **2026-07-27** — **dreamd runs on Linux now, not just on a Mac.** It always
+  *could* in principle — the engine underneath was written to work on both — but
+  in practice the program had stopped compiling there months ago and nobody
+  noticed, because everything that checks the code automatically only ever ran on
+  a Mac. One small piece of Mac-only code was being called from a place that
+  wasn't Mac-only, and that was enough to break the whole build. That is fixed,
+  and the fix that matters more is the reason it went unnoticed: **every automatic
+  check now runs twice, once on each platform**, so the same thing cannot quietly
+  happen again in either direction.
+
+  What that gets you: releases now include a Linux download in three formats
+  (a single self-contained file that runs anywhere, a standard Debian/Ubuntu
+  package, and a recipe for Arch Linux), the automated checks can now be run by
+  anyone on a Linux machine rather than only on the author's laptop, and Linux is
+  a real place to develop dreamd rather than a place you can only read about it.
+  There is also a new automated performance check that runs on both platforms and,
+  more usefully, rehearses the *release build itself* on every change — a release
+  is frozen once it's published, so discovering the Linux half is broken at that
+  point is the expensive way to find out.
+
+  Two honest caveats. The Linux side has been written and reasoned about
+  carefully, but it has not yet been run by a person on an actual Linux machine —
+  the automated checks are its first outing. And the menus differ between the two
+  platforms on purpose: the Linux toolkit simply refuses to draw several of the
+  menu entries macOS uses, so rather than ship a menu with empty sections, Linux
+  gets a shorter one, and the "open a folder" shortcut moved there because the
+  Mac shortcut would have silently stolen a key the app already uses.
+
 - **2026-07-27** — **Claude Code now runs inside dreamd.** Press `Ctrl+T` and a
   terminal opens along the bottom of the reading pane with an assistant already
   started in the repository you are reading — the same one that can see your

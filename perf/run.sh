@@ -42,6 +42,27 @@ case "$TIER" in
   *) echo "usage: ./perf/run.sh {quick|pass|deep} [--update-baseline] [--verbose] [--no-window]" >&2; exit 2 ;;
 esac
 
+# ---- whose numbers are these? --------------------------------------------
+# perf/baseline.json is one machine's numbers — an arm64 Mac, WKWebView, APFS,
+# FSEvents. Diffing a Linux run against it does not measure a regression, it
+# measures the two machines, and every row would come back red on a tree nobody
+# touched. The tiers still RUN on Linux and still write perf/results/ — what is
+# withheld is the comparison, because a comparison against the wrong reference
+# is worse than none: it is noise wearing a regression's clothes.
+#
+# Updating it from here is refused outright for the same reason, one step
+# harder: that would replace the reference rather than misread it.
+BASELINE_APPLIES=1
+if [[ "$(uname -s)" != "Darwin" ]]; then
+  BASELINE_APPLIES=0
+  if (( UPDATE_BASELINE )); then
+    echo "refusing to update perf/baseline.json from $(uname -s)." >&2
+    echo "the baseline is a macOS machine's numbers; overwriting it here would" >&2
+    echo "silently re-zero every macOS comparison against a different computer." >&2
+    exit 2
+  fi
+fi
+
 # ---- exclusivity ---------------------------------------------------------
 # One tier at a time, always. Two runs sharing a machine measure each other,
 # and a stray `cargo` or corpus regenerate alongside a run silently corrupts it
@@ -282,7 +303,15 @@ say "results -> ${OUT#"$ROOT"/}"
 # skipping the `--update-baseline` step below and making the flag a no-op
 # exactly when a run had findings.
 STATUS=0
-node perf/lib/compare.mjs "$OUT" "$ROOT/perf/baseline.json" "$VERBOSE" || STATUS=$?
+if (( BASELINE_APPLIES )); then
+  node perf/lib/compare.mjs "$OUT" "$ROOT/perf/baseline.json" "$VERBOSE" || STATUS=$?
+else
+  echo "" >&2
+  echo "no baseline comparison on $(uname -s) — perf/baseline.json is macOS-only." >&2
+  echo "raw numbers: ${OUT#"$ROOT"/}" >&2
+  echo "to detect a regression here, A/B this tree against the one you changed it from" >&2
+  echo "on this same machine — that is what .github/workflows/perf.yml does in CI." >&2
+fi
 
 if (( UPDATE_BASELINE )); then
   if [[ "$TIER" != "deep" ]]; then

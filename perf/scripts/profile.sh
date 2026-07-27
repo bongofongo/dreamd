@@ -53,7 +53,12 @@ fi
 
 echo "building --release for size measurement..." >&2
 cargo build --release >&2
-size_bytes="$(stat -f%z "$ROOT/target/release/dreamd")"
+# BSD stat (macOS) spells it -f%z, GNU stat (Linux) spells it -c%s, and each
+# rejects the other's flag. Try BSD first — this file's other tooling is
+# macOS-first — and fall back rather than branching on `uname`, so a BSD-flavoured
+# Linux or a GNU coreutils on macOS both land on whichever actually works.
+size_bytes="$(stat -f%z "$ROOT/target/release/dreamd" 2>/dev/null \
+              || stat -c%s "$ROOT/target/release/dreamd")"
 
 bloat_json='null'
 if have cargo-bloat; then

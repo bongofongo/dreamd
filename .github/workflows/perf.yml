@@ -1,0 +1,269 @@
+# Performance, on both target pipelines.
+#
+# Two jobs, and neither of them gates a merge:
+#
+#   bench          — the quick tier on macOS and Linux, so the perf tooling and
+#                    the hot paths are exercised on both. Numbers go to the step
+#                    summary and to an artifact.
+#   package-smoke  — `packaging/build.sh` end to end on both, unsigned. This is
+#                    the one that matters most: a release is built from a tag,
+#                    and a tagged release is frozen — re-running it changes the
+#                    checksums a published cask names. Finding out at tag time
+#                    that the Linux arm broke is the expensive way to find out.
+#
+# **These numbers do not move perf/baseline.json and cannot.** The baseline is
+# one quiet arm64 Mac; a shared CI runner is neither quiet nor that machine, and
+# `perf/run.sh` refuses `--update-baseline` off Darwin outright. What CI gives is
+# "the tier still runs and produces plausible numbers on both platforms", not
+# "this commit is 3% slower". For a real regression read, use the A/B below or
+# run /perf-pass locally.
+#
+# The A/B: dispatch this workflow with `compare_ref` set to a ref (a SHA, a tag,
+# `HEAD~1`) and each runner additionally builds that ref and diffs the two with
+# perf/lib/compare.mjs — same machine, same job, back to back, which is the only
+# shape that survives runner variance. Off by default because it roughly doubles
+# the job.
+name: perf
+
+on:
+  workflow_dispatch:
+    inputs:
+      compare_ref:
+        description: "Ref to A/B against (blank = report HEAD's numbers only)"
+        required: false
+        default: ""
+  push:
+    branches: [main]
+    paths:
+      - "src-tauri/**"
+      - "ui/**"
+      - "perf/**"
+      - "packaging/**"
+      - ".github/workflows/perf.yml"
+  pull_request:
+    paths:
+      - "src-tauri/**"
+      - "ui/**"
+      - "perf/**"
+      - "packaging/**"
+      - ".github/workflows/perf.yml"
+
+# Perf runs are long and a superseded one measures nothing anybody wants.
+concurrency:
+  group: perf-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  bench:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, ubuntu-22.04]
+    steps:
+      # Full history: an A/B has to be able to check out an arbitrary ref, and a
+      # shallow clone cannot.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev \
+            libssl-dev libxdo-dev patchelf file jq
+          # GNU time is a separate package and is not the shell builtin; without
+          # it perf/scripts/startup.sh reports peak RSS as null rather than
+          # guessing. Only the pass and deep tiers reach that script, but
+          # installing it here keeps a dispatched deeper run from silently
+          # losing the row.
+          sudo apt-get install -y --no-install-recommends time
+
+      - uses: dtolnay/rust-toolchain@1.97.1
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+          key: perf-${{ matrix.os }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      # The corpus is deterministic from the manifest, so it caches across runs
+      # and across both matrix arms. run.sh regenerates it itself on a miss.
+      - uses: actions/cache@v4
+        with:
+          path: perf/corpus/generated
+          key: corpus-${{ hashFiles('perf/corpus/manifest.json', 'perf/corpus/gen.mjs') }}
+
+      # Without node_modules run.sh skips the Chromium scenarios and reports
+      # nulls — which would quietly halve what this job measures. --with-deps is
+      # Linux-only; on macOS it is neither needed nor supported.
+      - name: Chromium harness
+        working-directory: perf/harness
+        run: |
+          npm ci
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            npx playwright install --with-deps chromium
+          else
+            npx playwright install chromium
+          fi
+
+      # --no-window: the save-to-repaint loop needs a real window server and a
+      # real app on screen. The quick tier does not reach it, but saying so keeps
+      # a dispatched pass run from hanging on a headless runner.
+      #
+      # `|| true`: run.sh exits non-zero when compare.mjs finds a regression, and
+      # off Darwin it does not compare at all. Neither is a reason to fail this
+      # job — nothing here gates.
+      - name: Quick tier
+        run: ./perf/run.sh quick --no-window || true
+
+      - name: Summarise
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT="$(ls -t perf/results/quick-*.json 2>/dev/null | head -1 || true)"
+          if [ -z "$OUT" ]; then
+            echo "No results file — the tier did not complete." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          {
+            echo "## perf quick — ${{ matrix.os }}"
+            echo
+            echo "Chromium numbers are Chromium, not WKWebView or WebKitGTK, and a"
+            echo "shared runner is not a quiet machine. Relative signal only; these"
+            echo "do not and cannot move \`perf/baseline.json\`."
+            echo
+            echo "| metric | value |"
+            echo "| --- | --- |"
+            jq -r '(.bench // {}) | to_entries[]
+                   | "| bench \(.key) | \((.value*1000|round)/1000) ms |"' "$OUT"
+            # The chromium section nests several levels deep under keys that
+            # encode the scenario parameters, so dumping `to_entries` prints raw
+            # JSON blobs. Walk to the numeric leaves and keep the headline ones.
+            jq -r '(.chromium // {})
+                   | [paths(type=="number") as $p
+                      | {k: ($p|map(tostring)|join(".")), v: getpath($p)}]
+                   | .[] | select(.k|test("(p50|total_ms|wall_ms)$"))
+                   | "| chromium \(.k) | \((.v*1000|round)/1000) |"' "$OUT"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # The A/B. Same runner, same job, back to back — the only arrangement in
+      # which two CI timings are comparable to each other. compare.mjs is the
+      # same comparator the local tiers use; here the "baseline" is simply the
+      # other ref's results rather than perf/baseline.json.
+      - name: A/B against compare_ref
+        if: inputs.compare_ref != ''
+        shell: bash
+        env:
+          COMPARE_REF: ${{ inputs.compare_ref }}
+        run: |
+          set -euo pipefail
+          HEAD_OUT="$(ls -t perf/results/quick-*.json | head -1)"
+          cp "$HEAD_OUT" "$RUNNER_TEMP/head.json"
+
+          # A worktree, not a `git checkout`: the corpus, node_modules and the
+          # results directory all stay put in the main tree, and only the source
+          # being measured changes.
+          git worktree add "$RUNNER_TEMP/base" "$COMPARE_REF"
+          cp -R perf/corpus/generated "$RUNNER_TEMP/base/perf/corpus/" 2>/dev/null || true
+          cp -R perf/harness/node_modules "$RUNNER_TEMP/base/perf/harness/" 2>/dev/null || true
+          ( cd "$RUNNER_TEMP/base" && ./perf/run.sh quick --no-window || true )
+          BASE_OUT="$(ls -t "$RUNNER_TEMP"/base/perf/results/quick-*.json | head -1)"
+
+          {
+            echo "## A/B vs \`$COMPARE_REF\` — ${{ matrix.os }}"
+            echo
+            echo '```'
+            node perf/lib/compare.mjs "$RUNNER_TEMP/head.json" "$BASE_OUT" 1 || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: perf-${{ matrix.os }}
+          path: perf/results/*.json
+          if-no-files-found: warn
+
+  # The release pipeline, run against a PR instead of against a tag. NO_SIGN is
+  # what makes it runnable without the Apple secrets — packaging/check-signing.sh
+  # honours the same switch, and build.sh passes --no-sign through to the
+  # bundler. What is being tested is the *script*: the bundle selection, the
+  # artifact paths, the checksum loop and both `case` arms.
+  package-smoke:
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: aarch64-apple-darwin, runner: macos-14 }
+          - { target: x86_64-unknown-linux-gnu, runner: ubuntu-22.04 }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev \
+            libssl-dev libxdo-dev patchelf file
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+          key: smoke-${{ matrix.target }}
+
+      # Same pin as release.yml. A bundler change breaking the release must break
+      # here first, and it cannot do that if the two run different CLIs.
+      - name: Install tauri-cli
+        run: cargo install tauri-cli --version "2.11.4" --locked
+
+      - name: Build unsigned
+        env:
+          NO_SIGN: "1"
+        run: packaging/build.sh ${{ matrix.target }}
+
+      # build.sh already fails on a missing bundle, but it does not assert what
+      # reaches dist/ — and dist/ is what the release uploads, what the cask
+      # links to and what the PKGBUILD hashes. An artifact that silently stopped
+      # being produced would pass every check above this one.
+      - name: Assert artifacts
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          V="$(packaging/version.sh)"
+          N="dreamd-$V-$TARGET"
+          case "$TARGET" in
+            *-apple-darwin)      want=(zip) ;;
+            *-unknown-linux-gnu) want=(AppImage deb tar.gz) ;;
+          esac
+          fail=0
+          for ext in "${want[@]}"; do
+            for f in "dist/$N.$ext" "dist/$N.$ext.sha256"; do
+              if [ -s "$f" ]; then
+                echo "ok   $f"
+              else
+                echo "MISSING or empty: $f" >&2
+                fail=1
+              fi
+            done
+          done
+          ls -la dist/
+          exit "$fail"
