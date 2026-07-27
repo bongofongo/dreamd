@@ -131,6 +131,11 @@ to the crate version, verified.
    through untouched and reads the same in both — that is what keeps every pre-family
    user file working. Both surfaces are user-facing and hot-reloaded. `theme_css`
    points at a complete stylesheet instead, replacing the base.
+6. **Label what crosses into an agent.** Untrusted content crossing into an agent's
+   context is delimited and labelled, never merely passed. Tenet 4 is about a parser
+   and has escaping; this reader is an LLM, so there is only labelling —
+   `untrusted::delimit` and a per-process random sentinel a document cannot have been
+   written to contain.
 
 ## Architecture
 

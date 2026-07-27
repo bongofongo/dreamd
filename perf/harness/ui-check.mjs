@@ -690,6 +690,165 @@ check("and a second search still paints", (await litCount()) === 3, `${await lit
 await nav.keyboard.press("Escape");
 await beat(150);
 
+// --- marks-changed: the agent push path ---
+// A fourth page, and the first with a working event bus: every other stub
+// returns a no-op unlisten, which is all they need. This one has to *deliver*,
+// because the whole point of the path is that nothing in the window triggers it.
+//
+// The store here is mutable and the stub reads it per call, so `get_highlights`
+// answers differently after an "agent" adds a mark — an emitter that always
+// replayed the same list could not tell a repaint from a no-op.
+const agent = await newPage();
+agent.on("pageerror", (e) => results.push("FAIL pageerror (marks): " + e.message));
+agent.on("console", (m) => {
+  if (m.type() === "error") results.push("FAIL console.error (marks): " + m.text());
+});
+await agent.addInitScript(({ base }) => {
+  const tree = {
+    name: "repo", is_dir: true, path: "/repo", rel: "",
+    children: [{ name: "doc.md", is_dir: false, path: "/repo/doc.md", rel: "doc.md", children: [] }],
+  };
+  // Distinct paragraphs so each quote lands in its own text node, and enough of
+  // them that the run below crosses SCAN_THRESHOLD in both directions.
+  const body = "<h1>/repo/doc.md</h1>" +
+    Array.from({ length: 12 }, (_, i) => `<p>alpha bravo charlie ${i} delta echo</p>`).join("");
+  // The full `Highlight` shape, not just what `applyHighlights` reads — the
+  // stack card renders `file_path` and the line span too.
+  const mark = (n) => ({
+    id: "h00000000000000" + String(n).padStart(2, "0"),
+    file_path: "/repo/doc.md",
+    quote: `bravo charlie ${n - 1}`,
+    prefix: "alpha ", suffix: " delta echo",
+    line_start: n, line_end: n,
+    state: "active",
+  });
+  const marks = [mark(1), mark(2)];
+  // Non-empty *before boot*, which is the only way the `init()` check below can
+  // fail: `#stack-badge` ships reading "0" in the markup, so a store that
+  // started empty would paint the right answer whether or not anything asked.
+  const stack = [{ highlight: mark(1), annotation: "seeded by an agent" }];
+  // The agent's mutations, as the test drives them: add a mark, put a pair on
+  // the stack. Deliberately *not* wired to the event — emitting is the test's
+  // job, so a repaint that never happened shows up as a stale count.
+  window.__MARK__ = (n) => marks.push(mark(n));
+  window.__PAIR__ = (n, annotation) =>
+    stack.push({ highlight: mark(n), annotation });
+
+  const listeners = new Map();
+  window.__EMIT__ = (name, payload) => {
+    for (const fn of listeners.get(name) || []) fn({ payload });
+  };
+
+  window.__TAURI__ = {
+    core: {
+      async invoke(cmd) {
+        switch (cmd) {
+          case "perf_enabled": return false;
+          case "repo_info": return { root: "/repo", name: "repo", display: "~/repo" };
+          case "get_keymap": return {
+            palette: "Ctrl+F", palette_prev: "Ctrl+P", palette_next: "Ctrl+N",
+            highlight: "Ctrl+H", send_stack: "Ctrl+Enter", toggle_stack: "Ctrl+O",
+            toggle_outline: "Ctrl+I", toggle_tree: "Ctrl+B", toggle_view: "Ctrl+M",
+            jump_top: "Home", jump_bottom: "End", set_mark: "m", jump_mark: "'",
+            jump_back: "Ctrl+[", jump_forward: "Ctrl+]",
+            find: "/", find_next: "n", find_prev: "Shift+N",
+            next_file: "]", prev_file: "[",
+            copy_stack: "Ctrl+C", settings: "Ctrl+,", save_annotation: "Ctrl+Y",
+            quick_highlight: true,
+          };
+          case "get_theme": return { css: base, mode: "system", scheme: "dark", syntax_theme: null };
+          case "initial_file": return "/repo/doc.md";
+          case "render_markdown": return body;
+          case "list_markdown_files": return tree;
+          // Read live, not captured: this is the agent's mutation arriving.
+          case "get_highlights": case "reanchor": return marks.map((m) => ({ ...m }));
+          case "get_stack": return stack.map((p) => ({ ...p }));
+          default: return null;
+        }
+      },
+    },
+    event: {
+      async listen(name, fn) {
+        if (!listeners.has(name)) listeners.set(name, new Set());
+        listeners.get(name).add(fn);
+        return () => listeners.get(name).delete(fn);
+      },
+    },
+  };
+}, { base });
+await agent.goto(pathToFileURL(join(UI, "index.html")).href);
+await agent.waitForFunction(() => document.getElementById("content").textContent.includes("/repo/doc.md"));
+
+const hlCount = () => agent.evaluate(() => document.querySelectorAll("mark.hl").length);
+// Emit and wait past the 80ms coalescing window plus the IPC turn behind it.
+const emitMarks = async (payload) => {
+  await agent.evaluate((p) => window.__EMIT__("marks-changed", p), payload);
+  await agent.waitForTimeout(300);
+};
+
+const badge = () => agent.locator("#stack-badge").textContent();
+
+// `init()` never called `refreshStack` — invisible while the store could only
+// start empty, and a visible bug the moment an agent populates it before the
+// window opens. The fixture's stack is seeded, so a boot that does not ask
+// leaves the badge on the "0" the markup ships with.
+check("boot paints the two seeded marks", (await hlCount()) === 2, `got ${await hlCount()}`);
+check("init() refreshes the stack without being asked", (await badge()) === "1", await badge());
+
+// THE double-wrap regression. `applyHighlights` never removed what was already
+// in the DOM — it assumed the virgin tree `renderCurrent` hands it — so an
+// in-place repaint wrapped every mark a second time, then a third. Three
+// consecutive events, because two only catches the first doubling: the
+// `normalize()` inside `clearHighlights` is what stops the *count* recovering
+// while the marks quietly stop being findable, and only a third pass separates
+// those. Remove `clearHighlights()` from `repaintHighlights` and this goes red.
+const marksSeries = [];
+for (let i = 0; i < 3; i++) {
+  await emitMarks({ file_path: "/repo/doc.md", stack: false });
+  marksSeries.push(await hlCount());
+}
+check(
+  "mark count is stable across three consecutive marks-changed events",
+  marksSeries.every((n) => n === 2),
+  `2 seeded, then ${marksSeries.join(", ")}`,
+);
+// The marks must still be the *same* two elements' worth of text, not two
+// survivors of a normalize that lost the rest.
+check(
+  "and the marks still cover their quotes",
+  await agent.evaluate(() =>
+    [...document.querySelectorAll("mark.hl")].map((m) => m.textContent).join("|") ===
+    "bravo charlie 0|bravo charlie 1"),
+  await agent.evaluate(() => [...document.querySelectorAll("mark.hl")].map((m) => m.textContent).join("|")),
+);
+
+// A repo-wide event (`file_path: null`) still concerns the open document.
+await agent.evaluate(() => window.__MARK__(3));
+await emitMarks({ file_path: null, stack: false });
+check("a null file_path repaints the open document", (await hlCount()) === 3, `got ${await hlCount()}`);
+
+// A named file that is not the open one must not repaint it. Asserted against a
+// store that has *changed*, so a repaint would be visible if it happened.
+await agent.evaluate(() => window.__MARK__(4));
+await emitMarks({ file_path: "/repo/other.md", stack: false });
+check("a marks-changed for another file leaves this one alone", (await hlCount()) === 3, `got ${await hlCount()}`);
+
+// `stack: true` is the other half of the payload.
+await agent.evaluate(() => window.__PAIR__(2, "and this?"));
+await emitMarks({ file_path: null, stack: true });
+check("stack: true refreshes the stack", (await badge()) === "2", await badge());
+check("and the same event repainted the marks too", (await hlCount()) === 4, `got ${await hlCount()}`);
+
+// Coalescing: a burst inside the 80ms window is one repaint, not six. Asserted
+// on the count staying correct rather than on a call tally — six un-coalesced
+// repaints would each be correct in isolation, so this is a smoke check that
+// the burst does not leave the overlay wrong, not proof of the debounce.
+await agent.evaluate(() => {
+  for (let i = 0; i < 6; i++) window.__EMIT__("marks-changed", { file_path: null, stack: true });
+});
+await agent.waitForTimeout(400);
+check("a burst of events settles to one correct overlay", (await hlCount()) === 4, `got ${await hlCount()}`);
+
 await browser.close();
 console.log(results.join("\n"));
 const failed = results.filter((r) => r.startsWith("FAIL")).length;
