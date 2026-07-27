@@ -19,6 +19,7 @@ pub mod marks_file;
 pub mod mcp;
 #[cfg(target_os = "macos")]
 pub mod menu;
+pub mod notify;
 pub mod perf;
 pub mod search;
 pub mod send;

@@ -14,7 +14,8 @@ use dreamd::config::{Config, Keymap};
 use dreamd::fs_walk::FileNode;
 use dreamd::send::SendResult;
 use dreamd::{
-    cli, config, guard, home_relative, markdown, perf, read_source, send, theme, watcher,
+    cli, config, guard, home_relative, markdown, mcp, notify, perf, read_source, send, theme,
+    watcher,
 };
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
@@ -35,12 +36,21 @@ struct AppState {
     /// Retires the watcher thread for the previous root when File -> Open moves
     /// it. `None` until something is being watched.
     watcher_cancel: Mutex<Option<Arc<AtomicBool>>>,
+    /// The same, for the MCP socket thread. Separate from `watcher_cancel`
+    /// because the two are armed under different conditions — a repo with no
+    /// `.git` still gets neither, but a secondary dreamd gets a watcher and no
+    /// socket.
+    mcp_cancel: Mutex<Option<Arc<AtomicBool>>>,
     /// A file to open on load (nvim-style `dreamd file.md`), if any.
     initial_file: Option<String>,
     /// Behind a lock because the settings panel rewrites it at runtime — the
     /// only mutable-at-runtime configuration dreamd has.
     config: Mutex<Config>,
-    store: Mutex<Store>,
+    /// `Arc` because the MCP socket thread holds the same store the commands
+    /// do — that sharing is the entire point of the design, and it is the
+    /// `catalog: Arc<Catalog>` precedent below. Command bodies are unchanged:
+    /// `Arc<Mutex<T>>` derefs.
+    store: Arc<Mutex<Store>>,
     /// The tree and the search index, from one walk behind one readiness gate.
     /// Caching them is what stops a cold start walking the repo twice — once
     /// for the index, once for the frontend's first `loadTree`. On a
@@ -586,6 +596,7 @@ fn adopt_root(app: &tauri::AppHandle, path: PathBuf) {
     };
 
     let state = app.state::<AppState>();
+    let previous_root = state.root();
 
     // Re-read config: the new repo may carry its own `.dreamd.toml`, and the
     // settings panel reports which keys it overrides. A `--theme`/`--mode` given
@@ -607,6 +618,33 @@ fn adopt_root(app: &tauri::AppHandle, path: PathBuf) {
         }
         let cancel = Arc::new(AtomicBool::new(false));
         watcher::spawn(app.clone(), root.clone(), theme_path, cancel.clone());
+        *slot = Some(cancel);
+    }
+
+    // And the MCP socket, for the same reason and in the same shape. This is
+    // the hazard the whole design is most likely to break on: the socket is
+    // named after the repo root, `repo_root` mutates here, and a server left
+    // listening on the old one would hand an agent asking about *this* repo the
+    // previous repo's marks — an answer that looks entirely plausible. The old
+    // thread unlinks its own socket file on the way out.
+    //
+    // Skipped when the root did not actually move, and that guard is not
+    // cosmetic: the retiring thread only notices its cancel flag on the next
+    // accept poll, so a rebind on the *same* path would find the old server
+    // still listening, read that as another live dreamd, and stand down as a
+    // secondary — silently losing MCP for the rest of the session.
+    if previous_root != root {
+        let mut slot = state.mcp_cancel.lock().unwrap();
+        if let Some(old) = slot.take() {
+            old.store(true, Ordering::Relaxed);
+        }
+        let cancel = Arc::new(AtomicBool::new(false));
+        mcp::server::spawn(
+            state.store.clone(),
+            root.clone(),
+            notify::to_window(app.clone()),
+            cancel.clone(),
+        );
         *slot = Some(cancel);
     }
 
@@ -789,13 +827,19 @@ fn main() {
     seed_highlights(&mut store, &initial);
 
     let watcher_cancel = has_repo.then(|| Arc::new(AtomicBool::new(false)));
+    // Armed on the same condition as the watcher: with no repo, `repo_root` is
+    // whatever the walk-up fell back to and a socket named after it would be
+    // claiming a repo that does not exist.
+    let mcp_cancel = has_repo.then(|| Arc::new(AtomicBool::new(false)));
+    let store = Arc::new(Mutex::new(store));
     let state = AppState {
         repo_root: RwLock::new(repo_root.clone()),
         has_repo: AtomicBool::new(has_repo),
         watcher_cancel: Mutex::new(watcher_cancel.clone()),
+        mcp_cancel: Mutex::new(mcp_cancel.clone()),
         initial_file: initial,
         config: Mutex::new(cfg),
-        store: Mutex::new(store),
+        store: store.clone(),
         catalog,
         // Corrected in `.setup()`, which is the first place a window exists to
         // ask the OS. Dark is what dreamd has always painted before the theme
@@ -891,6 +935,19 @@ fn main() {
                     app.handle().clone(),
                     repo_root.clone(),
                     theme_path.clone(),
+                    cancel,
+                );
+            }
+            // The agent side. `notify::to_window` is the only Tauri that
+            // reaches the server, and it is why an agent resolving a mark
+            // repaints a window nobody touched. A second dreamd on the same
+            // repo finds the socket taken and says so on stderr rather than
+            // stealing it.
+            if let Some(cancel) = mcp_cancel.clone() {
+                mcp::server::spawn(
+                    store.clone(),
+                    repo_root.clone(),
+                    notify::to_window(app.handle().clone()),
                     cancel,
                 );
             }

@@ -71,10 +71,16 @@ jobs:
       # need nothing but the crate: config_check points XDG_CONFIG_HOME at a
       # scratch directory before it touches anything, and theme_check reads the
       # bundled palettes. Seconds each, against a tree cargo has already built.
+      # mcp_check joins them for the same reason and with the same guard: it
+      # binds a real Unix socket under `config_dir()`, which is exactly what
+      # `cargo test` is not allowed to touch, so the transport — the socket
+      # mode, the bind-is-the-lock rule, the shim's wire format, a cancel that
+      # really retires the thread — is only ever checked here.
       - name: Correctness harnesses
         run: |
           cargo run --example config_check
           cargo run --example theme_check
+          cargo run --example mcp_check
 
       # locate_check used to be excluded here as a perf tier's job. It isn't:
       # it is the only check with an independent oracle for highlight

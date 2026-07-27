@@ -34,12 +34,14 @@ node --test ui/paths.test.mjs                # ui/paths.js guards, no deps
 cargo run --release --example locate_check   # highlight anchoring, 611 corpus fixtures
 cargo run --example config_check             # config layering + write-back
 cargo run --example theme_check              # bundled palettes: vars, --bg, --syntax-theme
+cargo run --example mcp_check                # the MCP socket: mode, lock, wire, retirement
 node perf/harness/ui-check.mjs               # settings panel in Chromium (needs harness setup)
 ```
 
 ```sh
 dreamd theme list|set <name>|show [name]|new <name> [--from <base>]
 dreamd config path|edit|get <key>|set <key> <value>
+dreamd mcp                           # the stdio MCP shim; `claude mcp add dreamd -- dreamd mcp`
 dreamd --theme nord [path]           # one run, no config write
 ```
 
@@ -48,9 +50,10 @@ allowlist, repo-root containment), `markdown` (HTML escaping, slugs, `locate`'s
 three tiers), `theme` (`user_path` traversal, the CSS parser), `annotations`
 (`Store` semantics), `config` (`deep_merge`), `fs_walk::build_tree`, `is_markdown`.
 Nothing there touches `config_dir()` — that reads the real `~/.config/dreamd`,
-and sandboxing it is `config_check`'s job. The example harnesses above still own
-what a unit test cannot reach (corpus anchoring, config layering + write-back,
-the bundled palettes) and each exits non-zero on failure. **The GUI itself is
+and sandboxing it is `config_check`'s job — and `mcp_check`'s, whose socket
+lives there too. The example harnesses above still own what a unit test cannot
+reach (corpus anchoring, config layering + write-back, the bundled palettes, the
+MCP transport) and each exits non-zero on failure. **The GUI itself is
 verified only by hand** — `ui-check.mjs` asserts what the page knows, not what it
 paints; don't claim coverage beyond that.
 `perf/run.sh` takes an exclusive lock: one tier at a time, no `cargo` alongside it.
@@ -190,6 +193,25 @@ exists so `node --test` can drive the containment guard without a browser.
   `readCssVar`/`modeSlice` in `ui/app.js` mirror this; change one, change the other.
 - `cli` — the headless `dreamd theme …` / `dreamd config …` subcommands. They run and exit
   before the Tauri builder, sharing the panel's write paths so both produce the same file.
+- `mcp` — the agent surface. `jsonrpc`/`schema`/`tools`/`view` are pure and
+  Tauri-free; `server` is the Unix socket the GUI listens on
+  (`~/.config/dreamd/run/<16hex>.sock`, mode 0600, the same FNV-1a root hash
+  `marks_file` uses) and `shim` is `dreamd mcp`, the process Claude Code spawns.
+  **The shim answers `initialize`/`tools/list` from the compiled-in `schema`
+  const and proxies only `tools/call`** — proxying the list would let a dreamd
+  that happened to be closed at client startup cache an empty tool list for the
+  whole session. Binding the socket is also how a dreamd claims a repo: an
+  `AddrInUse` that *connects* means a live owner and this process runs as a
+  secondary; one that refuses is a crash leftover, unlinked and rebound.
+  `adopt_root` retires and re-binds it, next to the watcher, because the socket
+  is named after the root.
+- `notify` — the one event dreamd pushes unprompted, `marks-changed`. Emitted
+  **only** from the MCP layer, never from a command: a command's return value is
+  already the frontend's truth for its own mutation, and a second signal would
+  put two repaint paths in a race. That is also what keeps `save_to_paint` out
+  of the agent path entirely. The server takes a `Notifier` closure rather than
+  an `AppHandle`, which is what lets `mcp_check` drive the transport with no
+  window.
 - `watcher` — `notify` thread emitting `file-changed` / `file-added` / `file-removed` /
   `theme-reloaded`; the frontend responds by re-rendering and calling `reanchor`. It
   watches the repo, the user themes directory, and an explicit `theme_css` path — changing

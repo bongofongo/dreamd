@@ -23,6 +23,14 @@ pub enum Cmd {
         #[command(subcommand)]
         action: ConfigCmd,
     },
+    /// Serve dreamd's MCP tools over stdio, for an agent to spawn.
+    ///
+    /// `claude mcp add dreamd -- dreamd mcp`, from anywhere inside the repo.
+    /// This process is a shim: it answers the handshake itself and forwards
+    /// tool calls to the running dreamd window over that repo's socket, so
+    /// Claude Code sees the tools whether or not dreamd is open, and a call
+    /// made while it is closed says so instead of failing the session.
+    Mcp,
 }
 
 #[derive(Subcommand)]
@@ -58,10 +66,18 @@ pub enum ConfigCmd {
 /// which then exits non-zero.
 pub fn run(cmd: Cmd) -> Result<(), String> {
     let repo_root = crate::resolve_repo_root(None);
+    // `mcp` runs before the config read the other two need: it reads no
+    // configuration at all, and every millisecond here is on the path of an
+    // agent's first tool call. It also never returns until stdin closes.
+    if matches!(cmd, Cmd::Mcp) {
+        return crate::mcp::shim::run(&repo_root);
+    }
     let cfg = Config::load(&repo_root);
     match cmd {
         Cmd::Theme { action } => theme_cmd(action, &cfg),
         Cmd::Config { action } => config_cmd(action, &repo_root),
+        // Handled above, before the config read.
+        Cmd::Mcp => unreachable!(),
     }
 }
 
