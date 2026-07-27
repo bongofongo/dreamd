@@ -1,5 +1,122 @@
 # Session log
 
+## 2026-07-27 — Step 3c: the socket, the shim, and an independent pass that found teeth missing
+
+Step 3c of `docs/plans/agentic-mcp-persistence.md` — the transport between the
+protocol core (3a) and the frontend listener (3b), both of which had landed and
+neither of which could reach the other. Three commits: `e1ecefe`, `3322787`,
+`eaa86d0`. It got there; the interesting half of the thread was the verification
+pass, which found two of the security checks written that same hour were green
+for the wrong reason.
+
+### What happened
+
+1. **`/perf-quick` first, on the three new pure modules.** Nothing beyond noise:
+   `locate_single/*` +5-7% and `reanchor_today/*` +8-10%, all `!` rather than
+   `XX`, reproducible across two runs, same family, and no new code on those
+   paths. Reads as code layout, the pattern
+   `rust-bench-moves-from-code-layout` already records.
+
+2. **`Store::resolve`, committed alone.** `annotations.rs` was frozen for the
+   parallel window, so thread C reached `resolved` through the only public seam
+   it had — `into_parts`/`from_parts` — which resets `reanchored`. Correct, but
+   it bought a wasted `SourceIndex` rebuild per resolved mark, in the primary
+   loop, where an agent closes marks in bursts. The window is closed, so the
+   capability landed where it belongs: `Store::resolve` records the answer and
+   drops the stack entry in one pass and leaves the reanchor gate alone.
+   `tools::with_highlight_mut` deleted. Proved with teeth: adding
+   `self.reanchored.clear()` turns
+   `resolving_a_mark_does_not_invalidate_the_reanchor_cache` red (line_start
+   2 → 4).
+
+3. **The wiring.** `mcp/server.rs` — a Unix socket under
+   `~/.config/dreamd/run/`, mode 0600, named by the same FNV-1a root hash
+   `marks_file` uses. Binding it is how a dreamd claims a repo: `AddrInUse` that
+   *connects* means a live owner and this process runs as a secondary; one that
+   refuses is a crash leftover, unlinked and rebound. `mcp/shim.rs` — `dreamd
+   mcp`, answering `initialize`/`tools/list` from the compiled-in schema const
+   and proxying only `tools/call`, because Claude Code caches the tool list for
+   the session and a dreamd that happened to be closed at client startup would
+   otherwise mean no tools until the next restart. `notify.rs` — `marks-changed`,
+   emitted only from the MCP layer, with the server taking a `Notifier` closure
+   rather than an `AppHandle` so the whole transport runs headless. `main.rs` —
+   `Arc<Mutex<Store>>`, an `mcp_cancel` slot beside `watcher_cancel`, spawn in
+   `.setup()`. `cli.rs` — `Cmd::Mcp`, routed before the config read the other
+   subcommands need.
+
+4. **The `adopt_root` hazard, with one thing the plan did not anticipate.** The
+   socket retires and re-binds in the block that already retires the watcher, as
+   specified — but guarded on the root having actually moved. The retiring
+   thread only notices its cancel flag on the next accept poll, so re-adopting
+   the *same* root would rebind onto a path the old server was still listening
+   on, read that as another live dreamd, and stand down as a secondary: MCP
+   silently gone for the rest of the session.
+
+5. **`examples/mcp_check.rs`**, because the socket lives under `config_dir()`
+   and `cargo test` may not go there. It drives the real transport, and for the
+   tool calls it drives them through `shim::forward` — the exact wire an agent's
+   calls travel — rather than through a hand-rolled client.
+
+6. **An independent verification pass over steps 2 and 3**, in a fresh context,
+   with the brief "break the guard, watch the named test go red, restore,
+   report". Five checks stayed green with their guard removed; see below.
+
+7. **The two in this session's own code were fixed** (`eaa86d0`), each verified
+   by breaking the guard again and confirming red.
+
+### Mistakes & deviations
+
+- **Three `mcp_check` containment checks pinned nothing.** All three survived
+  deleting `guard::inside_root` outright. `resolve_in_root` refuses for three
+  different reasons — the path will not canonicalise, the path is outside the
+  root, the quote is not in the file — and the fixtures were tripping the other
+  two: `../../etc/passwd` resolves under the *temp* directory rather than under
+  `/`, so those targets did not exist, and no target contained the quote. Now
+  real files outside the root containing the quote, and each row also asserts
+  the refusal message says "outside the repo root". Guard off → six failures.
+- **`a_refused_write_emits_nothing` was named for a check it did not need.** Its
+  `mark_passage` path is double-gated — a refused call has no
+  `structuredContent.id` to read either — so it stayed green with the `isError`
+  early-out deleted. The `resolve_highlight` arm is the one where the flag is
+  the only gate, because the id comes from the caller's arguments and is just as
+  readable on a failure. Added `resolving_a_refused_call_emits_nothing`; the doc
+  comment now says which arm is which instead of claiming both.
+- **`/perf-pass` flagged `save_to_paint` and it was the baseline, not the
+  change.** +16%, then +35%, then unflagged, across three runs of one unchanged
+  binary. A direct A/B settled it: `loop.sh`, three reps per arm, p50
+  3217/3249/3232 at `d2ca8a8` against 3215/3686/3206 at HEAD — flat. Run at
+  `bc79844`, the baseline's *own* commit, it gave 3790 and 3207 against the 2377
+  recorded there, so that row does not reproduce at the commit it was taken
+  from. Noted in memory rather than acted on; the row is also one sample, since
+  p50 equals p95 every run.
+- The plan calls step 3 a clean abort point. It is not, quite:
+  `mcp/server.rs` imports `marks_file::root_hash` for the socket name, so it
+  will not compile without step 4's module.
+
+### State
+
+`cargo build`, `fmt`, `clippy -D warnings` clean. 194 unit tests, `mcp_check`
+46/46, `config_check` 34, `theme_check`, `ui-check` 88/88,
+`node --test ui/paths.test.mjs` — all green. CI gained
+`cargo run --example mcp_check`.
+
+Open, and named here so it is not lost:
+
+- **The manual acceptance test has not been run.** The GUI cannot be driven from
+  this environment. Everything below the window is verified; the queue-first
+  loop end to end — three marks, one prompt, badge 3 → 2 → 1 → 0 without
+  touching the window — is not.
+- **Three toothless guards left standing, all outside this session's scope.**
+  `untrusted.rs`'s `the_sentinel_differs_between_processes` passes with
+  `sentinel()` replaced by a hardcoded literal — it never asserts the value
+  derives from `process_seed()`, which is the property the plan bolds. In
+  `ui/app.js`, `contentEl.normalize()` and both halves of `repaintHighlights`'
+  find bracket are individually deletable with `ui-check` still at 88/88.
+- **`adopt_root`'s socket retire+rebind has no test of any kind**, including the
+  `previous_root != root` guard above. It lives in un-importable `main.rs` —
+  the one place step 1's "lift it out so a test can reach it" discipline was not
+  applied.
+
 ## 2026-07-27 — Step 1 of the agentic plan: opaque ids, and a frozen Store
 
 Step 1 of `docs/plans/agentic-mcp-persistence.md`, implemented in full including

@@ -227,6 +227,30 @@ causes were wrong.
 
 ## Recent updates
 
+- **2026-07-27** — **The assistant can now read your queue, and the window answers
+  back.** This is the one the last few sessions were building toward. When you
+  highlight a passage and attach a question to it, that question joins an ordered
+  list — the order you asked in. Until today that list only travelled one way: you
+  pressed send, and it went out. Now an assistant working in a terminal beside
+  dreamd can ask for the list directly ("here is what I asked, in order"), work
+  through the questions with its own tools, and mark each one answered as it goes.
+  The count in the dreamd window ticks down as it happens. You don't touch the
+  window; you just watch it.
+  How the two halves find each other is worth a sentence, because it is the reason
+  there is nothing to configure. dreamd opens a private channel named after the
+  repository you're in — a file only your account can read, no network port, no
+  password, nothing to expose. The assistant, started from anywhere inside the same
+  repository, works out the same name and connects. Two dreamd windows on the same
+  repository is handled too: the second notices the first already owns the channel
+  and says so rather than fighting over it.
+  Two deliberate limits. The assistant can read your marks and close them; it
+  cannot reorder your list, delete a mark, or write to any of your files — editing
+  stays where it was. And a closed question keeps its highlight: the evidence
+  stays on the page, so "answered" doesn't mean "erased".
+  One thing has *not* been checked yet: nobody has sat in front of the finished
+  window and watched the count go 3, 2, 1, 0. Every part underneath it is tested
+  automatically; the whole loop, with human eyes on it, is the next thing to do.
+
 - **2026-07-27** — **Every highlight got a name that means something.** Groundwork,
   and worth explaining because of what it unblocks. Each highlight you make has an
   internal label so the rest of the program can refer to it. Those labels were
