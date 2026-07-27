@@ -3,8 +3,10 @@
 //! the Tauri commands, and the builder. Everything those commands actually *do*
 //! lives here.
 //!
-//! Splitting this out is what makes `src-tauri/benches/` possible — a `[[bin]]`
-//! target cannot be imported.
+//! Splitting this out is what makes `src-tauri/benches/` and `cargo test`
+//! possible — a `[[bin]]` target cannot be imported. [`guard`] exists for that
+//! reason alone: its two predicates decide what a document may reach, and while
+//! they sat inline in `main.rs` nothing could assert on them.
 
 pub mod annotations;
 pub mod catalog;

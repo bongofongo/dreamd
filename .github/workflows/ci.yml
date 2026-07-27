@@ -1,0 +1,80 @@
+# Every push and every PR. The counterpart to release.yml, which only ever runs
+# on a tag — before this file existed nothing checked main at all.
+#
+# `pull_request` is here even though commits go straight to main today. It costs
+# nothing while unused, and it means an agent-authored branch is checked before
+# it lands rather than after.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A second push while the first is still building makes the first irrelevant.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # macOS is not a preference. Tauri on Linux needs webkit2gtk system packages,
+  # and `#[cfg(target_os = "macos")]` — menu.rs, and the NsFileManager trash
+  # context that exists so nothing needs an Apple Events entitlement — is never
+  # compiled anywhere else. macos-14 matches the arm64 release runner. Free on a
+  # public repo.
+  rust:
+    runs-on: macos-14
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      # Pinned, unlike release.yml's `@stable`, and pinned to whatever the
+      # development machine runs. `-D warnings` against a floating toolchain
+      # turns main red whenever Rust ships a new lint, on a commit nobody made
+      # — and a clippy that disagrees with the one you ran locally is worse than
+      # no clippy. Bumping this is a deliberate commit that also clears whatever
+      # the new toolchain found.
+      - uses: dtolnay/rust-toolchain@1.97.1
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # The cargo workspace root is the repo root, not src-tauri/.
+          workspaces: ". -> target"
+
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      # --all-targets reaches the four benches and the four examples, so bench
+      # rot and example rot fail here rather than the next time someone runs
+      # `cargo bench` by hand. --all-features turns on `perf`, whose marks are
+      # otherwise compiled out entirely.
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Test
+        run: cargo test --all-features
+
+      # clippy is a check, not a link. CLAUDE.md's rule is that `cargo build`
+      # passes before any commit touching src-tauri/, so assert exactly that.
+      - name: Build
+        run: cargo build
+
+  # No npm install, no Playwright: paths.test.mjs evaluates ui/paths.js in a vm
+  # context and asserts on it directly. Seconds, and ubuntu is fine because
+  # nothing here is engine-specific.
+  ui:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Path guards
+        run: node --test ui/paths.test.mjs

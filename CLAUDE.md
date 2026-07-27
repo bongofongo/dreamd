@@ -28,6 +28,9 @@ cd perf/harness && npm run setup     # Playwright + Chromium, test-only, never s
 ```
 
 ```sh
+cargo test --all-features                    # unit tests; what CI runs
+node --test ui/paths.test.mjs                # ui/paths.js guards, no deps
+
 cargo run --release --example locate_check   # highlight anchoring, 611 corpus fixtures
 cargo run --example config_check             # config layering + write-back
 cargo run --example theme_check              # bundled palettes: vars, --bg, --syntax-theme
@@ -40,9 +43,16 @@ dreamd config path|edit|get <key>|set <key> <value>
 dreamd --theme nord [path]           # one run, no config write
 ```
 
-There are no `#[cfg(test)]` unit tests — `cargo test` compiles and reports nothing.
-Correctness is checked by running the app, by the benches, and by the two example
-harnesses above (each exits non-zero on failure); don't claim coverage beyond those.
+`cargo test` covers the pure core and the security tenets: `guard` (scheme
+allowlist, repo-root containment), `markdown` (HTML escaping, slugs, `locate`'s
+three tiers), `theme` (`user_path` traversal, the CSS parser), `annotations`
+(`Store` semantics), `config` (`deep_merge`), `fs_walk::build_tree`, `is_markdown`.
+Nothing there touches `config_dir()` — that reads the real `~/.config/dreamd`,
+and sandboxing it is `config_check`'s job. The example harnesses above still own
+what a unit test cannot reach (corpus anchoring, config layering + write-back,
+the bundled palettes) and each exits non-zero on failure. **The GUI itself is
+verified only by hand** — `ui-check.mjs` asserts what the page knows, not what it
+paints; don't claim coverage beyond that.
 `perf/run.sh` takes an exclusive lock: one tier at a time, no `cargo` alongside it.
 
 ```sh
@@ -134,7 +144,16 @@ Data flow: `ui/app.js` (plain JS, no build step; `tauri.conf.json` points `front
 `script-src 'self'` with no `'unsafe-inline'` — an inline `<script>` in `index.html` is
 blocked silently, which is why the pre-paint `data-mode` bootstrap lives at the top of
 `app.js`. Inline `<style>` is fine (`style-src` carries `'unsafe-inline'`).
+`index.html` loads `paths.js` before `app.js` — both classic scripts, `defer`, so
+they run in document order and share globals. That is the only split, and it
+exists so `node --test` can drive the containment guard without a browser.
 
+- `guard` — the two predicates deciding what a document may reach: `allowed_scheme`
+  (http/https/mailto, case-folded) and `inside_root` (component-wise, so
+  `/w/notes` rejects `/w/notes-private`). They live here rather than in the
+  `open_external`/`delete_file` commands *because `main.rs` cannot be imported* —
+  in `main.rs` the tenets were enforced by code no test could reach.
+  `ui/paths.js` is the frontend twin, for relative links and images.
 - `fs_walk` — `ignore` crate (ripgrep's walker) → nested `FileNode` tree, markdown only.
 - `search` — `nucleo` fuzzy index over **paths only**; content search is v2.
 - `markdown` — pulldown-cmark → HTML, syntect for fenced code. Raw source HTML is
@@ -185,6 +204,13 @@ highlights from a corpus fixture.
 
 - Commits go **straight to main** — no branches, no PRs.
 - `cargo build` must pass before any commit touching `src-tauri/`.
+- `.github/workflows/ci.yml` runs fmt + clippy (`-D warnings`) + test + build on
+  **macos-14** for every push and PR, plus `node --test ui/paths.test.mjs` on
+  ubuntu. macOS is not a preference: Tauri on Linux needs webkit2gtk, and the
+  `#[cfg(target_os = "macos")]` paths compile nowhere else. Run those four
+  commands locally before pushing — CI is the backstop, not the first check.
+  Its toolchain is **pinned** (`dtolnay/rust-toolchain@1.97.1`); bumping it is a
+  deliberate commit that also clears whatever the new clippy found.
 - Repeatable flows become skills in `.claude/skills/`.
 - Performance is measured, not guessed. `/perf-quick` (~60s) after an edit,
   `/perf-pass` (~5min) before a large commit touching `src-tauri/` or `ui/` (do `/perf-quick` for smaller commits), `/perf-deep`
