@@ -227,6 +227,25 @@ causes were wrong.
 
 ## Recent updates
 
+- **2026-07-27** — **Every highlight got a name that means something.** Groundwork,
+  and worth explaining because of what it unblocks. Each highlight you make has an
+  internal label so the rest of the program can refer to it. Those labels were
+  counted off from one, starting over every time dreamd opened — so the third
+  highlight of today and the third highlight of tomorrow had the *same* label. That
+  costs nothing while everything lives and dies inside one run, which is how dreamd
+  has always worked. It becomes a real problem the moment anything remembers a
+  highlight after you quit, or an assistant writes one down and comes back to it
+  later. Both of those are next on the roadmap. Labels are now unique for good.
+  The same change settled the full shape of what a highlight *is* — including two
+  pieces nothing reads yet: who made the mark (you, or an assistant) and whether a
+  question about it has been answered. Deciding all of that once, up front, is
+  deliberate: several strands of the next feature will be built against it at the
+  same time, and a shape that shifts underneath them would be expensive.
+  A separate check also joined the automatic ones: 611 stored examples that confirm
+  a highlight still lands on the right words after the surrounding text is edited.
+  That check existed but only ever ran by hand, and the code it guards had just
+  moved.
+
 - **2026-07-27** — **The project got a safety net. It had almost none.** Until today,
   nothing checked the code automatically. There was one piece of automation, and it only
   ran when a *release* was being cut — so a change could sit on the main branch for a week

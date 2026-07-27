@@ -1,5 +1,100 @@
 # Session log
 
+## 2026-07-27 — Step 1 of the agentic plan: opaque ids, and a frozen Store
+
+Step 1 of `docs/plans/agentic-mcp-persistence.md`, implemented in full including
+the parts whose consumers arrive two steps later. One commit, `af2c575`. It got
+there, and the interesting half of the thread was chasing a perf row that turned
+out to be an artifact.
+
+### What happened
+
+1. **`Highlight.id` was a `u64` from a counter that restarted at 1 every
+   process.** So an id held across a restart addressed a *different* highlight —
+   silently, which is the worst way to be wrong, and the blocker for every later
+   step (an agent holds ids across its own lifetime, and step 4 persists them).
+   Ids are now `h` + 16 lowercase hex, FNV-1a over wall-clock nanos, the pid, a
+   per-process `AtomicU64` and one OS-seeded value (`RandomState`'s keys, so no
+   new dependency). `process_seed()` is `pub(crate)` because step 2's
+   untrusted-content sentinel needs the same entropy and shouldn't mint its own.
+
+   **Opaque rather than numeric** so nothing downstream can do arithmetic on an
+   id or read ordering out of one — the only order dreamd exposes is the stack's,
+   which is the human's asking order. **Not content-derived**: two identical
+   quotes in one file would collide, and re-highlighting deleted-then-restored
+   text should mint a new identity rather than resurrect the old one.
+
+2. **Anchoring moved out of `main.rs` into `Store::add_anchored`.** The
+   `add_highlight` command read the file, called `markdown::locate`, and defaulted
+   to `(0, 0)` at the command layer — and `main.rs` is a `[[bin]]`, so that
+   fallback had no test at all. Same situation, and the same fix, as the header
+   comment in `guard.rs` describes. `an_unlocatable_quote_still_becomes_a_highlight_at_line_zero`
+   now pins it.
+
+3. **The whole `Store` shape was frozen in this one commit**, not just the ids:
+   `Origin` (`Human`/`Agent`), `Resolution`, `Deserialize` with container-wide
+   `#[serde(default)]` and no `deny_unknown_fields`, `from_parts`/`parts`/
+   `into_parts`, and a `reanchored: HashSet<String>` behind `ensure_reanchored`.
+   None of those have a reader yet. That is the point: `annotations.rs` is the
+   worst file in the repo to merge, four threads are about to run against it in
+   parallel, and one extra hour here saves two merges later. The file is closed
+   until step 5.
+
+   `Deserialize` deliberately stops at `Highlight` and does **not** reach `Pair` —
+   `Pair` is a projection, not a stored shape, and deriving it would invite
+   somebody to persist it.
+
+4. **`locate_check` joined CI**, keyed on a cached corpus. It had been excluded as
+   "a perf tier's job", which was right until anchoring moved: 611 fixtures with
+   an independent oracle are the only thing that would catch the move breaking it.
+   The cache key covers `gen.mjs` as well as `manifest.json`, because a changed
+   generator makes different fixtures for an unchanged manifest.
+
+5. **The frontend needed exactly two lines.** Both `Number()` calls on
+   `dataset.id` dropped; everything else already round-tripped ids as strings.
+   The perf harness fixtures and the `ui-check.mjs` stub now hand over
+   `h`-prefixed ids so a numeric-id assumption can't pass unnoticed.
+
+### Mistakes & deviations
+
+- **One deliberate deviation from the plan.** The plan's `add_anchored` signature
+  omits `origin`, but the same section says step 3's `mark_passage` calls it with
+  `origin: Agent` while `annotations.rs` stays closed. Those can't both hold, so
+  `add_anchored` takes an `Origin`. Still 7 arguments, so clippy is unbothered.
+
+- **Chased a reproducible 7% perf regression that wasn't one.** `/perf-quick`
+  flagged all four `locate_single` cases. Interleaved A/B against a stashed tree
+  reproduced it cleanly — clean 6.15/6.15 ms, dirty 6.55/6.61/6.58 — which is
+  normally where you stop and believe it. But the rows are in `markdown::locate`,
+  which this commit does not touch. Stubbing out `add_anchored`'s call to
+  `locate` (the only new in-crate caller) changed nothing. The isolation that
+  settled it: on a clean tree, adding **only** `origin` and `resolved` to
+  `Highlight` — no id change, no `HashSet`, no new function — reproduces the
+  entire +7%, in a function that never sees a `Highlight`. Everything in
+  `src-tauri/` links into one bench binary, so perturbing any module repartitions
+  codegen units and shifts alignment in a memchr-heavy loop. Layout, not cost.
+  Saved to memory, because "reproducible" was not enough to make it true.
+
+### State
+
+Green: `cargo fmt --check`, `cargo clippy --all-targets --all-features -D
+warnings`, `cargo test --all-features` (105, up from 99), `cargo build`,
+`node --test ui/paths.test.mjs`. Plus `cargo run --release --example
+locate_check` (exit 0; 0 wrong with context, 0 moved across 611 fixtures) and
+`node perf/harness/ui-check.mjs` (79/0).
+
+`an_id_from_a_previous_session_resolves_to_nothing_rather_than_the_wrong_highlight`
+was verified to have teeth: the `u64` counter was temporarily restored and it was
+the only one of the 24 `annotations` tests to fail, on exactly its own assertion.
+
+`/perf-quick`: `apply_highlights` did not move, which is what the plan named as
+the tell that dropping `Number()` had broken DOM keying. The `locate_single`
+rows are the artifact above. `perf/baseline.json` untouched.
+
+Open: steps 2–5 of the plan. `annotations.rs` is frozen until step 5 — a thread
+that wants to edit it is a signal this shape was wrong, not a licence to change
+it.
+
 ## 2026-07-27 — Three things that were never actually being run
 
 A scoped session — `.github/workflows/ci.yml`, `perf/harness/ui-check.mjs`,
