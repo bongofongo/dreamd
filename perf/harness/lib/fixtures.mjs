@@ -123,6 +123,8 @@ export const KEYMAP = {
   prev_file: "[",
   set_mark: "m",
   jump_mark: "'",
+  jump_back: "Ctrl+[",
+  jump_forward: "Ctrl+]",
   copy_stack: "Ctrl+C",
   settings: "Ctrl+,",
   save_annotation: "Ctrl+Y",

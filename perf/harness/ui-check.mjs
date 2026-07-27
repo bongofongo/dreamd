@@ -49,6 +49,7 @@ await page.addInitScript(({ base, palettes }) => {
     highlight: "Ctrl+H", send_stack: "Ctrl+Enter", toggle_stack: "Ctrl+O",
     toggle_outline: "Ctrl+I", toggle_tree: "Ctrl+B", toggle_view: "Ctrl+M",
     jump_top: "Home", jump_bottom: "End", set_mark: "m", jump_mark: "'",
+            jump_back: "Ctrl+[", jump_forward: "Ctrl+]",
     next_file: "]", prev_file: "[",
     copy_stack: "Ctrl+C", settings: "Ctrl+,",
     save_annotation: "Ctrl+Y",
@@ -178,7 +179,7 @@ check("Ctrl+, opens settings", await page.locator("#settings-overlay.open").isVi
 
 // --- keys tab ---
 const rows = await page.locator("#st-keys .st-row").count();
-check("every action gets a row", rows === 19, `got ${rows}`);
+check("every action gets a row", rows === 21, `got ${rows}`);
 check(
   "a repo-shadowed key is flagged",
   (await page.locator("#st-keys .shadowed").count()) === 1,
@@ -360,6 +361,7 @@ await solo.addInitScript(({ base }) => {
             highlight: "Ctrl+H", send_stack: "Ctrl+Enter", toggle_stack: "Ctrl+O",
             toggle_outline: "Ctrl+I", toggle_tree: "Ctrl+B", toggle_view: "Ctrl+M",
             jump_top: "Home", jump_bottom: "End", set_mark: "m", jump_mark: "'",
+            jump_back: "Ctrl+[", jump_forward: "Ctrl+]",
             next_file: "]", prev_file: "[",
             copy_stack: "Ctrl+C", settings: "Ctrl+,",
             save_annotation: "Ctrl+Y",
@@ -395,6 +397,158 @@ check(
   "and the open file is marked active in it",
   (await solo.locator("#tree .tree-item.active").count()) === 1,
 );
+
+// --- view mode, the mark, and the jump history ---
+// A third page, with two files and real links between them, because all three
+// features are about *moving between reading positions* and one file cannot
+// exercise any of them.
+//
+// View mode is asserted on measured width for a reason: it shipped hiding the
+// sidebar with `display: none` while `#workspace` still declared two columns,
+// which dropped `#main-wrap` into the 0px track and made the whole feature
+// paint an empty window. Every check here was passing at the time — none of
+// them looked at how wide the document was.
+const nav = await newPage();
+nav.on("pageerror", (e) => results.push("FAIL pageerror (nav): " + e.message));
+nav.on("console", (m) => {
+  if (m.type() === "error") results.push("FAIL console.error (nav): " + m.text());
+});
+await nav.addInitScript(({ base }) => {
+  const tree = {
+    name: "repo", is_dir: true, path: "/repo", rel: "",
+    children: [
+      { name: "doc.md", is_dir: false, path: "/repo/doc.md", rel: "doc.md", children: [] },
+      { name: "other.md", is_dir: false, path: "/repo/other.md", rel: "other.md", children: [] },
+    ],
+  };
+  // The `<h1>` names the file, which is how the assertions below tell the two
+  // documents apart; the filler is what makes the offsets meaningful.
+  const body = (p) =>
+    `<h1 id="t">${p}</h1><a href="other.md#deep">to other deep</a><a href="#deep">to deep here</a>` +
+    "<p>filler</p>".repeat(200) + `<h2 id="deep">deep</h2>` + "<p>filler</p>".repeat(200);
+  window.__TAURI__ = {
+    core: {
+      async invoke(cmd, args) {
+        switch (cmd) {
+          case "perf_enabled": return false;
+          case "repo_info": return { root: "/repo", name: "repo", display: "~/repo" };
+          case "get_keymap": return {
+            palette: "Ctrl+F", palette_prev: "Ctrl+P", palette_next: "Ctrl+N",
+            highlight: "Ctrl+H", send_stack: "Ctrl+Enter", toggle_stack: "Ctrl+O",
+            toggle_outline: "Ctrl+I", toggle_tree: "Ctrl+B", toggle_view: "Ctrl+M",
+            jump_top: "Home", jump_bottom: "End", set_mark: "m", jump_mark: "'",
+            jump_back: "Ctrl+[", jump_forward: "Ctrl+]",
+            next_file: "]", prev_file: "[",
+            copy_stack: "Ctrl+C", settings: "Ctrl+,", save_annotation: "Ctrl+Y",
+            quick_highlight: true,
+          };
+          case "get_theme": return { css: base, mode: "system", scheme: "dark", syntax_theme: null };
+          case "initial_file": return "/repo/doc.md";
+          case "render_markdown": return body((args && args.path) || "?");
+          case "list_markdown_files": return tree;
+          case "get_highlights": case "reanchor": case "get_stack": return [];
+          default: return null;
+        }
+      },
+    },
+    event: { async listen() { return () => {}; } },
+  };
+}, { base });
+await nav.goto(pathToFileURL(join(UI, "index.html")).href);
+await nav.waitForFunction(() => document.getElementById("content").textContent.includes("/repo/doc.md"));
+
+const where = () => nav.evaluate(() => ({
+  file: document.querySelector("#content h1").textContent,
+  top: Math.round(document.getElementById("content-scroll").scrollTop),
+}));
+const lastToast = () => nav.evaluate(() => document.getElementById("toast").textContent);
+// Scrolls are `instant` because `scroll-behavior` would otherwise still be
+// animating when the next line reads the offset.
+const scrollTo = (top) =>
+  nav.evaluate((t) => document.getElementById("content-scroll").scrollTo({ top: t, behavior: "instant" }), top);
+const beat = (ms = 300) => nav.waitForTimeout(ms);
+
+await nav.keyboard.press("Control+m");
+await beat(150);
+const vm = await nav.evaluate(() => ({
+  content: Math.round(document.getElementById("content").getBoundingClientRect().width),
+  pane: Math.round(document.getElementById("content-scroll").getBoundingClientRect().width),
+  titlebar: getComputedStyle(document.getElementById("titlebar")).display,
+  rail: getComputedStyle(document.getElementById("progress-rail")).display,
+}));
+check("view mode leaves the document at full width", vm.pane === 1280 && vm.content > 400, JSON.stringify(vm));
+check("view mode hides the titlebar", vm.titlebar === "none", vm.titlebar);
+check("view mode keeps the progress rail", vm.rail !== "none", vm.rail);
+
+// Highlighting has to survive the chrome going away — it is the product loop,
+// and view mode is where a reader spends the most time.
+await nav.evaluate(() => {
+  const r = document.createRange();
+  r.selectNodeContents(document.querySelector("#content p"));
+  const s = getSelection(); s.removeAllRanges(); s.addRange(r);
+});
+await nav.keyboard.press("h");
+await beat(150);
+check("the highlight flow still opens in view mode",
+  await nav.locator("#annot-overlay.open").isVisible());
+await nav.keyboard.press("Escape");
+await beat(150);
+check("Esc closes the annotation and view mode survives",
+  await nav.evaluate(() => document.body.classList.contains("view-mode")));
+await nav.keyboard.press("Escape");
+await beat(150);
+check("a second Esc leaves view mode",
+  !(await nav.evaluate(() => document.body.classList.contains("view-mode"))));
+
+await scrollTo(3000);
+await beat(120);
+await nav.keyboard.press("m");
+await beat(120);
+check("the set-mark key confirms immediately", (await lastToast()) === "Mark set", await lastToast());
+await nav.keyboard.press("]");
+await beat();
+check("] opens the next file", (await where()).file === "/repo/other.md", JSON.stringify(await where()));
+await nav.keyboard.press("'");
+await beat(400);
+check("' returns to the mark, file and offset",
+  JSON.stringify(await where()) === JSON.stringify({ file: "/repo/doc.md", top: 3000 }),
+  JSON.stringify(await where()));
+
+await nav.keyboard.press("Control+[");
+await beat(400);
+check("jump back undoes the mark jump", (await where()).file === "/repo/other.md", JSON.stringify(await where()));
+await nav.keyboard.press("Control+]");
+await beat(400);
+check("jump forward redoes it with the offset intact",
+  JSON.stringify(await where()) === JSON.stringify({ file: "/repo/doc.md", top: 3000 }),
+  JSON.stringify(await where()));
+
+// The regression this guards: a cross-file section link is `openFile` followed
+// by `scrollToFragment`, and pushing from inside both would take two presses to
+// undo one jump — the intermediate frame being a document at offset 0 that
+// nobody ever read.
+await scrollTo(1200);
+await beat(120);
+await nav.evaluate(() =>
+  [...document.querySelectorAll("#content a")].find((a) => a.textContent === "to other deep").click());
+await beat(400);
+const xf = await where();
+check("a cross-file section link lands deep in the other file",
+  xf.file === "/repo/other.md" && xf.top > 500, JSON.stringify(xf));
+await nav.keyboard.press("Control+[");
+await beat(400);
+check("and one jump back undoes the whole of it",
+  JSON.stringify(await where()) === JSON.stringify({ file: "/repo/doc.md", top: 1200 }),
+  JSON.stringify(await where()));
+
+await nav.keyboard.press("]");
+await beat();
+await nav.keyboard.press("Control+]");
+await beat(150);
+check("a new jump clears the forward trail", (await lastToast()) === "No later position", await lastToast());
+for (let i = 0; i < 12; i++) { await nav.keyboard.press("Control+["); await beat(120); }
+check("an exhausted trail says so rather than going silent",
+  (await lastToast()) === "No earlier position", await lastToast());
 
 await browser.close();
 console.log(results.join("\n"));

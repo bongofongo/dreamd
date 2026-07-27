@@ -1,5 +1,15 @@
 # Plan — jump back / jump forward (navigation history)
 
+> **Built, 2026-07-27.** Keys are `Ctrl+[` / `Ctrl+]` — §2 option 3, chosen by
+> the author over the recommended `Alt+Left`/`Alt+Right` because they echo the
+> bare `]`/`[` file-step one modifier away. §3's broad rule was taken as
+> written. Two deviations from §4, both argued in `ui/app.js`: the cross-file
+> push lives inside `openFile` while in-document pushes sit at their two call
+> sites, because a single push inside `scrollToFragment` double-counts a
+> `other.md#section` link and records an intermediate frame nobody read; and
+> marks were cut to one slot in the same pass, so the two features now share
+> the `{ path, top }` frame and `restoreFrame` exactly as §7 anticipated.
+
 Source idea: `ideas/file-and-section-links.md`. Written during the overnight
 batch on `claude/overnight-ideas-2026-07-27`.
 

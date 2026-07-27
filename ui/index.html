@@ -339,7 +339,14 @@
       body.view-mode #btn-expand,
       body.view-mode #outline-panel,
       body.view-mode #stack-panel { display: none; }
-      body.view-mode #workspace { grid-template-columns: 0 1fr; }
+      /* One column, not `0 1fr` — and the difference is the whole screen.
+         `display: none` takes the sidebar out of grid *placement* entirely,
+         unlike `body.nav-collapsed`, which keeps it as a zero-width item. With
+         two tracks declared, `#main-wrap` therefore becomes the first grid item
+         and lands in the `0` track: the document lays out at width 0 and view
+         mode shows a blank window. Measured in Chromium, not reasoned about.
+         Adding a third child to `#workspace` means revisiting this line. */
+      body.view-mode #workspace { grid-template-columns: 1fr; }
 
       /* command palette */
       #palette-overlay {

@@ -227,6 +227,29 @@ causes were wrong.
 
 ## Recent updates
 
+- **2026-07-27** — **The first review pass over the overnight batch, and it found what an
+  untested batch was always going to hide.** Distraction-free view mode — the one that
+  hides all the app's furniture — was showing a *blank window*. The cause is a single
+  layout rule: hiding the file tree removed it from the page's column layout entirely,
+  which quietly shunted the document itself into the empty column the tree had vacated,
+  where it was laid out zero pixels wide. Nothing was missing; it was simply being drawn
+  in a space with no room in it. This is exactly the class of bug the batch's own note
+  warned about — the code was correct in every way a compiler can check, and wrong in
+  the only way that matters, which is on screen.
+  Two other things landed alongside it. The vim-style bookmarks were working all along
+  but felt dead, because pressing the bookmark key did nothing you could see until you
+  pressed a *second* key naming which of twenty-six bookmarks you meant. They now keep
+  **one** bookmark and confirm the moment you press the key — which also deleted the
+  most intricate piece of keyboard machinery in the app, since juggling twenty-six
+  bookmarks was the only reason it existed. And **jump back / jump forward** was built:
+  `Ctrl+[` returns you to wherever you were before a link, a search result or a bookmark
+  moved you, `Ctrl+]` undoes that, browser-style, across the last 64 places you were
+  sent. Plain scrolling deliberately doesn't count as being sent anywhere.
+  The lesson was taken as well as the fixes: the app's frontend test harness gained
+  fifteen new checks, and the view-mode ones deliberately measure **how wide the
+  document is**, not merely that it exists. Every check that existed before passed
+  happily while the feature drew an empty screen.
+
 - **2026-07-27** — **A batch of twelve small features was worked through overnight, and
   is waiting to be reviewed.** These are the ideas that had been piling up in notes: a
   contents panel listing a document's headings so you can jump around a long file, a

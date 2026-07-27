@@ -125,11 +125,14 @@ pub struct Keymap {
     /// Open the next / previous markdown file in the sidebar's order.
     pub next_file: String,
     pub prev_file: String,
-    /// Leader keys for vim-style marks. Each is an ordinary single combo: the
-    /// *letter* that follows is captured as data by the frontend, so it is not
-    /// — and cannot be — part of the binding string.
+    /// Set / return to *the* mark. Vim's marks cut down to a single slot, so
+    /// both of these are ordinary one-shot combos with no letter argument.
     pub set_mark: String,
     pub jump_mark: String,
+    /// Step back and forward through reading positions you were teleported away
+    /// from — link clicks, tree and palette opens, outline and mark jumps.
+    pub jump_back: String,
+    pub jump_forward: String,
     /// Copy the assembled stack to the clipboard.
     pub copy_stack: String,
     /// Open the settings panel.
@@ -184,8 +187,18 @@ impl Default for Keymap {
             // on several international layouts, where it arrives as
             // `e.key === "Dead"` and can never match. Rebind in one line if you
             // want it.
+            //
+            // Neither takes a letter: dreamd keeps one mark, not twenty-six.
             set_mark: "m".into(),
             jump_mark: "'".into(),
+            // Vim's jumplist keys, `Ctrl+O`/`Ctrl+I`, are both already spoken
+            // for — the stack panel and the outline panel. These are one
+            // modifier away from the bare `]`/`[` above and read as the same
+            // motion: brackets step, Ctrl-brackets step through history.
+            // `Ctrl+[` is `Esc` in a terminal, which would matter if dreamd
+            // ever grew a terminal surface; it is a webview and does not.
+            jump_back: "Ctrl+[".into(),
+            jump_forward: "Ctrl+]".into(),
             copy_stack: "Ctrl+C".into(),
             settings: "Ctrl+,".into(),
             save_annotation: "Ctrl+Y".into(),

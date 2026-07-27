@@ -1,5 +1,82 @@
 # Session log
 
+## 2026-07-27 — view mode showed a blank window, and the overnight batch's last plan landed
+
+Three things the overnight batch left in an odd state: view mode painted an
+empty screen, marks worked but felt dead, and jump-back was the one piece of
+`file-and-section-links` still unbuilt. All three closed, and the frontend's
+correctness harness grew the assertions that would have caught the first one.
+
+### What happened
+
+1. **View mode was rendering the document at width 0** (`ui/index.html`). The
+   bug is one CSS line and worth stating precisely, because it is not obvious:
+   `body.view-mode #sidebar { display: none }` takes the sidebar out of grid
+   *placement*, where `body.nav-collapsed` merely gives it a zero-width track.
+   With `grid-template-columns: 0 1fr` still declared, `#main-wrap` therefore
+   became the **first** grid item and landed in the `0` track. Measured in
+   Chromium before touching anything: `#main-wrap` 0px wide, `#content` 80px.
+   Fixed by declaring one track in view mode, with a comment naming the trap and
+   the fact that a third child of `#workspace` reopens it.
+2. **Marks cut from twenty-six to one** (`ui/app.js`, `src-tauri/src/config.rs`).
+   They were never broken — driving the real UI showed `ma` → `]` → `'a`
+   restoring file *and* offset exactly. What was broken was that `m` alone did
+   nothing observable, so the feature read as dead. The author's call was one
+   mark, no letter, which deleted the entire chord state machine that shipped
+   with `583a467`: `pendingMark`, `MARK_TIMEOUT_MS`, `armMark`/`clearMark`/
+   `consumeMarkKey`, the `e.repeat` guard, the Escape branch, four `clearMark()`
+   calls across the overlay and `isEditable` paths, and a `blur` listener. `m`
+   and `'` are now ordinary single combos that confirm immediately. That state
+   machine was the largest piece of input state in the frontend and it existed
+   to serve a second bookmark nobody had asked for.
+3. **Jump back / forward built** — the last open item in
+   `docs/plans/file-and-section-links.md`, on `Ctrl+[` / `Ctrl+]`. The plan
+   recommended `Alt+Left`/`Alt+Right`; the author took its option 3 instead,
+   because the brackets echo the bare `]`/`[` file-step one modifier away.
+   §3's broad rule (any teleport pushes; scrolling never does) was taken as
+   written.
+   One design change out of the plan. §4 put a `pushJump()` inside both
+   `openFile` and `scrollToFragment`; that double-counts, because a cross-file
+   `other.md#section` link *is* `openFile` followed by `scrollToFragment` and
+   the second frame would be the new document at offset 0 — a place nobody read,
+   and a jump that takes two presses to undo. Cross-file pushes now live in
+   `openFile` (a genuine funnel: tree, palette, `]`/`[` and links all pass
+   through it) and in-document pushes at their two call sites, where the
+   `#anchor` one can also be made conditional on the target actually being
+   found. A `restoring` flag keeps a pop from re-pushing its own arrival.
+4. **Marks and history share a frame.** `{ path, top }` plus `restoreFrame()`,
+   exactly as the plan's §7 said to if both ever got built — shared helper,
+   separate storage. A jump to the mark is itself a teleport and goes on the
+   history like any other.
+5. **`perf/harness/ui-check.mjs` gained a third page** and 15 assertions: view
+   mode's measured width, that highlighting still works with the chrome hidden,
+   the Esc precedence between annotation and view mode, the mark round-trip, and
+   the jump history including the cross-file-section-link case from (3). The
+   view-mode checks assert *width* deliberately — every existing check passed
+   while the feature painted an empty window.
+
+### Mistakes & deviations
+
+- `/perf-quick` flagged the Chromium scroll rows at +50–60% on
+  `main_thread_task_ms` and `composite_ms`, and it **reproduced** on a second
+  run. Rather than accept or dismiss it, parked both UI files and re-ran against
+  the unmodified tree: the same rows moved by the same amounts. Not this change
+  — the baseline is stale for those metrics. Left alone; moving it takes a
+  deliberate `perf-deep`.
+- The plan was followed except where it was wrong, and the one place it was is
+  recorded above and in `ui/app.js` rather than silently worked around. A
+  `> Built` note at the top of the plan file says which of its options were
+  taken.
+- Wrap-up ran with perf testing explicitly skipped at the author's request.
+
+### State
+
+`cargo build` passes. `cargo run --example config_check` 34/34.
+`node perf/harness/ui-check.mjs` **56 passed, 0 failed** (41 before this
+session). No perf tier run at wrap-up, by request; the quick-tier finding above
+was investigated and cleared during the session. `perf/baseline.json` untouched
+and arguably stale for the Chromium scroll rows — a `perf-deep` would settle it.
+
 ## 2026-07-27 — twelve ideas processed unattended, on a branch, with no perf run
 
 An overnight batch over `ideas/`: one subagent per idea, strictly sequential in a

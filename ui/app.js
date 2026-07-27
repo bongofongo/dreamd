@@ -406,6 +406,11 @@ function stepFile(d) {
 
 // ---- open / render -------------------------------------------------------
 async function openFile(path) {
+  // The one cross-file entry point, so the one place the jump history needs to
+  // record from. Guarded three ways: `here()` is null at boot when there is
+  // nothing to come back to, `restoring` marks an arrival rather than a
+  // departure, and re-opening the file already open is not a move.
+  if (!restoring && path !== currentFile) pushJump(here());
   currentFile = path;
   markActiveInTree(path);
   await renderCurrent({ preserveScroll: false, reanchor: false });
@@ -472,7 +477,15 @@ function interceptLinks() {
     if (/^[a-z]+:\/\//i.test(href) || href.startsWith("mailto:")) {
       a.onclick = (e) => { e.preventDefault(); invoke("open_external", { url: href }); };
     } else if (href.startsWith("#")) {
-      a.onclick = (e) => { e.preventDefault(); scrollToFragment(href.slice(1)); };
+      // Frame captured before the scroll and pushed only if the target was
+      // actually found — a `#anchor` naming a heading that isn't there moves
+      // nobody, and recording it would put a "back" on the stack that goes
+      // where you already are.
+      a.onclick = (e) => {
+        e.preventDefault();
+        const from = here();
+        if (scrollToFragment(href.slice(1))) pushJump(from);
+      };
     } else {
       // relative path -> only navigate to markdown inside the repo; other
       // relative targets are dropped (never handed to the OS opener).
@@ -1141,94 +1154,152 @@ function exitView() { document.body.classList.remove("view-mode"); }
 function jumpTop() { scrollEl.scrollTo({ top: 0 }); }
 function jumpBottom() { scrollEl.scrollTo({ top: scrollEl.scrollHeight }); }
 
-// ---- marks ---------------------------------------------------------------
-// Vim's marks: `m{letter}` remembers where you are, `'{letter}` goes back.
-// Explicit and user-placed — not a browser-style automatic history.
+// ---- position frames -----------------------------------------------------
+// A reading position is `{ path, top }` — a file and a scroll offset — and it
+// is the unit both the mark and the jump history are built out of. Stored as an
+// offset rather than a heading anchor because an offset restores the exact spot
+// including mid-section, and a document with no headings has no anchor to
+// restore to at all.
 //
-// In memory, and only in memory. Tenet 2: this dies with the process, and
-// nothing here is ever written to disk.
-//
-// **Global across the repo, not per file.** The open question in the idea, and
-// the answer is not close. dreamd shows one document at a time out of a whole
-// repo, so the useful move is "bookmark the spot in the architecture doc, come
-// back to it from wherever I've wandered to" — which is cross-file by
-// definition. Per-file marks would be a bookmark you can only use once you have
-// already navigated to the thing you were trying to navigate to. It is also the
-// simpler build: one flat map keyed by letter, and a jump is `openFile` plus a
-// scroll, both of which already exist. Vim splits a–z (buffer) from A–Z
-// (global) because it has a buffer list and a reader does not; here every
-// letter is global and case-sensitive, which buys 62 marks instead of 26.
-const marks = new Map(); // letter -> { path, top }
+// In memory, and only in memory. Tenet 2: all of this dies with the process,
+// and nothing here is ever written to disk.
 
-// The single keystroke a leader key is waiting on, or null. Nothing else in the
-// frontend keeps input state between events, so this is the whole of it.
-let pendingMark = null;  // { kind: "set" | "jump", at }
-const MARK_TIMEOUT_MS = 1500;
+function here() {
+  return currentFile ? { path: currentFile, top: scrollEl.scrollTop } : null;
+}
 
-function armMark(kind) { pendingMark = { kind, at: Date.now() }; }
-function clearMark() { pendingMark = null; }
-
-/// The second half of a mark chord. Returns true when it consumed the event.
+/// Go to a stored frame.
 ///
-/// Every branch here was written against one question: *can this swallow a
-/// keystroke someone meant for something else?* The guarantee it settles on is
-/// narrow enough to state in a sentence — **the only event this can consume is
-/// a bare alphanumeric arriving within `MARK_TIMEOUT_MS` of a leader key, plus
-/// key repeats while the leader itself is held down.** Everything else returns
-/// false and falls through to the normal chain untouched. That is why the
-/// modified-combo and non-alphanumeric cases cancel and fall through rather
-/// than swallowing: a mark chord going wrong should cost the mark, never the
-/// keystroke.
-function consumeMarkKey(e) {
-  if (!pendingMark) return false;
-  // A modifier pressed on its own is part of *typing* the letter — `Shift`
-  // before `A` — not the letter. Stay armed and let it by.
-  if (MODIFIER_KEYS.includes(e.key)) return false;
-  // Holding the leader down repeats its keydown. Swallow those and stay armed,
-  // or `m` held for half a second sets the mark `m`.
-  if (e.repeat) { e.preventDefault(); return true; }
-
-  const { kind, at } = pendingMark;
-  // Disarmed from here on, whatever happens next: an action that throws must
-  // not leave a leader armed, and every non-modifier key ends the chord.
-  clearMark();
-
-  // A leader pressed and then abandoned must not turn a keystroke a minute
-  // later into a mark.
-  if (Date.now() - at > MARK_TIMEOUT_MS) return false;
-  // A modified combo is a command, not a mark letter. Cancel and fall through
-  // so the palette key still opens the palette.
-  if (e.ctrlKey || e.altKey || e.metaKey) return false;
-  // Arrows, function keys, `Dead` and `Process` from an IME: not marks, and not
-  // ours to eat either.
-  const key = e.key || "";
-  if (!/^[0-9a-z]$/i.test(key)) return false;
-
-  e.preventDefault();
-  if (kind === "set") setMark(key); else jumpMark(key);
-  return true;
+/// `openFile` resolves once the document is rendered *and its scroll reset to
+/// 0*, so awaiting it is what makes the offset below land on a laid-out
+/// document rather than being overwritten by the reset. Skipped when the frame
+/// is in the file already open, which is the common case and would otherwise
+/// re-render for nothing.
+///
+/// A stored offset is a pixel position, so it drifts if the file changed on
+/// disk since the frame was taken. `scrollTo` clamps to the scrollable range on
+/// its own, so a document that has since got shorter lands at its end rather
+/// than failing.
+async function restoreFrame(f) {
+  restoring = true;
+  try {
+    if (f.path !== currentFile) await openFile(f.path);
+  } finally {
+    // Cleared before the scroll, not after: a render that throws must not leave
+    // the flag set and silently stop the history recording for the rest of the
+    // session.
+    restoring = false;
+  }
+  scrollEl.scrollTo({ top: f.top });
 }
 
-function setMark(key) {
-  if (!currentFile) return;
-  marks.set(key, { path: currentFile, top: scrollEl.scrollTop });
-  toast(`Mark ${key} set`);
+// ---- the mark ------------------------------------------------------------
+// Vim's marks, cut down to one: `m` remembers where you are, `'` goes back.
+// Explicit and user-placed — not the automatic history below.
+//
+// **One mark, not twenty-six.** Vim's letter argument is deliberately dropped.
+// A letter buys a second bookmark at the cost of a modal leader key: `m` alone
+// would do nothing visible, and the app would sit in a half-typed state waiting
+// on a letter that decides whether the next keystroke is a mark name or the
+// highlight shortcut. That machinery — a timeout, a repeat guard, a disarm on
+// every overlay and focus path — was the largest piece of input state in the
+// frontend, and it existed to serve a second bookmark nobody had asked for. One
+// mark makes both keys ordinary single combos with immediate feedback, and
+// leaves `pendingMark` as a thing this file no longer has.
+//
+// **Global across the repo, not per file.** dreamd shows one document at a time
+// out of a whole repo, so the useful move is "bookmark the spot in the
+// architecture doc, come back to it from wherever I've wandered to" — which is
+// cross-file by definition. A per-file mark would be a bookmark you can only
+// use once you have already navigated to the thing you were trying to navigate
+// to.
+let mark = null; // { path, top }
+
+function setMark() {
+  const f = here();
+  if (!f) { toast("Nothing open to mark"); return; }
+  mark = f;
+  toast("Mark set");
 }
 
-async function jumpMark(key) {
-  const m = marks.get(key);
-  if (!m) { toast(`No mark ${key}`); return; }
-  // `openFile` resolves once the document is rendered and its scroll reset to
-  // 0, so the scroll below lands on a laid-out document rather than an empty
-  // one. Skipped when the mark is in the file already open, which is the common
-  // case and would otherwise re-render for nothing.
-  if (m.path !== currentFile) await openFile(m.path);
-  // A stored offset is a pixel position, so it drifts if the file changed on
-  // disk since the mark was dropped — a heading anchor would be sturdier, and
-  // is the obvious follow-up. `scrollTo` clamps to the scrollable range on its
-  // own, so a document that has since got shorter lands at its end rather than
-  // failing.
-  scrollEl.scrollTo({ top: m.top });
+async function jumpMark() {
+  if (!mark) { toast("No mark set — press the set-mark key first"); return; }
+  // A jump to the mark is itself a teleport, so it goes on the history like any
+  // other. Captured before the move, as everywhere else.
+  const from = here();
+  await restoreFrame(mark);
+  pushJump(from);
+}
+
+// ---- jump history --------------------------------------------------------
+// Browser-style back and forward over reading positions. Where the mark is
+// explicit and holds one place indefinitely, this is automatic and holds the
+// last `JUMP_MAX` places you were teleported away from.
+//
+// **What counts as a teleport** is the whole design question, and the rule is:
+// push a frame when something moved you somewhere you did not scroll to
+// yourself. That is every `openFile` (a link, the tree, the palette, `]`/`[`,
+// the mark), plus an in-document jump that actually found its target (a `#`
+// link, an outline click). It is *not* wheel or keyboard scrolling, a
+// `file-changed` re-render, or a theme switch. Vim's jumplist excludes `j`/`k`
+// for the same reason: a stack that records passive scrolling fills with junk
+// within a minute of reading.
+//
+// Cross-file moves push from inside `openFile`, which is a genuine funnel —
+// every navigation in the app goes through it, so one guarded line there covers
+// the tree, the palette, `]`/`[` and link clicks at once. In-document moves
+// push at their two call sites instead, because `scrollToFragment` is also the
+// second half of a cross-file section link: pushing inside it would record a
+// second frame for one jump, and that frame would be the *new* document at
+// offset 0, which is not a place anyone was.
+const jumpBack = [];
+const jumpFwd = [];
+const JUMP_MAX = 64;
+
+// True while a pop or a mark jump is in flight. `restoreFrame` calls `openFile`
+// like everything else, and without this the arrival would push the departure
+// back onto the stack you just popped it from.
+let restoring = false;
+
+/// Record `from` as a place worth coming back to. Null-safe, so a call site can
+/// pass `here()` unconditionally and get a no-op when nothing was open.
+function pushJump(from) {
+  if (!from) return;
+  jumpBack.push(from);
+  // A ring, not a leak: a long reading session is thousands of navigations.
+  if (jumpBack.length > JUMP_MAX) jumpBack.shift();
+  // A new jump invalidates the forward branch — standard undo-stack semantics,
+  // and the reason forward is the fiddlier half of the pair.
+  jumpFwd.length = 0;
+}
+
+async function jumpHistory(dir) {
+  const from = dir < 0 ? jumpBack : jumpFwd;
+  const to = dir < 0 ? jumpFwd : jumpBack;
+  const f = from.pop();
+  // Silence would read as a broken keybind rather than an empty stack.
+  if (!f) { toast(dir < 0 ? "No earlier position" : "No later position"); return; }
+  const cur = here();
+  if (cur) to.push(cur);
+  await restoreFrame(f);
+}
+
+/// Drop every frame naming `path`. A pop into a file that no longer exists
+/// paints an error block and consumes the frame, so the frames go when the file
+/// does — from the watcher's `file-removed` and from the delete path alike.
+function forgetPath(path) {
+  for (const s of [jumpBack, jumpFwd]) {
+    for (let i = s.length - 1; i >= 0; i--) if (s[i].path === path) s.splice(i, 1);
+  }
+  if (mark && mark.path === path) mark = null;
+}
+
+/// File → Open moved the root. Every frame is a path into the old repo, so
+/// there is nothing here that survives the move.
+function forgetAllPositions() {
+  jumpBack.length = 0;
+  jumpFwd.length = 0;
+  mark = null;
 }
 
 // ---- reading progress ----------------------------------------------------
@@ -1351,8 +1422,12 @@ function buildOutline() {
     // sees. It is also the only reason this needs no escaping.
     btn.textContent = h.textContent.trim();
     // The element, not its id — a jump that cannot miss, and one that still
-    // works for a heading whose slug is not a valid CSS selector.
-    btn.onclick = () => h.scrollIntoView({ block: "start" });
+    // works for a heading whose slug is not a valid CSS selector. It cannot
+    // miss, so unlike the `#anchor` path the push is unconditional.
+    btn.onclick = () => {
+      pushJump(here());
+      h.scrollIntoView({ block: "start" });
+    };
     frag.appendChild(btn);
   }
   list.appendChild(frag);
@@ -1543,6 +1618,9 @@ function wireEvents() {
     const t0 = perf.now();
     paintTree(await invoke("rebuild_index"));
     perf.span("tree_rebuild", t0);
+    // Before the early-out below, because a removed file is usually *not* the
+    // one on screen and the stale frames pointing at it still have to go.
+    if (e.payload && e.payload.path) forgetPath(e.payload.path);
     if (e.payload && e.payload.path === currentFile) {
       currentFile = null;
       contentEl.innerHTML = `<div class="empty">File removed.</div>`;
@@ -1560,6 +1638,7 @@ function wireEvents() {
   // when the user picked a file rather than a folder.
   listen("repo-changed", async (e) => {
     try {
+      forgetAllPositions();
       await loadTheme();
       await adoptRepoInfo();
       await loadTree();
@@ -1682,10 +1761,6 @@ function wireKeys() {
     if (e.key === "Escape") {
       // Recording a keybind swallows Escape as "cancel", not "close panel".
       if (cancelRecording()) { e.preventDefault(); return; }
-      // So does a half-typed mark chord, for the same reason: both are
-      // transient input modes, and Escape backing out of the mode you are
-      // visibly in beats Escape reaching past it.
-      if (pendingMark) { clearMark(); e.preventDefault(); return; }
       // Escape is also the way out of view mode, because view mode hides the
       // titlebar and leaves nothing to click. It is the *last* claim on the
       // key though: if any overlay or the file menu is open, this Escape
@@ -1701,30 +1776,18 @@ function wireKeys() {
       if (!claimed) exitView();
       return;
     }
-    // While an overlay is open, let its own inputs handle keys. Any overlay
-    // reachable by mouse can be opened with a mark leader still armed, so this
-    // is also the central place that disarms it — cheaper and harder to forget
-    // than a `clearMark()` in each of the four open paths.
+    // While an overlay is open, let its own inputs handle keys.
     if ($("palette-overlay").classList.contains("open") ||
         $("annot-overlay").classList.contains("open") ||
         $("confirm-overlay").classList.contains("open") ||
-        $("settings-overlay").classList.contains("open")) { clearMark(); return; }
+        $("settings-overlay").classList.contains("open")) return;
 
     // Palette works from anywhere.
-    if (matchCombo(e, keymap.palette)) { e.preventDefault(); clearMark(); openPalette(); return; }
-    if (matchCombo(e, keymap.settings)) { e.preventDefault(); clearMark(); openSettings(); return; }
+    if (matchCombo(e, keymap.palette)) { e.preventDefault(); openPalette(); return; }
+    if (matchCombo(e, keymap.settings)) { e.preventDefault(); openSettings(); return; }
 
-    // Bare-letter shortcuts must not fire while typing in a field. Same reason
-    // as the overlay guard for the `clearMark`: focus can reach a field by
-    // mouse while a leader is armed, and a mark must never eat what someone is
-    // typing into a textarea.
-    if (isEditable(e.target)) { clearMark(); return; }
-
-    // The second half of a mark chord outranks every single-combo binding: with
-    // `m` armed, `h` is the mark letter, not the highlight shortcut. Sits below
-    // both guards above so it can only ever see keystrokes aimed at the
-    // document.
-    if (consumeMarkKey(e)) return;
+    // Bare-letter shortcuts must not fire while typing in a field.
+    if (isEditable(e.target)) return;
 
     // The configured highlight key turns the current selection into a dreamd
     // highlight and prompts for an annotation. It does NOT toggle mode. Bare
@@ -1742,11 +1805,13 @@ function wireKeys() {
     if (matchCombo(e, keymap.jump_bottom)) { e.preventDefault(); jumpBottom(); return; }
     if (matchCombo(e, keymap.next_file)) { e.preventDefault(); stepFile(1); return; }
     if (matchCombo(e, keymap.prev_file)) { e.preventDefault(); stepFile(-1); return; }
-    // Arming only. The letter that follows is captured by `consumeMarkKey` at
-    // the top of the next keydown, which is why these stay ordinary combos and
-    // the settings panel needs no idea marks exist.
-    if (matchCombo(e, keymap.set_mark)) { e.preventDefault(); armMark("set"); return; }
-    if (matchCombo(e, keymap.jump_mark)) { e.preventDefault(); armMark("jump"); return; }
+    if (matchCombo(e, keymap.set_mark)) { e.preventDefault(); setMark(); return; }
+    if (matchCombo(e, keymap.jump_mark)) { e.preventDefault(); jumpMark(); return; }
+    // `Ctrl+[` and `Ctrl+]` deliberately echo bare `[` / `]` above: those step
+    // through the tree's order, these step through where you have actually
+    // been. Same hand shape, one modifier apart.
+    if (matchCombo(e, keymap.jump_back)) { e.preventDefault(); jumpHistory(-1); return; }
+    if (matchCombo(e, keymap.jump_forward)) { e.preventDefault(); jumpHistory(1); return; }
     if (matchCombo(e, keymap.send_stack)) { e.preventDefault(); sendStack([]); return; }
     if (matchCombo(e, keymap.copy_stack)) {
       // Don't hijack a real copy: if text is selected, let the OS copy it.
@@ -1757,12 +1822,6 @@ function wireKeys() {
       return;
     }
   });
-
-  // Switching away with a leader armed and coming back minutes later must not
-  // find it still waiting. The timeout would catch this anyway; blur catches it
-  // without waiting for the timeout to be *checked*, which only happens on the
-  // next keydown.
-  window.addEventListener("blur", clearMark);
 }
 
 // ---- tooltips ------------------------------------------------------------
@@ -1883,8 +1942,10 @@ const KEY_ACTIONS = [
   { id: "jump_bottom", label: "Jump to bottom" },
   { id: "next_file", label: "Next file", sub: "Move through the sidebar's order without touching the tree — wraps at the ends" },
   { id: "prev_file", label: "Previous file" },
-  { id: "set_mark", label: "Set mark", sub: "Then a letter or digit: remembers this file and scroll position until the app quits" },
-  { id: "jump_mark", label: "Jump to mark", sub: "Then the same letter — marks work across files" },
+  { id: "set_mark", label: "Set mark", sub: "Remembers this file and scroll position until the app quits — one mark, replaced each time" },
+  { id: "jump_mark", label: "Jump to mark", sub: "Back to the mark, across files" },
+  { id: "jump_back", label: "Jump back", sub: "The position before the last link, tree, palette or mark jump" },
+  { id: "jump_forward", label: "Jump forward", sub: "Undo a jump back — cleared by any new jump" },
   { id: "send_stack", label: "Send stack to agent" },
   { id: "copy_stack", label: "Copy stack", sub: "Ignored while text is selected, so OS copy still works" },
   { id: "settings", label: "Open settings" },
