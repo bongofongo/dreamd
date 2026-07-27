@@ -227,6 +227,32 @@ causes were wrong.
 
 ## Recent updates
 
+- **2026-07-27** — **The project got a safety net. It had almost none.** Until today,
+  nothing checked the code automatically. There was one piece of automation, and it only
+  ran when a *release* was being cut — so a change could sit on the main branch for a week
+  before anyone discovered it didn't compile. The command that normally runs a project's
+  tests ran **zero** tests, because none had ever been written. Now: every change is
+  checked automatically the moment it lands, and there are **99 tests** where there were
+  none.
+  **What the tests actually protect.** dreamd reads files it did not write. A markdown
+  document is untrusted input — it can contain anything, including deliberate attempts to
+  make the app do something it shouldn't. There were five rules protecting against that
+  (a document can't run code inside the app window; it can't hand the operating system a
+  dangerous kind of link; it can't reach outside the folder you opened, whether through a
+  link, a picture, or a delete). Every one of those rules was real and working — and not
+  one of them was checked by anything. If a future change broke one, nothing would have
+  noticed. All five are now tested.
+  **And the tests were tested.** A test that passes proves nothing on its own: it might
+  pass because the rule works, or because the test never really checks anything. So each
+  protection was deliberately broken, one at a time, to confirm its test went red — then
+  put back. All five failed as they should have. Only then was the coverage claimed.
+  **A change that was measured and then thrown away.** Part of the work was meant to speed
+  up releases by not rebuilding a tool every time. The measurement said it made no
+  difference at all — the tool was already being reused, and the slow run that started the
+  whole idea was a one-off. So the change was removed, and the reason written down where
+  the next person will read it. Being wrong is cheap when you measure; it is expensive
+  when you don't.
+
 - **2026-07-27** — **You can now search inside the document you're reading — and the
   interesting parts were a style rule that taxed every page load, and a highlight that
   would not go away.** Pressing `/` opens a search bar at the foot of the reading pane.

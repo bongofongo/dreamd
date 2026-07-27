@@ -1,5 +1,129 @@
 # Session log
 
+## 2026-07-27 — CI from nothing: 99 tests, the security tenets made reachable, and one cache reverted for being useless
+
+The ask was to improve CI/CD ahead of two pending decisions — whether highlight
+and annotation persistence happens at all, and how an MCP server folds in — by
+locking down the parts of the app that are settled either way. It got there:
+`ci.yml` now runs on every push and PR, `cargo test` runs 99 tests where it ran
+zero, and five of the six security tenets went from no automated verification to
+tests that were each proven to fail when the guard is removed.
+
+### What happened
+
+1. **The starting position was worse than it looked.** `release.yml` was the only
+   workflow — `v*` tags, `release: published`, `workflow_dispatch`. Nothing ran on
+   main, nothing on a PR. No `rustfmt.toml`, no `clippy.toml`, no `[lints]`. Not
+   one `#[test]` in the repo. Of the six tenets, exactly one had coverage: the
+   `.dreamd.toml` `theme_css` refusal, in `config_check.rs`.
+
+2. **Two enforcement points were structurally unreachable.** `open_external`'s
+   scheme allowlist and `delete_file`'s repo-root containment lived in `main.rs`,
+   which is a `[[bin]]` — no test, example or bench can import it. So they moved
+   to a new `guard` module (`allowed_scheme`, `inside_root`) with the commands
+   keeping the I/O and calling in. That is a prerequisite, not a cleanup: without
+   it the tenets are enforced by code nothing can assert on.
+
+3. **`ui/paths.js`.** `normalizePath` and `insideRepo` — the frontend half of the
+   same tenet, for relative links and images — came out of `app.js` into a second
+   classic script, `defer`, loaded first. Not an ES module: the frontend has no
+   build step, and `script-src 'self'` already permits a second *file* (only
+   inline script is blocked). `insideRepo` takes `repoRoot` as an argument now;
+   two call sites in `interceptLinks` pass it. `ui/paths.test.mjs` drives it under
+   `node --test` with zero dependencies, via `node:vm`, so what it tests is
+   literally the file the webview loads.
+
+4. **99 tests.** 89 Rust (`guard`, `markdown`, `theme`, `annotations`, `config`,
+   `fs_walk`, `lib`) plus 10 node. Deliberately scoped to what will outlive the
+   persistence and MCP decisions. `annotations::Store` got particular attention —
+   id monotonicity across removals, `set_annotation` as the thing that enqueues,
+   stack order under re-annotation, Stale-not-dropped — because it is the exact
+   surface a persistence layer would wrap, so pinning it now makes that decision
+   cheap. Nothing touches `config_dir()`: that reads the real `~/.config/dreamd`,
+   and only a whole process can sandbox it, which is `config_check`'s job.
+
+5. **Each guard was proven to have teeth.** A green assertion says nothing about
+   what it would catch, so every security fix was reverted in a *plausible* way
+   and the matching test confirmed red: the allowlist widened to `Some(_)`,
+   `inside_root` made a textual `starts_with`, the `Event::Html` arm passed
+   through unescaped, `user_path`'s `..` check dropped, `insideRepo` made a plain
+   `startsWith`. Five for five, tree restored each time.
+
+6. **`ci.yml`.** fmt, `clippy -D warnings` over `--all-targets --all-features`,
+   `cargo test`, then a real `cargo build` — clippy is a check, not a link. On
+   **macos-14**, which is not a preference: Tauri on Linux needs webkit2gtk, and
+   the `#[cfg(target_os = "macos")]` paths compile nowhere else. Runners are free
+   on a public repo. `pull_request` is included even though commits go straight to
+   main — it costs nothing unused and means an agent-authored branch is checked
+   before it lands. Toolchain **pinned** to 1.97.1: `-D warnings` against
+   `@stable` turns main red on a lint nobody wrote, and a clippy disagreeing with
+   the local one is worse than no clippy.
+
+7. **Verified on GitHub, not just locally.** PR #6 green on a real macos-14
+   runner, main green twice, two `workflow_dispatch` release rehearsals green on
+   both arches with `release` and `tap` skipped as designed — nothing published.
+
+### Mistakes & deviations
+
+- **The `tauri-cli` cache was added on a false premise and reverted the same
+  session.** The claim — inherited from exploration and repeated without checking
+  — was that `cargo install tauri-cli` recompiles on both matrix legs of every
+  release because `Swatinem/rust-cache` covers `./target` and not `~/.cargo/bin`.
+  It covers `~/.cargo/bin` too. The tell came from insisting on measurement: on
+  the first dispatch the new cache step *missed*, and `Install tauri-cli` still
+  finished in **1 second**, which is only possible if the binary was already
+  restored. The 6m10s/11m30s the step cost on 2026-07-26 was a cold rust-cache,
+  not a per-run cost. Two rehearsals, both arches, no difference. Removed in
+  `c2c6a48`, with the reasoning written into both the workflow and CLAUDE.md so
+  the same wrong inference isn't drawn from the same evidence next time.
+- **Three test fixtures were wrong before they were right**, each corrected by
+  reading the code rather than adjusting the expectation to match: a hint test
+  that assumed `best_match` uses the hint with no context (it short-circuits to
+  `find`), an off-by-one on which line a repeated block starts, and a `build_tree`
+  case that forgot `Path::components` yields a `RootDir`. The last two now assert
+  the real behaviour, and the first grew a second test documenting the
+  short-circuit explicitly.
+- **rustfmt mangled one comment** — it aligned the `blocks` explainer in
+  `render_with` against the trailing `// (lang, text)` above it, indenting it 50
+  columns. Fixed at the source by moving the trailing comment to its own line,
+  rather than accepting the output or adding a `#[rustfmt::skip]`.
+- **The perf tier's red rows were not a regression, and saying so took work.**
+  Against `baseline.json` the pass run reported 20 regressed / 35 slower. But the
+  baseline is `312ac8b` from 2026-07-25, and the correct comparison is this
+  morning's deep run at `f1d21d2`. Against that, the metric that matters —
+  `real.loop.debug-h10.save_to_paint_ms.p50/p95` — is **26% faster** (3211 →
+  2359). The residual cluster was Chromium-only, so it got the direct A/B those
+  rows require: three reps per arm, current `ui/` vs pre-session `ui/`. Current
+  came out *faster* (47.0 vs 50.6 ms innerHTML p50) with per-rep spread of
+  44.7–54.4, i.e. the reported +20% is run-to-run variance, not the `paths.js`
+  split.
+
+### State
+
+Green everywhere. `cargo fmt --check`, `cargo clippy --all-targets
+--all-features -D warnings`, `cargo test --all-features` (89 passed), `cargo
+build`, `node --test ui/paths.test.mjs` (10 passed), and `node
+perf/harness/ui-check.mjs` (79 passed, 0 failed) all clean locally; `ci` green on
+main. Five commits pushed: `83569da` fmt/clippy, `eaed55a` the Rust tests and
+`guard`, `fa88a06` the `ui/paths.js` split, `89eb83e` `ci.yml`, `c2c6a48` the
+cache revert.
+
+Perf: no regression attributable to this session (see above). `perf/baseline.json`
+untouched — it is two days stale at `312ac8b` and now disagrees with the tree
+enough to report phantom rows (`d:decorate_code` shows as a brand-new metric, and
+`d:ipc_get_highlights` as a 98.7% "improvement"). **Refreshing it needs a
+deliberate `perf-deep --update-baseline`, which was not run.** Results file:
+`perf/results/pass-c2c6a48-20260727-124328.json`.
+
+Left open, deliberately out of the chosen scope: the three `examples/*_check.rs`
+harnesses and `ui-check.mjs` still do not run in CI. `config_check` and
+`theme_check` are two `cargo run --example` lines against an already-compiled
+crate; `locate_check` needs the 22 MB corpus cached on the sha256 of
+`perf/corpus/manifest.json`; `ui-check.mjs` needs Playwright *and* a fix to the
+hardcoded absolute path at `perf/harness/ui-check.mjs:19` before it runs anywhere
+but this machine. Also untested: `search`, `catalog`, `watcher`, `cli`, `menu`,
+and everything in `main.rs` that isn't a lifted predicate.
+
 ## 2026-07-27 — find reshaped around Enter, the regex toggle deleted, and three goes at one stale-paint bug
 
 Follow-up to the session below, all of it driven by the author using the feature
