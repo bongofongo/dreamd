@@ -114,6 +114,7 @@ export const KEYMAP = {
   highlight: "Ctrl+H",
   send_stack: "Ctrl+Enter",
   toggle_stack: "Ctrl+O",
+  toggle_outline: "Ctrl+I",
   copy_stack: "Ctrl+C",
   settings: "Ctrl+,",
   save_annotation: "Ctrl+Y",

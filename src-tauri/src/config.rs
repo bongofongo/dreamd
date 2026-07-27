@@ -112,6 +112,8 @@ pub struct Keymap {
     pub send_stack: String,
     /// Toggle the stack panel.
     pub toggle_stack: String,
+    /// Toggle the contents / outline panel.
+    pub toggle_outline: String,
     /// Copy the assembled stack to the clipboard.
     pub copy_stack: String,
     /// Open the settings panel.
@@ -132,6 +134,9 @@ impl Default for Keymap {
             highlight: "Ctrl+H".into(),
             send_stack: "Ctrl+Enter".into(),
             toggle_stack: "Ctrl+O".into(),
+            // I for "index". Ctrl+B, the obvious sidebar-toggle key, is left
+            // free for the file-tree keybind that idea file already claims.
+            toggle_outline: "Ctrl+I".into(),
             copy_stack: "Ctrl+C".into(),
             settings: "Ctrl+,".into(),
             save_annotation: "Ctrl+Y".into(),

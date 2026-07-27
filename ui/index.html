@@ -151,6 +151,35 @@
       mark.hl:hover { outline: 1px solid var(--hl, #f2d16b); outline-offset: 1px; }
       mark.hl.stale { background: var(--stale, #ef6a7d); color: var(--stale-text, #1a1a1a); }
 
+      /* contents / outline panel — same visual language as #stack-panel, but
+         anchored left so both can be open at once. */
+      #outline-panel {
+        position: absolute; top: 0; left: 0; bottom: 0; width: 260px;
+        background: var(--sidebar-bg, #100e17); border-right: 1px solid var(--border, #2e2940);
+        display: none; flex-direction: column; z-index: 20;
+      }
+      #outline-panel.open { display: flex; }
+      #outline-panel h3 { margin: 0; padding: 10px 12px; border-bottom: 1px solid var(--border, #2e2940); font-size: 13px; display: flex; align-items: center; justify-content: space-between; }
+      #outline-list { flex: 1; overflow: auto; padding: 6px 0; }
+      .oi {
+        display: block; width: 100%; text-align: left; border: none; background: none;
+        border-radius: 0; padding: 3px 12px; font: inherit; color: inherit;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      }
+      .oi:hover { background: var(--hover, #292435); }
+      /* Level is depth, not size: h1 reads as a section head, everything below
+         it indents one step per level. Six levels at 12px would run the text off
+         a 260px panel, so the step is deliberately small. */
+      .oi.l1 { font-weight: 600; }
+      .oi.l2 { padding-left: 24px; }
+      .oi.l3 { padding-left: 36px; opacity: 0.85; }
+      .oi.l4 { padding-left: 48px; opacity: 0.8; }
+      .oi.l5 { padding-left: 60px; opacity: 0.75; }
+      .oi.l6 { padding-left: 72px; opacity: 0.7; }
+      /* Jumping to a heading should not park it flush against the top edge —
+         this applies to outline clicks and to in-document `#anchor` links. */
+      #content :is(h1, h2, h3, h4, h5, h6) { scroll-margin-top: 16px; }
+
       /* stack panel */
       #stack-panel {
         position: absolute; top: 0; right: 0; bottom: 0; width: 340px;
@@ -331,6 +360,9 @@
   <body class="nav-collapsed">
     <div id="titlebar" data-tauri-drag-region>
       <div id="tb-actions">
+        <button id="btn-outline" class="icon" data-tip="Toggle contents" data-tip-key="toggle_outline">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h2"/><path d="M9 6h11"/><path d="M7 12h2"/><path d="M12 12h8"/><path d="M10 18h2"/><path d="M15 18h5"/></svg>
+        </button>
         <button id="btn-settings" class="icon" data-tip="Settings" data-tip-key="settings">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1.08-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1.08 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
         </button>
@@ -363,6 +395,13 @@
         <div id="content-scroll">
           <div id="stale-rail"></div>
           <div id="content"><div class="empty">Select a markdown file from the tree, or open the search palette.</div></div>
+        </div>
+
+        <!-- Left edge of the reading area, so it can sit open alongside the
+             stack panel on the right rather than fighting it for the slot. -->
+        <div id="outline-panel">
+          <h3>Contents <button id="outline-close" class="icon" data-tip="Close contents panel" data-tip-key="toggle_outline">✕</button></h3>
+          <div id="outline-list"></div>
         </div>
 
         <div id="stack-panel">

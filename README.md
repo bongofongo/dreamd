@@ -103,7 +103,12 @@ See `perf/README.md` for what each tier measures and how much to trust it.
 - **Open a file:** click it in the tree, or open the fuzzy palette.
 - **File options:** hover a file row and click `⋯` → **Copy path** or **Delete** (delete moves it to the OS Trash after a confirm).
 - **Collapse the tree:** click the `◀` arrow in the tree header; a floating `▶` at the left edge brings it back. The preview stays full-width.
-- **Top bar** (on the traffic-light row): highlighter, stack, and send — all icons.
+- **Top bar** (on the traffic-light row): contents, settings, highlighter, stack, and send — all icons.
+- **Contents:** the outline icon (or `Ctrl+I`) opens a panel listing the open
+  document's headings, indented by level; click one to jump to it. It follows
+  the file while it is open, so a `:w` in Neovim updates it with the document.
+  In-document `[link](#a-heading)` links work too — headings carry GitHub-style
+  slug ids.
 - **Highlight → annotate:** select text in the preview, press the highlight key,
   type a question/comment, "Add to stack".
 - **Send:** press the send key (or the toolbar **Send ▸**) to push the whole
@@ -129,6 +134,7 @@ See `perf/README.md` for what each tier measures and how much to trust it.
 | Highlight selection         | `h` (or `Ctrl+H`)          |
 | Add annotation (in modal)   | `Ctrl+Y`                   |
 | Toggle highlight mode       | toolbar highlighter icon   |
+| Toggle contents panel       | `Ctrl+I`                   |
 | Toggle stack panel          | `Ctrl+O`                   |
 | Send stack                  | `Ctrl+Enter`               |
 | Copy stack to clipboard     | `Ctrl+C`                   |
@@ -189,6 +195,7 @@ palette_next = "Ctrl+N"
 highlight = "Ctrl+H"
 send_stack = "Ctrl+Enter"
 toggle_stack = "Ctrl+O"
+toggle_outline = "Ctrl+I"
 copy_stack = "Ctrl+C"
 settings = "Ctrl+,"
 save_annotation = "Ctrl+Y"

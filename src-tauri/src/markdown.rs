@@ -9,6 +9,7 @@
 
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 use serde::Serialize;
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 use syntect::highlighting::{Theme, ThemeSet};
@@ -96,9 +97,34 @@ pub fn render_with(source: &str, code_theme: &str) -> String {
     // (`render/code/2m` vs `render/prose/2m` is a ~750x spread) and each block
     // is independent of every other.
     let mut blocks: Vec<Block> = Vec::new();
+    // The open heading's slot in `events` plus its text so far. A heading's id
+    // is a slug of its own text, which is only known at the *end* tag, so the
+    // start event is patched in place once the text has been seen. Headings do
+    // not nest, so one slot is enough.
+    let mut heading: Option<(usize, String)> = None;
+    let mut slugger = Slugger::default();
 
     for ev in parser {
         match ev {
+            e @ Event::Start(Tag::Heading { .. }) => {
+                heading = Some((events.len(), String::new()));
+                events.push(e);
+            }
+            Event::End(TagEnd::Heading(level)) => {
+                if let Some((at, text)) = heading.take() {
+                    if let Event::Start(Tag::Heading { id, .. }) = &mut events[at] {
+                        // `ENABLE_HEADING_ATTRIBUTES` is off, so `id` is always
+                        // `None` today; honour an explicit one anyway rather
+                        // than silently overwriting it if that ever changes.
+                        let slug = match id.take() {
+                            Some(explicit) => slugger.reserve(&explicit),
+                            None => slugger.slug(&text),
+                        };
+                        *id = Some(slug.into());
+                    }
+                }
+                events.push(Event::End(TagEnd::Heading(level)));
+            }
             Event::Start(Tag::CodeBlock(kind)) => {
                 let lang = match kind {
                     CodeBlockKind::Fenced(l) => l.to_string(),
@@ -110,8 +136,28 @@ pub fn render_with(source: &str, code_theme: &str) -> String {
             // being emitted; the whole block is replaced by syntect's HTML.
             Event::Text(t) => match &mut code_buf {
                 Some((_, buf)) => buf.push_str(&t),
-                None => events.push(Event::Text(t)),
+                None => {
+                    if let Some((_, h)) = &mut heading {
+                        h.push_str(&t);
+                    }
+                    events.push(Event::Text(t));
+                }
             },
+            // Inline code is part of the text a reader sees in a heading, so it
+            // is part of the slug.
+            Event::Code(c) => {
+                if let Some((_, h)) = &mut heading {
+                    h.push_str(&c);
+                }
+                events.push(Event::Code(c));
+            }
+            // A setext heading can span lines; the break reads as a space.
+            e @ (Event::SoftBreak | Event::HardBreak) => {
+                if let Some((_, h)) = &mut heading {
+                    h.push(' ');
+                }
+                events.push(e);
+            }
             Event::End(TagEnd::CodeBlock) => match code_buf.take() {
                 Some((lang, text)) => {
                     // Placeholder; filled in below once highlighting is done.
@@ -125,7 +171,13 @@ pub fn render_with(source: &str, code_theme: &str) -> String {
                 None => events.push(Event::End(TagEnd::CodeBlock)),
             },
             // Untrusted raw HTML from the source -> render as escaped text.
-            Event::Html(h) | Event::InlineHtml(h) => events.push(Event::Text(h)),
+            // Because it *is* text once rendered, it also feeds the slug.
+            Event::Html(h) | Event::InlineHtml(h) => {
+                if let Some((_, acc)) = &mut heading {
+                    acc.push_str(&h);
+                }
+                events.push(Event::Text(h));
+            }
             other => events.push(other),
         }
     }
@@ -137,6 +189,68 @@ pub fn render_with(source: &str, code_theme: &str) -> String {
     let mut html = String::new();
     pulldown_cmark::html::push_html(&mut html, events.into_iter());
     html
+}
+
+/// Fallback id for a heading whose text slugs to nothing — `## ***`, or a
+/// heading that is only an image.
+const EMPTY_SLUG: &str = "section";
+
+/// Mints the `id` attribute for each heading in one document.
+///
+/// The scheme is GitHub's, because a `[jump](#some-heading)` written inside a
+/// repo's own markdown was written against GitHub's:
+///
+/// 1. trim, then lowercase (`str::to_lowercase`, so it is Unicode-aware);
+/// 2. keep alphanumerics, `-` and `_`; turn each whitespace char into a `-`
+///    (runs are *not* collapsed, matching `github-slugger`); drop the rest;
+/// 3. an empty result becomes [`EMPTY_SLUG`].
+///
+/// Repeats are then disambiguated by appending `-1`, `-2`, … — the same problem
+/// `locate` has with a repeated heading, and the same answer: the first
+/// occurrence keeps the bare name and later ones are numbered in document
+/// order. Unlike GitHub, the numbered candidate is itself checked for a clash,
+/// so a document containing both `## A` twice and a literal `## A 1` still
+/// comes out with every id distinct — ids are what anchoring will key on, so
+/// uniqueness is a guarantee here rather than a near-certainty.
+///
+/// Slugs are stable across renders of the same source: nothing here depends on
+/// anything but the heading text and what came before it in the document.
+#[derive(Default)]
+pub struct Slugger {
+    seen: HashSet<String>,
+}
+
+impl Slugger {
+    /// The id for a heading whose rendered text is `text`.
+    pub fn slug(&mut self, text: &str) -> String {
+        let mut out = String::with_capacity(text.len());
+        for ch in text.trim().to_lowercase().chars() {
+            if ch.is_alphanumeric() || ch == '-' || ch == '_' {
+                out.push(ch);
+            } else if ch.is_whitespace() {
+                out.push('-');
+            }
+        }
+        if out.is_empty() {
+            out.push_str(EMPTY_SLUG);
+        }
+        self.reserve(&out)
+    }
+
+    /// Claim `base` verbatim if it is free, otherwise the first `base-N` that
+    /// is. Used directly for an id the source stated itself.
+    pub fn reserve(&mut self, base: &str) -> String {
+        if self.seen.insert(base.to_string()) {
+            return base.to_string();
+        }
+        for n in 1.. {
+            let candidate = format!("{base}-{n}");
+            if self.seen.insert(candidate.clone()) {
+                return candidate;
+            }
+        }
+        unreachable!("the range is unbounded")
+    }
 }
 
 /// A fenced code block awaiting highlighting, and the event slot it belongs in.

@@ -47,7 +47,8 @@ await page.addInitScript(({ base, palettes }) => {
   const KEYMAP = {
     palette: "Ctrl+F", palette_prev: "Ctrl+P", palette_next: "Ctrl+N",
     highlight: "Ctrl+H", send_stack: "Ctrl+Enter", toggle_stack: "Ctrl+O",
-    copy_stack: "Ctrl+C", settings: "Ctrl+,", save_annotation: "Ctrl+Y",
+    toggle_outline: "Ctrl+I", copy_stack: "Ctrl+C", settings: "Ctrl+,",
+    save_annotation: "Ctrl+Y",
     quick_highlight: true,
   };
   const state = {
@@ -174,7 +175,7 @@ check("Ctrl+, opens settings", await page.locator("#settings-overlay.open").isVi
 
 // --- keys tab ---
 const rows = await page.locator("#st-keys .st-row").count();
-check("every action gets a row", rows === 10, `got ${rows}`);
+check("every action gets a row", rows === 11, `got ${rows}`);
 check(
   "a repo-shadowed key is flagged",
   (await page.locator("#st-keys .shadowed").count()) === 1,
@@ -354,7 +355,8 @@ await solo.addInitScript(({ base }) => {
           case "get_keymap": return {
             palette: "Ctrl+F", palette_prev: "Ctrl+P", palette_next: "Ctrl+N",
             highlight: "Ctrl+H", send_stack: "Ctrl+Enter", toggle_stack: "Ctrl+O",
-            copy_stack: "Ctrl+C", settings: "Ctrl+,", save_annotation: "Ctrl+Y",
+            toggle_outline: "Ctrl+I", copy_stack: "Ctrl+C", settings: "Ctrl+,",
+            save_annotation: "Ctrl+Y",
             quick_highlight: true,
           };
           case "get_theme": return { css: base, mode: "system", scheme: "dark", syntax_theme: null };

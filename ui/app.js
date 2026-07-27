@@ -74,6 +74,7 @@ let keymap = {
   copy_stack: "Ctrl+C",
   settings: "Ctrl+,",
   save_annotation: "Ctrl+Y",
+  toggle_outline: "Ctrl+I",
   quick_highlight: true,
 };
 let pending = null; // { id, mark } while awaiting an annotation
@@ -384,6 +385,7 @@ async function renderCurrent({ preserveScroll, reanchor }) {
     html = await invoke("render_markdown", { path: currentFile });
   } catch (e) {
     contentEl.innerHTML = `<div class="empty">${escapeHtml(String(e))}</div>`;
+    refreshOutline();
     return;
   }
   perf.span("ipc_render_markdown", t0);
@@ -406,6 +408,8 @@ async function renderCurrent({ preserveScroll, reanchor }) {
   applyHighlights(highlights);
   perf.span("apply_highlights", t);
 
+  refreshOutline();
+
   scrollEl.scrollTop = prevScroll;
   perf.span("render_total", t0);
 }
@@ -420,7 +424,15 @@ function interceptLinks() {
     } else if (href.startsWith("#")) {
       a.onclick = (e) => {
         e.preventDefault();
-        const t = contentEl.querySelector(href) || document.getElementById(href.slice(1));
+        // Headings are the only things inside #content carrying an id, so
+        // scanning them beats `querySelector(href)` twice over. A slug like
+        // `1-intro` (from `## 1. Intro`) is a valid *id* but an invalid CSS
+        // *id selector*, and `querySelector("#1-intro")` throws rather than
+        // returning null; and scoping to #content stops a document's own
+        // `#content` or `#tree` link resolving to the app's chrome.
+        let id = href.slice(1);
+        try { id = decodeURIComponent(id); } catch (_) {}
+        const t = [...contentEl.querySelectorAll("[id]")].find((el) => el.id === id);
         if (t) t.scrollIntoView();
       };
     } else {
@@ -754,6 +766,56 @@ async function refreshStack() {
 
 function toggleStack() { $("stack-panel").classList.toggle("open"); refreshStack(); }
 
+// ---- contents / outline panel --------------------------------------------
+// Built by walking the rendered DOM rather than as a side channel from Rust:
+// the headings are already in the tree the render just produced, and they
+// already carry the ids `markdown::Slugger` minted, so the whole outline is one
+// `querySelectorAll` and no extra IPC.
+//
+// Live-update vs rebuild-on-open is settled as both. A render rebuilds the list
+// only when the panel is *open*, and otherwise marks it dirty — so an open
+// panel tracks `file-changed` the way every other surface does, and a closed
+// one costs a boolean per render instead of a walk of a document nobody is
+// looking at the outline of.
+let outlineDirty = true;
+
+function toggleOutline() {
+  const open = $("outline-panel").classList.toggle("open");
+  if (open && outlineDirty) buildOutline();
+}
+
+function refreshOutline() {
+  outlineDirty = true;
+  if ($("outline-panel").classList.contains("open")) buildOutline();
+}
+
+function buildOutline() {
+  outlineDirty = false;
+  const list = $("outline-list");
+  list.innerHTML = "";
+  const heads = currentFile ? contentEl.querySelectorAll("h1, h2, h3, h4, h5, h6") : [];
+  if (!heads.length) {
+    list.innerHTML = `<div class="hint">${currentFile ? "No headings in this document." : "No document open."}</div>`;
+    return;
+  }
+  // One fragment, one insertion: a long document carries hundreds of headings
+  // and appending each to the live list would lay the panel out once per entry.
+  const frag = document.createDocumentFragment();
+  for (const h of heads) {
+    const btn = document.createElement("button");
+    btn.className = `oi l${h.tagName[1]}`;
+    // `textContent`, never `innerHTML`: a heading may contain inline markup (and
+    // by now a `mark.hl` or two), and the outline wants the text the reader
+    // sees. It is also the only reason this needs no escaping.
+    btn.textContent = h.textContent.trim();
+    // The element, not its id — a jump that cannot miss, and one that still
+    // works for a heading whose slug is not a valid CSS selector.
+    btn.onclick = () => h.scrollIntoView({ block: "start" });
+    frag.appendChild(btn);
+  }
+  list.appendChild(frag);
+}
+
 function checkedIds() {
   return [...document.querySelectorAll('#stack-list input[type="checkbox"]:checked')]
     .map((c) => Number(c.dataset.id));
@@ -905,6 +967,7 @@ function wireEvents() {
       currentFile = null;
       contentEl.innerHTML = `<div class="empty">File removed.</div>`;
       staleRail.innerHTML = "";
+      refreshOutline();
     }
   });
   listen("theme-reloaded", () => loadTheme());
@@ -925,6 +988,7 @@ function wireEvents() {
         currentFile = null;
         contentEl.innerHTML = `<div class="empty">Select a markdown file from the tree, or open the search palette.</div>`;
         staleRail.innerHTML = "";
+        refreshOutline();
       }
     } catch (err) { console.error(err); }
   });
@@ -958,6 +1022,8 @@ function wireUi() {
     if (m && contentEl.contains(m)) { e.preventDefault(); openEditHighlight(Number(m.dataset.id)); }
   });
 
+  $("btn-outline").onclick = toggleOutline;
+  $("outline-close").onclick = () => $("outline-panel").classList.remove("open");
   $("btn-stack").onclick = toggleStack;
   $("stack-close").onclick = () => $("stack-panel").classList.remove("open");
   $("btn-send").onclick = () => sendStack([]);
@@ -1043,6 +1109,7 @@ function wireKeys() {
       triggerHighlight();
       return;
     }
+    if (matchCombo(e, keymap.toggle_outline)) { e.preventDefault(); toggleOutline(); return; }
     if (matchCombo(e, keymap.toggle_stack)) { e.preventDefault(); toggleStack(); return; }
     if (matchCombo(e, keymap.send_stack)) { e.preventDefault(); sendStack([]); return; }
     if (matchCombo(e, keymap.copy_stack)) {
@@ -1166,6 +1233,7 @@ const KEY_ACTIONS = [
   { id: "palette_prev", label: "Palette: previous result" },
   { id: "highlight", label: "Highlight selection", sub: "Turn the selection into evidence and ask for an annotation" },
   { id: "save_annotation", label: "Save annotation", sub: "From inside the annotation box" },
+  { id: "toggle_outline", label: "Toggle contents panel", sub: "Outline of the open document's headings" },
   { id: "toggle_stack", label: "Toggle stack panel" },
   { id: "send_stack", label: "Send stack to agent" },
   { id: "copy_stack", label: "Copy stack", sub: "Ignored while text is selected, so OS copy still works" },
