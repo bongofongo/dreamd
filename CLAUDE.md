@@ -357,6 +357,21 @@ highlights from a corpus fixture.
   `compare_ref` set for a same-runner A/B; the `package-smoke` job is the real
   value, because a tagged release is frozen and a broken Linux arm found at tag
   time cannot be re-run.
+- `.github/workflows/canary.yml` builds, tests and bundles on an
+  **`archlinux:latest` container**, weekly. Every other Linux runner is
+  `ubuntu-22.04` — pinned for the glibc 2.35 floor, and therefore the exact
+  inverse of a rolling development box: 22.04 emits no `SHT_RELR` so the
+  `NO_STRIP` failure cannot happen there, and its webkit2gtk is generations
+  behind. This job is the only thing that asserts `NO_STRIP=1` is still
+  sufficient and that a newer webkit still compiles. It needs
+  `APPIMAGE_EXTRACT_AND_RUN=1` on top, because linuxdeploy is an AppImage and a
+  container has no FUSE. **Scheduled, not per-push, and it gates nothing** — the
+  failure it watches for is "the distro moved", not "this commit broke it", so a
+  red canary is a message about Arch before it is one about the tree. Rust is
+  pinned to 1.97.1 like `ci.yml`, leaving the system libraries as the only
+  moving part. It does *not* cover the NVIDIA/Wayland crash `webkit` works
+  around: no hosted runner has the driver or a compositor, and that stays a
+  hand-check.
 - Repeatable flows become skills in `.claude/skills/`.
 - Performance is measured, not guessed. `/perf-quick` (~60s) after an edit,
   `/perf-pass` (~5min) before a large commit touching `src-tauri/` or `ui/` (do `/perf-quick` for smaller commits), `/perf-deep`

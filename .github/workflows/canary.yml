@@ -1,0 +1,151 @@
+# Does dreamd still build on a *modern* Linux? `ci.yml` cannot answer that.
+#
+# Every other Linux runner in this repo is `ubuntu-22.04`, pinned on purpose:
+# glibc 2.35 is the floor that keeps the AppImage runnable everywhere. The cost
+# of that pin is that CI is the exact inverse of a rolling development box, and
+# two real failures are invisible to it:
+#
+#   - 22.04's binutils does not emit `SHT_RELR`, so linuxdeploy's bundled `strip`
+#     never chokes on it. On Arch it does, and `cargo tauri build` dies with a
+#     bare `failed to run linuxdeploy` (Tauri swallows the stderr). `NO_STRIP=1`
+#     is the documented workaround — this job is what asserts it is still enough.
+#   - 22.04 ships a webkit2gtk generations behind a rolling distro's, so a build
+#     break from a newer webkit lands on the development machine first and on CI
+#     never.
+#
+# **Scheduled, not on push, and it gates nothing.** The failure this watches for
+# is "the world moved", not "this commit broke it" — running it per-commit would
+# let Arch's rolling package set turn main red on a commit that had nothing to do
+# with it. A red canary is a message about the distro, so read it as one: check
+# what moved before suspecting the tree.
+#
+# The Rust toolchain is pinned to 1.97.1, the same as ci.yml and the same as the
+# development box. That is deliberate: it leaves glibc, binutils and webkit2gtk
+# as the only moving parts, so a failure here points at the system libraries
+# rather than at a new rustc.
+#
+# What this job does NOT cover: the NVIDIA/Wayland launch crash that `webkit`
+# works around. That needs the proprietary driver and a compositor, and no
+# hosted runner has either — see src-tauri/src/webkit.rs. The unit tests there
+# pin the decision, not the environment, and this job never launches the GUI.
+name: canary
+
+on:
+  schedule:
+    # Mondays, 06:00 UTC. Weekly is the right cadence for a "has the distro
+    # broken us" check: daily is noise, and anything slower means finding out at
+    # tag time, which is the expensive way (a tagged release is frozen).
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+  # So a change to this file is checked without waiting a week for Monday.
+  push:
+    paths:
+      - ".github/workflows/canary.yml"
+
+concurrency:
+  group: canary-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  arch:
+    runs-on: ubuntu-latest
+    # Rolling: modern glibc, modern binutils (so RELR *is* emitted), modern
+    # webkit2gtk. `:latest` is the point — pinning the image would defeat a
+    # canary. Arch is glibc-based, so the runner's mounted node works and
+    # actions/checkout needs no special handling.
+    container: archlinux:latest
+    timeout-minutes: 45
+    steps:
+      # Before checkout: the checkout action needs git, and the toolchain action
+      # needs curl. `--needed` keeps a warm base image cheap.
+      #
+      # The first five are README's Arch line verbatim (README.md:81) rather
+      # than a translation of ci.yml's apt list — that line is what a user
+      # actually runs, so this job is also what keeps it honest. The rest is the
+      # container's own tooling, which a real Arch desktop already has:
+      # `base-devel` for the linker and pkgconf, git and curl for the two
+      # actions below, `file` and `desktop-file-utils` for the bundler.
+      - name: System dependencies
+        run: |
+          pacman -Syu --noconfirm --needed \
+            base-devel git curl webkit2gtk-4.1 gtk3 librsvg openssl \
+            patchelf file desktop-file-utils
+
+      - uses: actions/checkout@v4
+
+      # Pinned to the development box's toolchain, not @stable — see the header.
+      - uses: dtolnay/rust-toolchain@1.97.1
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+          key: canary-arch
+
+      # Same pin as release.yml and perf.yml. A bundler change that breaks the
+      # release has to break here first, and it cannot do that if the two run
+      # different CLIs.
+      - name: Install tauri-cli
+        run: cargo install tauri-cli --version "2.11.4" --locked
+
+      - name: Build
+        run: cargo build
+
+      - name: Test
+        run: cargo test --all-features
+
+      # Cheap, and they are the checks that care about the kernel and the
+      # filesystem underneath rather than about the code: the 0600/0700 modes,
+      # the atomic rename, a real Unix socket. Worth a second opinion from a
+      # different distro.
+      - name: Correctness harnesses
+        run: |
+          cargo run --example config_check
+          cargo run --example theme_check
+          cargo run --example mcp_check
+          cargo run --example marks_check
+
+      # The reason this job exists. Two environment switches, and each is load-
+      # bearing for a different reason:
+      #
+      #   NO_STRIP — linuxdeploy carries its own binutils `strip`, too old to
+      #     parse the `.relr.dyn` sections a modern toolchain emits, so it fails
+      #     on every system library it copies in. Documented in CLAUDE.md and in
+      #     packaging/build.sh; asserted here.
+      #   APPIMAGE_EXTRACT_AND_RUN — linuxdeploy is itself an AppImage and
+      #     mounts via FUSE, which a container does not have. This makes it
+      #     self-extract instead. Needed by the container, not by Arch.
+      #
+      # build.sh rather than a raw `cargo tauri build` because build.sh *is* the
+      # release pipeline, and it asserts what reaches dist/ — the artifacts the
+      # cask links to and the PKGBUILD hashes.
+      - name: Bundle
+        env:
+          NO_SIGN: "1"
+          NO_STRIP: "1"
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+        run: packaging/build.sh x86_64-unknown-linux-gnu
+
+      # build.sh fails on a missing bundle, but not on one that silently stopped
+      # being produced. Same assertion as perf.yml's package-smoke, and for the
+      # same reason.
+      - name: Assert artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          V="$(packaging/version.sh)"
+          N="dreamd-$V-x86_64-unknown-linux-gnu"
+          fail=0
+          for ext in AppImage deb tar.gz; do
+            for f in "dist/$N.$ext" "dist/$N.$ext.sha256"; do
+              if [ -s "$f" ]; then
+                echo "ok   $f"
+              else
+                echo "MISSING $f"
+                fail=1
+              fi
+            done
+          done
+          exit "$fail"
