@@ -936,6 +936,14 @@ async function newPanePage(position) {
 const pane = await newPanePage("bottom");
 
 const called = (cmd) => pane.evaluate((c) => window.__CALLS__.filter((k) => k.cmd === c), cmd);
+/// Leave the pane open without pressing a key. Used between assertion groups so
+/// one broken keybind fails one check instead of derailing every later one:
+/// `openPane` is idempotent, so this is a no-op when the pane is already up.
+const ensurePaneOpen = async () => {
+  await pane.evaluate(() =>
+    document.getElementById("pty-pane").classList.contains("open") ? null : openPane());
+  await pane.waitForTimeout(300);
+};
 const lastWrite = async () => {
   const w = await called("pty_write");
   return w.length ? w[w.length - 1].args.data : null;
@@ -994,10 +1002,11 @@ check(
   (await called("pty_kill")).length === killsBeforeEscape,
 );
 
-// Reopening after that Escape must be a class flip, not a second process —
-// which is the observable form of "the session kept running".
-await pane.keyboard.press("Control+t");
-await pane.waitForTimeout(300);
+// Put the pane back open whatever the assertions above found. Every check from
+// here on needs a visible pane, and a keyboard toggle would invert instead of
+// normalise — so a regression in the Escape rule reports as the one failed
+// check it is, rather than as a click timeout six assertions later.
+await ensurePaneOpen();
 check(
   "reopening after Escape starts no second process",
   await pane.locator("#pty-pane.open").isVisible() && (await called("pty_spawn")).length === 1,
@@ -1020,6 +1029,7 @@ check(
 await pane.keyboard.press("Control+t");
 await pane.waitForTimeout(300);
 check("and reopens it", await pane.locator("#pty-pane.open").isVisible());
+await ensurePaneOpen();
 
 // The reason output is base64 (`pty.rs`'s module docs). Two events, splitting a
 // 4-byte character 3/1: decoded per chunk this is two U+FFFDs.
@@ -1076,6 +1086,13 @@ check(
   (await pane.locator("#pty-mode").inputValue()) === "accept-edits",
   await pane.locator("#pty-mode").inputValue(),
 );
+// Each click below is guarded on the strip actually being up. A mode control
+// that applied on `change` would otherwise take the whole harness down with a
+// click timeout instead of reporting the three checks it broke.
+const clickIfStaged = async (id) => {
+  if (await pane.locator("#pty-confirm").isVisible()) await pane.locator(id).click();
+  await pane.waitForTimeout(300);
+};
 const patchesBefore = (await called("set_config")).length;
 await pane.locator("#pty-mode").selectOption("plan");
 await pane.waitForTimeout(150);
@@ -1087,8 +1104,7 @@ check(
 );
 check("nothing is written until it is confirmed", (await called("set_config")).length === patchesBefore);
 
-await pane.locator("#pty-mode-cancel").click();
-await pane.waitForTimeout(150);
+await clickIfStaged("#pty-mode-cancel");
 check("declining hides the strip", !(await pane.locator("#pty-confirm").isVisible()));
 check(
   "and puts the select back",
@@ -1101,8 +1117,7 @@ const spawnsBeforeMode = (await called("pty_spawn")).length;
 const killsBeforeMode = (await called("pty_kill")).length;
 await pane.locator("#pty-mode").selectOption("plan");
 await pane.waitForTimeout(150);
-await pane.locator("#pty-mode-go").click();
-await pane.waitForTimeout(400);
+await clickIfStaged("#pty-mode-go");
 check(
   "confirming writes the preference back",
   (await pane.evaluate(() => window.__AGENT__.permission_mode)) === "plan",
@@ -1164,6 +1179,29 @@ check(
   rightSpawns[0].args.cols < spawns[0].args.cols,
   `right ${rightSpawns[0].args.cols} vs bottom ${spawns[0].args.cols}`,
 );
+// A position change must re-fit, not leave the child holding the old grid —
+// wrapped lines and box-drawing that no longer meets. Flipped at runtime here
+// because that is the only way to watch the resize actually happen: on a first
+// open the fit is folded into `openPane`, so nothing distinguishes a pane that
+// re-fit from one that was simply built in the right box.
+const resizesBeforeFlip = await right.evaluate(() =>
+  window.__CALLS__.filter((c) => c.cmd === "pty_resize").length);
+await right.evaluate(() => applyPanePosition("bottom"));
+await right.waitForTimeout(400);
+const flipped = await right.evaluate(() => {
+  const r = window.__CALLS__.filter((c) => c.cmd === "pty_resize");
+  return { n: r.length, last: r.length ? r[r.length - 1].args : null,
+           right: document.body.classList.contains("agent-right") };
+});
+check("flipping the dock un-sets the layout class", !flipped.right);
+check(
+  "and tells the child its new grid",
+  flipped.n > resizesBeforeFlip && flipped.last.cols > rightSpawns[0].args.cols,
+  JSON.stringify(flipped),
+);
+await right.evaluate(() => applyPanePosition("right"));
+await right.waitForTimeout(400);
+
 // Escape is the same rule in the other dock (D12), and still not a kill.
 await right.keyboard.press("Escape");
 await right.waitForTimeout(150);
