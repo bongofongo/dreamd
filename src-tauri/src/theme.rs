@@ -830,22 +830,25 @@ mod tests {
 
     #[test]
     fn the_prior_fade_is_not_confused_with_the_highlight_colour() {
-        // `--hl` and `--hl-prior` share a prefix, and `custom_property`'s
-        // boundary rule is what keeps `--hl:` from matching inside
-        // `--hl-prior:`. Both directions, because the scan runs backwards.
-        let css = ":root { --hl: #f2d16b; --hl-prior: 18%; }";
-        assert_eq!(
-            custom_property(css, "--hl", Scheme::Light).as_deref(),
-            Some("#f2d16b")
-        );
-        assert_eq!(prior_fade(css, Scheme::Light), "18%");
-        // ...and with the declarations the other way round, so neither result
-        // depends on which came last.
-        let css = ":root { --hl-prior: 18%; --hl: #f2d16b; }";
-        assert_eq!(
-            custom_property(css, "--hl", Scheme::Light).as_deref(),
-            Some("#f2d16b")
-        );
+        // `--hl` is a prefix of `--hl-prior`, and the two hold different *kinds*
+        // of value. What keeps them apart is the trailing colon in
+        // `custom_property`'s needle, not the boundary rule (which guards the
+        // other end of the name) — so both directions of the confusion are
+        // pinned here.
+        //
+        // A palette declaring only `--hl` must fall back rather than hand back a
+        // colour where a percentage belongs: `color-mix(… var(--hl) #f2d16b …)`
+        // is invalid, the declaration is dropped, and the full-strength fill
+        // comes back — the loud failure, arrived at through the fallback that
+        // exists to prevent it.
+        let css = ":root { --hl: #f2d16b; }";
+        assert_eq!(custom_property(css, "--hl-prior", Scheme::Light), None);
+        assert_eq!(prior_fade(css, Scheme::Light), PRIOR_FADE_FALLBACK);
+
+        // ...and the reverse: `--hl-prior` does not satisfy a read of `--hl`,
+        // which would paint the highlight itself as the string "18%".
+        let css = ":root { --hl-prior: 18%; }";
+        assert_eq!(custom_property(css, "--hl", Scheme::Light), None);
         assert_eq!(prior_fade(css, Scheme::Light), "18%");
     }
 

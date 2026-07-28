@@ -1,5 +1,35 @@
 # Session log
 
+## 2026-07-28 — t3-palette-fade
+
+- T3 of `docs/plans/agent-ui-implementation.md`, in `worktree-t3-palette-fade`, PR
+  against main rather than a push (T4 runs concurrently off the same base).
+- `ui/theme.css`: `mark.hl[data-prior]` mixes `--hl` toward transparent by
+  `--hl-prior`, and returns text to the prose colour — `--hl-text` is near-black
+  and only correct on a saturated fill. `mark.hl.stale[data-prior]` keeps the
+  stale hue; without it the specificity tie goes to the later sheet and stale
+  marks stop looking stale after one session.
+- All ten bundled palettes declare `--hl-prior` in *both* mode blocks, per D15.
+  Light 10–38%, dark 6–12%: the same strength that whispers on paper is a lit bar
+  on near-black.
+- Fallback `16%` in `theme.css`, so a pre-family user file still fades. An
+  `@supports not (color-mix)` floor swaps the fill for a hairline — without it an
+  old engine drops the declaration and gets the *loud* failure.
+- `theme::prior_fade` reads it through `custom_property` with a `Scheme`, as
+  `--bg` and `--syntax-theme` do, and is never `None`. `PRIOR_FADE_FALLBACK` is a
+  copy of the CSS literal, tied to it by a test.
+- `ui/app.js`: `wrapRange` takes `prior` and sets `data-prior` only on `=== true`
+  — the field is `skip_serializing_if`, so absent must mean false.
+- Verified: `cargo test --all-features` (225), `theme_check` (21 vars × 10 × 2),
+  `cargo fmt --check`, `clippy -D warnings`, `cargo build`, `node --test
+  ui/paths.test.mjs`. No perf tier run; not gated on this.
+- Teeth proven by mutation: CSS-literal drift (both directions), fade keyed off a
+  class instead of the attribute, the empty-value filter, ignoring the `Scheme`,
+  a ratio copied across modes, a palette missing it, and the needle's colon.
+- **Still a hand check:** the fade values themselves. The GUI cannot be driven
+  here and `ui-check.mjs` asserts what the page knows, not what it paints. Look at
+  one light and one dark palette before trusting the numbers.
+
 ## 2026-07-28 — T1: the store learns what "sent" and "last session" mean
 
 First thread of `docs/plans/agent-ui-implementation.md`, built in a worktree
