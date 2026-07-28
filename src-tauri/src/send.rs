@@ -129,7 +129,14 @@ fn sweep_stale_queries(dir: &Path, today: u64) -> usize {
     swept
 }
 
-fn write_temp(content: &str) -> std::io::Result<PathBuf> {
+/// Write a query where an agent can read it: the system temp directory, never
+/// inside the repo (tenet 1), sweeping yesterday's on the session's first call.
+///
+/// `pub` because the pane path in `main.rs` writes exactly the same kind of
+/// file — `main.rs` is a `[[bin]]` and cannot be imported, so a second copy of
+/// the naming scheme over there would be a second thing for `query_day` to fall
+/// out of step with, and the sweep would go quiet rather than go wrong.
+pub fn write_query_file(content: &str) -> std::io::Result<PathBuf> {
     let dir = std::env::temp_dir();
     let day = epoch_day(SystemTime::now());
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -207,7 +214,7 @@ pub fn send(config: &Config, repo_root: &Path, pairs: &[Pair]) -> Result<SendRes
         return Err("Nothing selected to send.".into());
     }
     let content = assemble_query(repo_root, pairs);
-    let temp_path = write_temp(&content).map_err(|e| format!("temp file: {e}"))?;
+    let temp_path = write_query_file(&content).map_err(|e| format!("temp file: {e}"))?;
     let temp_str = temp_path.to_string_lossy().into_owned();
 
     // Explicit configured target wins.

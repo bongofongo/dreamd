@@ -908,6 +908,10 @@ function applyHighlights(list) {
   const placements = [];
 
   for (const h of list) {
+    // Before the stale branch, and not inside it: a passage can go stale *while*
+    // it is out with the agent, and D5 keeps `sent_at` beside `state` precisely
+    // so both are told honestly rather than one of them picked. Two chips, then.
+    if (h.sent_at) addPendingChip(h);
     if (h.state === "stale") { addStaleChip(h); continue; }
     const quote = h.quote.trim();
     if (!doc) {
@@ -1006,6 +1010,44 @@ function addStaleChip(h) {
   drop.textContent = "Dismiss";
   drop.onclick = async () => { await invoke("remove_highlight", { id: h.id }); chip.remove(); refreshStack(); };
   row.appendChild(keep); row.appendChild(drop);
+  chip.appendChild(row);
+  staleRail.appendChild(chip);
+}
+
+/// The pending glyph (D3): this passage is out with the agent and unanswered.
+///
+/// It clears on its own when the agent calls `resolve_highlight` — `Store::resolve`
+/// drops `sent_at`, the MCP layer emits `marks-changed`, and `onMarksChanged`
+/// repaints. That is the whole resolution loop and none of it is new here.
+///
+/// "Answered" is the backstop for when it does not, and 4.7 names the failure
+/// it backs up: dreamd sees a terminal, not an answer, so a turn that dealt
+/// with the question perfectly well but forgot the tool call leaves the mark
+/// pending forever. One click says so. It resolves with no note, because the
+/// reader is recording "dealt with" rather than reporting what was found.
+function addPendingChip(h) {
+  const chip = document.createElement("div");
+  chip.className = "pend-chip";
+  chip.dataset.id = h.id;
+  chip.innerHTML =
+    `<b>⋯ with the agent</b><span class="q">${escapeHtml(h.quote.slice(0, 120))}</span>`;
+  const row = document.createElement("div");
+  row.className = "row";
+  const done = document.createElement("button");
+  done.textContent = "Answered";
+  done.onclick = async () => {
+    try {
+      await invoke("resolve_mark", { id: h.id });
+    } catch (e) {
+      toast(String(e));
+      return;
+    }
+    // The chip is rebuilt from the store rather than removed by hand: resolving
+    // also takes the pair off the stack, so both surfaces move together.
+    await repaintHighlights();
+    refreshStack();
+  };
+  row.appendChild(done);
   chip.appendChild(row);
   staleRail.appendChild(chip);
 }
@@ -1221,10 +1263,17 @@ function isLivePair(n) {
   return !!n && !!n.classList && n.classList.contains("pair") && !n.classList.contains("leaving");
 }
 
+// Which ids are in a live submission, as of the refresh in progress. Computed
+// once per reconcile and read by `updatePair`, which is called from two places
+// in the same pass — rebuilding the set per card would be the same answer at a
+// worse price.
+let pendingNow = new Set();
+
 function reconcileStack(list, pairs) {
   // Decided once per refresh, so an enter and an exit in the same pass cannot
   // disagree about whether this render is animated.
   const animate = stackAnimates();
+  pendingNow = pendingSendIds();
 
   // The empty-state notice is removed up front so it can never be mistaken for
   // a position in the ordering pass below.
@@ -1333,6 +1382,10 @@ function updatePair(el, p) {
   el.querySelector(".ev").textContent = h.quote.slice(0, 200);
   el.querySelector(".an").textContent = p.annotation;
   el.classList.toggle("stale", stale);
+  // D16's "the stack shows the pending send". The card stays put and dims
+  // rather than leaving: nothing has been sent, so a cancel has to be able to
+  // restore *this*, not rebuild it.
+  el.classList.toggle("pending", pendingNow.has(String(h.id)));
 }
 
 // Snap a removed card out toward the panel edge while collapsing its box, then
@@ -2009,7 +2062,228 @@ function checkedIds() {
     .map((c) => c.dataset.id);
 }
 
-async function sendStack(ids) {
+// ---- the flow: Ctrl+Enter, the undo window, the queue ---------------------
+// D2 makes Ctrl+Enter one verb — open the pane, cold-start if needed, submit
+// the stack — and D10 says an empty stack is just the first half of that. The
+// tmux path is still here as `sendStackTmux`, on a keybind nothing sets by
+// default (D6).
+//
+// Nothing below decides *what* to send or *whether* a send may go: `flow.rs`
+// owns that, and owns it with no clock in it, because both timers live here.
+// What this file adds is the two events that state machine cannot observe —
+// the undo window elapsing, and the agent looking idle.
+
+// D16's "few seconds". Long enough to be a real second thought on a send you
+// regretted the moment you pressed it, short enough that waiting for it is not
+// how the loop feels.
+const UNDO_MS = 5000;
+// How long the child must produce nothing before dreamd will type into it.
+const IDLE_QUIET_MS = 1500;
+// One timer for everything: the countdown, the arming and the idle poll. It
+// only runs while something is pending, and the steady state is nothing.
+const FLOW_TICK_MS = 350;
+
+const flow = {
+  // token -> { ids, until, armed }. The mirror of `flow.rs`'s queue, held here
+  // only so the bar can paint without an IPC round trip per tick.
+  pending: new Map(),
+  timer: null,
+  busy: false,
+  // `Date.now()` of the last byte the child produced, and 0 until it has
+  // produced any. See `agentLooksIdle`.
+  lastData: 0,
+};
+
+/// Ctrl+Enter. One verb.
+///
+/// The queue call goes first and the pane opens underneath it, so the undo
+/// window starts at the keypress rather than after a cold start — pressing the
+/// key and then watching four seconds of vendor loading before the countdown
+/// begins would make the undo feel like it arrived late.
+async function runStack(ids) {
+  let queued = null;
+  try {
+    queued = await invoke("queue_send", { ids: ids && ids.length ? ids : [] });
+  } catch (e) {
+    toast(String(e));
+    return;
+  }
+  // Opened either way (D10): an empty stack is not an error and not a scolding,
+  // it is the other thing this key does.
+  const opening = openPane();
+  if (queued) {
+    flow.pending.set(queued.token, {
+      ids: queued.ids,
+      until: Date.now() + UNDO_MS,
+      armed: false,
+    });
+    paintSendBar();
+    refreshStack();
+    startFlowTimer();
+  }
+  await opening;
+}
+
+function startFlowTimer() {
+  if (!flow.timer) flow.timer = setInterval(flowTick, FLOW_TICK_MS);
+}
+
+function stopFlowTimer() {
+  if (flow.timer) { clearInterval(flow.timer); flow.timer = null; }
+}
+
+/// Arm what is ripe, submit what is ready, repaint the countdown.
+///
+/// `flow.busy` because a tick is asynchronous and the interval is not: two
+/// overlapping ticks could both call `take_send`. The Rust side would hand the
+/// second one nothing (taking removes), so this is belt rather than braces —
+/// but a redundant IPC call per 350ms while a turn runs is not free either.
+async function flowTick() {
+  if (!flow.pending.size) { stopFlowTimer(); paintSendBar(); return; }
+  if (flow.busy) return;
+  flow.busy = true;
+  try {
+    const now = Date.now();
+    for (const [token, p] of flow.pending) {
+      if (p.armed || now < p.until) continue;
+      p.armed = await invoke("arm_send", { token });
+      // False means the token is gone underneath us — cancelled from another
+      // path — so stop painting a send that no longer exists.
+      if (!p.armed) flow.pending.delete(token);
+    }
+    const armed = [...flow.pending.values()].some((p) => p.armed);
+    if (armed && agentLooksIdle()) await releaseSend();
+  } catch (e) {
+    console.error(e);
+  } finally {
+    flow.busy = false;
+    paintSendBar();
+  }
+}
+
+/// Does the agent look ready for a new turn?
+///
+/// **This is the least durable thing in the feature and it is deliberately
+/// dumb.** D11 asks dreamd to watch the output stream for the shape of an idle
+/// prompt; Claude Code's idle prompt is a TUI redraw rather than a marker, so
+/// matching its shape would be matching a moving target, and the plan is
+/// explicit that a queue which fires mid-turn is unrecoverable while one that
+/// never fires is a second keypress. So the only signal read here is
+/// *quiescence*: a working Claude Code redraws its spinner continuously, and a
+/// second and a half of complete silence is not the middle of a turn.
+///
+/// The three guards are all "not yet" answers:
+///
+/// `pty.running` — no child, nothing to type into.
+///
+/// `flow.lastData` still 0 — the child has never produced a byte, so it has not
+/// finished drawing its first frame. This is the cold-start case, and it is why
+/// there is no separate wait for one.
+///
+/// What it gets wrong, knowingly: a permission prompt is quiet, and typing into
+/// one answers a question that was not this. That is the hand check, and the
+/// bar's "Send now" is what a reader uses when this never fires.
+function agentLooksIdle() {
+  if (!pty.running || !flow.lastData) return false;
+  return Date.now() - flow.lastData >= IDLE_QUIET_MS;
+}
+
+/// Hand the oldest armed submission to the pane, if Rust agrees there is one.
+async function releaseSend() {
+  const res = await invoke("take_send");
+  if (!res) return; // nothing armed, or the pane is not up. Not an error.
+  flow.pending.delete(res.token);
+  const n = res.ids.length;
+  toast(`Sent ${n} ${n === 1 ? "question" : "questions"} to the agent`);
+  // The stack has just shrunk and every mark in it has just become pending, so
+  // both surfaces are stale by exactly one event.
+  await refreshStack();
+  await repaintHighlights();
+}
+
+/// Take it back. Nothing was sent, so there is nothing to reverse — the pairs
+/// never left the stack and `sent_at` was never stamped (D16).
+async function cancelSend(token) {
+  let ok = false;
+  try {
+    ok = await invoke("cancel_send", { token });
+  } catch (e) {
+    console.error(e);
+  }
+  flow.pending.delete(token);
+  paintSendBar();
+  refreshStack();
+  if (!ok) toast("That one has already gone");
+}
+
+/// The plan's stated fallback for the heuristic, built at the same time as the
+/// heuristic rather than held in reserve: if the quiet never comes, this is the
+/// way the stack still gets sent. It bypasses the idle check and nothing else.
+async function sendNow(token) {
+  try {
+    await invoke("arm_send", { token });
+    const p = flow.pending.get(token);
+    if (p) p.armed = true;
+    await releaseSend();
+  } catch (e) {
+    toast(String(e));
+  }
+  paintSendBar();
+}
+
+/// Every id in a live submission, for the dimmed cards in the stack panel.
+function pendingSendIds() {
+  const set = new Set();
+  for (const p of flow.pending.values()) for (const id of p.ids) set.add(String(id));
+  return set;
+}
+
+function paintSendBar() {
+  const bar = $("send-bar");
+  bar.textContent = "";
+  const rows = [...flow.pending.entries()];
+  bar.classList.toggle("open", rows.length > 0);
+  // Lifts the toast clear of the bar rather than letting the two overlap.
+  document.body.classList.toggle("sending", rows.length > 0);
+  if (!rows.length) return;
+
+  const now = Date.now();
+  for (const [token, p] of rows) {
+    const row = document.createElement("div");
+    row.className = "send-row";
+    const what = document.createElement("span");
+    what.className = "what";
+    const n = p.ids.length;
+    const noun = n === 1 ? "question" : "questions";
+    // `textContent` throughout — none of this is user text, but the stack panel
+    // next door renders quotes the same way and the rule is worth keeping whole.
+    what.textContent = p.armed
+      ? `${n} ${noun} queued — waiting for the agent`
+      : `Sending ${n} ${noun} in ${Math.max(1, Math.ceil((p.until - now) / 1000))}s`;
+    row.appendChild(what);
+    if (p.armed) {
+      const go = document.createElement("button");
+      go.textContent = "Send now";
+      go.className = "primary";
+      go.onclick = () => sendNow(token);
+      row.appendChild(go);
+    }
+    // Present in both phases. The undo window is not the last moment to change
+    // your mind — an armed send can sit through a whole turn waiting for quiet,
+    // and it has still not been sent.
+    const stop = document.createElement("button");
+    stop.textContent = p.armed ? "Cancel" : "Undo";
+    stop.onclick = () => cancelSend(token);
+    row.appendChild(stop);
+    bar.appendChild(row);
+  }
+}
+
+/// The tmux path (D6): a temp file and `send-keys` into a pane running
+/// `claude`, falling back to the clipboard. Unbound by default and absent from
+/// the settings panel's action list — bind `keymap.send_stack_tmux` by hand to
+/// compare the two when the pane misbehaves.
+async function sendStackTmux(ids) {
   try {
     const res = await invoke("send_stack", { ids: ids || [] });
     toast(`${res.method}: ${res.detail}`);
@@ -2447,7 +2721,14 @@ function buildTerminal() {
   new ResizeObserver(() => fitPane()).observe($("pty-term"));
   if (!pty.listening) {
     pty.listening = true;
-    listen("pty-data", (e) => { if (pty.term) pty.term.write(fromB64(e.payload)); });
+    listen("pty-data", (e) => {
+      // The whole of the queue heuristic's input (D11). Stamped before the
+      // write rather than after, so a slow `Terminal.write` cannot make the
+      // child look quieter than it was — the direction that would fire a queued
+      // send into the middle of a turn. See `agentLooksIdle`.
+      flow.lastData = Date.now();
+      if (pty.term) pty.term.write(fromB64(e.payload));
+    });
     listen("pty-exit", (e) => {
       pty.running = false;
       $("pty-pane").classList.add("dead");
@@ -2461,6 +2742,10 @@ function buildTerminal() {
 async function startPaneProcess() {
   setPaneStatus("");
   $("pty-pane").classList.remove("dead");
+  // Back to "has never spoken", which is what makes a queued send wait for the
+  // new child to finish drawing rather than reading the *old* one's last byte
+  // as evidence that this one is idle.
+  flow.lastData = 0;
   const { rows, cols } = pty.term;
   // No mode on the wire. `pty_spawn` reads `agent.permission_mode` from the
   // config it already holds, which is why `commitModeChange` writes the config
@@ -2687,9 +2972,9 @@ function wireUi() {
   $("outline-close").onclick = closeOutline;
   $("btn-stack").onclick = toggleStack;
   $("stack-close").onclick = () => $("stack-panel").classList.remove("open");
-  $("btn-send").onclick = () => sendStack([]);
-  $("btn-send-all").onclick = () => sendStack([]);
-  $("btn-send-selected").onclick = () => sendStack(checkedIds());
+  $("btn-send").onclick = () => runStack([]);
+  $("btn-send-all").onclick = () => runStack([]);
+  $("btn-send-selected").onclick = () => runStack(checkedIds());
   $("annot-save").onclick = saveAnnot;
   $("annot-cancel").onclick = cancelAnnot;
   $("annot-delete").onclick = deleteHighlight;
@@ -2837,7 +3122,15 @@ function wireKeys() {
     // been. Same hand shape, one modifier apart.
     if (matchCombo(e, keymap.jump_back)) { e.preventDefault(); jumpHistory(-1); return; }
     if (matchCombo(e, keymap.jump_forward)) { e.preventDefault(); jumpHistory(1); return; }
-    if (matchCombo(e, keymap.send_stack)) { e.preventDefault(); sendStack([]); return; }
+    if (matchCombo(e, keymap.send_stack)) { e.preventDefault(); runStack([]); return; }
+    // The hidden tmux binding (D6). `Option<String>` on the Rust side, so it is
+    // absent from the keymap JSON entirely unless somebody set it by hand — the
+    // guard is what stops `matchCombo(e, undefined)` from being asked.
+    if (keymap.send_stack_tmux && matchCombo(e, keymap.send_stack_tmux)) {
+      e.preventDefault();
+      sendStackTmux([]);
+      return;
+    }
     if (matchCombo(e, keymap.copy_stack)) {
       // Don't hijack a real copy: if text is selected, let the OS copy it.
       const hasSelection = window.getSelection && window.getSelection().toString().trim();

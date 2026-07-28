@@ -208,6 +208,21 @@
       .stale-chip .q { opacity: 0.8; display: block; margin: 4px 0; max-height: 3em; overflow: hidden; }
       .stale-chip .row { display: flex; gap: 6px; }
 
+      /* The pending glyph (D3), in the same rail and deliberately quieter than
+         the stale one: stale is a question about whether the mark still points
+         at anything, pending is only "out with the agent". A mark can carry
+         both at once — D5 keeps `sent_at` beside `state` precisely so a passage
+         that went stale while it was out shows both rather than picking one —
+         so these are two chips, never a merged third state.
+
+         Muted rather than accented on purpose: at four or five pending marks
+         this rail is most of what is beside the text, and it must not compete
+         with the document. */
+      .pend-chip { background: var(--btn-bg, #1f1c2b); border: 1px solid var(--border, #2e2940); border-radius: 6px; padding: 6px 8px; font-size: 12px; opacity: 0.85; }
+      .pend-chip b { font-weight: 500; opacity: 0.9; }
+      .pend-chip .q { opacity: 0.65; display: block; margin: 4px 0; max-height: 3em; overflow: hidden; }
+      .pend-chip .row { display: flex; gap: 6px; }
+
       /* A mark is a *background*, so the text on it cannot be `--text`: on any
          dark theme that put light grey on pale yellow. `--hl-text` defaults to
          near-black, which every bundled `--hl` clears comfortably; `--stale`
@@ -733,6 +748,42 @@
       /* toast */
       #toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--btn-bg, #1f1c2b); border: 1px solid var(--border, #2e2940); border-radius: 8px; padding: 10px 16px; opacity: 0; transition: opacity 0.2s; z-index: 80; pointer-events: none; }
       #toast.show { opacity: 1; }
+
+      /* The send bar: what a submission looks like while it is still dreamd's.
+         Sits above the toast in the same column, because it is the same kind of
+         thing — a transient statement about something that just happened — and
+         because a reader who pressed Ctrl+Enter is already looking there.
+
+         Two reasons it is not in the stack panel, where D16 puts "the stack
+         shows the pending send". The panel is closed most of the time and
+         Ctrl+Enter does not open it (Ctrl+Enter's business is the pane); and
+         view mode hides the panel outright, where the undo would vanish while
+         the send it belonged to went ahead. The panel's own cards do show it —
+         they dim, see `.pair.pending` — but this is the part that must be
+         visible whatever else is.
+
+         `pointer-events: auto` against `#toast`'s `none`: this one has buttons
+         in it. */
+      #send-bar {
+        position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+        display: none; gap: 10px; align-items: center;
+        background: var(--btn-bg, #1f1c2b); border: 1px solid var(--border, #2e2940);
+        border-radius: 8px; padding: 8px 10px 8px 14px; z-index: 81; font-size: 13px;
+      }
+      /* Stacked, because two queued sends are two turns (D11) and each carries
+         its own gesture. */
+      #send-bar.open { display: flex; flex-direction: column; align-items: stretch; }
+      #send-bar .send-row { display: flex; gap: 10px; align-items: center; justify-content: space-between; }
+      #send-bar .what { opacity: 0.85; }
+      #send-bar .send-row + .send-row { margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--border, #2e2940); }
+      /* Sits directly above the toast rather than on top of it. */
+      body.sending #toast { bottom: 72px; }
+
+      /* A pair whose question is in a pending send. It is still on the stack —
+         nothing has been sent and a cancel restores exactly this — so the card
+         stays, dimmed, rather than leaving and coming back. */
+      .pair.pending { opacity: 0.55; }
+
       .empty { opacity: 0.5; padding: 40px; text-align: center; }
     </style>
     <style id="user-theme"></style>
@@ -1145,6 +1196,9 @@
     </div>
 
     <div id="tooltip"></div>
+    <!-- Deliberately absent from the `body.view-mode` hide list: an undo the
+         reader cannot see is not an undo. -->
+    <div id="send-bar"></div>
     <div id="toast"></div>
 
     <!-- `defer` scripts run in document order, so paths.js is defined before
