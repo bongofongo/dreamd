@@ -809,6 +809,27 @@ mod tests {
     }
 
     #[test]
+    fn a_width_from_the_drag_handle_arrives_as_an_integer() {
+        // The exact path `set_config` takes: a Tauri command argument is
+        // deserialized out of a `serde_json::Value`, so a JS number has to
+        // land in the table as a TOML *integer* — a float would be rejected by
+        // `patch_global` after the drag, at which point the tree would silently
+        // stop remembering its width.
+        let patch: Table =
+            Table::deserialize(serde_json::json!({"ui": {"tree_width": 320}})).expect("json patch");
+        let mut table = Table::new();
+        deep_merge(&mut table, patch);
+        let cfg = Config::deserialize(Value::Table(table)).expect("deserialize");
+        assert_eq!(cfg.ui.tree_width, 320);
+
+        // And the other half of the same rule: a fractional width is refused
+        // rather than rounded, which is why the drag rounds before it sends.
+        let fractional = Table::deserialize(serde_json::json!({"ui": {"tree_width": 320.5}}))
+            .expect("json patch");
+        assert!(Config::deserialize(Value::Table(fractional)).is_err());
+    }
+
+    #[test]
     fn an_unknown_position_or_permission_mode_is_rejected() {
         // Not clamped, unlike a width: there is no nearest sensible edge, and a
         // typo that silently ran the agent in the wrong mode is the failure
