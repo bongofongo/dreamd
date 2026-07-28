@@ -345,12 +345,27 @@ copy_stack = "Ctrl+C"
 settings = "Ctrl+,"
 save_annotation = "Ctrl+Y"
 quick_highlight = true                   # also accept a bare `h` for highlight
+# send_stack_tmux = "Ctrl+Alt+Enter"     # send down the tmux path instead; unbound
+
+[agent]
+position = "bottom"                      # where the Claude Code pane docks; or "right"
+permission_mode = "accept-edits"         # or "default" / "plan" / "bypass-permissions"
+
+[ui]
+tree_width = 260                         # sidebar width in px, 140–600
 ```
+
+Both `[agent]` keys are read when the pane opens, so changing either takes effect
+on the next cold start rather than mid-session. `send_stack_tmux` is unbound and
+absent from the settings panel: the embedded pane is the send path, and this is
+the escape hatch back to `tmux send-keys` when you want to compare them.
 
 The repo-local file overrides the global one key by key, so a `.dreamd.toml` that
 sets one thing leaves the rest of your setup alone. It may name a `theme` but
 cannot set `theme_css` — a cloned repo does not get to point dreamd at an
-arbitrary file on your disk.
+arbitrary file on your disk — and it cannot set `agent.permission_mode`, for the
+same reason: a repo you have not read yet does not get to decide what your agent
+may do without asking.
 
 From the shell:
 
