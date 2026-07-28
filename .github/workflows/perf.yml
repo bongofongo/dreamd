@@ -336,7 +336,12 @@ jobs:
             ubuntu*|debian*)
               export DEBIAN_FRONTEND=noninteractive
               apt-get update
-              apt-get install -y --no-install-recommends bash xvfb ca-certificates
+              # xauth is separate from xvfb and is only a Recommends, so
+              # --no-install-recommends leaves xvfb-run dying with `xauth command
+              # not found`. debian:12 hit exactly that; ubuntu:24.04 happened to
+              # have it already, which is the kind of difference four arms exist
+              # to surface.
+              apt-get install -y --no-install-recommends bash xvfb xauth ca-certificates
               ;;
             archlinux*)
               pacman -Syu --noconfirm --needed bash webkit2gtk-4.1 gtk3 xorg-server-xvfb

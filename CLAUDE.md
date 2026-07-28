@@ -408,11 +408,15 @@ highlights from a corpus fixture.
   `APPIMAGE_EXTRACT_AND_RUN=1` on top, because linuxdeploy is an AppImage and a
   container has no FUSE. **Scheduled, not per-push, and it gates nothing** — the
   failure it watches for is "the distro moved", not "this commit broke it", so a
-  red canary is a message about Arch before it is one about the tree. Its first
-  run (2026-07-28) failed to bundle while the same command succeeded on the
-  development box, which is the third reading and the one to check next: not
-  "Arch moved" but "the *container* lacks something a real Arch install has".
-  Distinguishing those is what `VERBOSE=1` is there for. Rust is
+  red canary is a message about Arch before it is one about the tree. There is a
+  third reading, and its first two runs (2026-07-28) were it: not "Arch moved"
+  but "the *container* lacks something a real Arch install has". linuxdeploy's
+  gtk plugin `cp -r`s `/usr/lib/gdk-pixbuf-2.0/2.10.0` and exits 1 when it is
+  absent — and no package declares that directory, so a container built from the
+  README's dependency line does not have it while every desktop does. It failed
+  with the same bare `failed to run linuxdeploy` the `SHT_RELR` problem produces,
+  which is exactly why `VERBOSE=1` is set: the two are indistinguishable without
+  it. Rust is
   pinned to 1.97.1 like `ci.yml`, leaving the system libraries as the only
   moving part. It also *launches* twice — `smoke.sh` against a `--features perf`
   build, which is the only place a rolling webkit2gtk is asked to bring a window

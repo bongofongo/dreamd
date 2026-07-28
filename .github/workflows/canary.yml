@@ -74,6 +74,29 @@ jobs:
             base-devel git curl webkit2gtk-4.1 gtk3 librsvg openssl \
             patchelf file desktop-file-utils xorg-server-xvfb
 
+      # linuxdeploy's gtk plugin runs a bare `cp -r /usr/lib/gdk-pixbuf-2.0/2.10.0`
+      # into the AppDir and exits 1 when it is not there, which surfaces as the
+      # bundler's bare `failed to run linuxdeploy` — the same string the SHT_RELR
+      # problem produces, and the reason the first two runs of this job looked
+      # like distro drift when they were nothing of the kind.
+      #
+      # A desktop Arch always has that directory, but no package declares it:
+      # gdk-pixbuf2 has the common loaders compiled in and ships none, modern
+      # librsvg no longer installs one, and on the development box it exists only
+      # because libwmf happens to be installed. `loaders.cache` is owned by no
+      # package at all — a pacman hook generates it. So a container with exactly
+      # the README's dependency line has no /usr/lib/gdk-pixbuf-2.0 whatsoever.
+      #
+      # Creating it and generating the cache is what makes the container resemble
+      # an installation rather than a package list. It is a provisioning fix, not
+      # a workaround for anything in the tree — do not copy it into release.yml.
+      - name: gdk-pixbuf loader cache
+        run: |
+          set -eux
+          mkdir -p /usr/lib/gdk-pixbuf-2.0/2.10.0/loaders
+          gdk-pixbuf-query-loaders --update-cache
+          ls -la /usr/lib/gdk-pixbuf-2.0/2.10.0/
+
       - uses: actions/checkout@v4
 
       # Pinned to the development box's toolchain, not @stable — see the header.
