@@ -1019,6 +1019,11 @@ fn seed_highlights(store: &mut Store, file: &Option<String>) {
 }
 
 fn main() {
+    // Before anything else, and before any thread exists: on an NVIDIA
+    // proprietary driver, WebKitGTK's DMA-BUF renderer kills the Wayland
+    // connection during GTK init and there is no window left to report it in.
+    dreamd::webkit::prepare_env();
+
     perf::init();
     perf::mark("process_start");
 

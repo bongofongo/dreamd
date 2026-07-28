@@ -298,6 +298,16 @@ the upgrade procedure.
   accelerator, which is why Open Folder is `Ctrl+Shift+O` there — `CmdOrCtrl+O`
   would be consumed before the webview saw it and `keymap.toggle_stack` would
   simply stop working.
+- `webkit` — one env var, set at the very top of `main` before any thread
+  exists. WebKitGTK's DMA-BUF renderer allocates through GBM, which fails on the
+  NVIDIA proprietary driver; on Wayland the malformed `wl_buffer` is a *protocol*
+  error, so the compositor drops the connection and GDK aborts with `Error 71
+  (Protocol error) dispatching to Wayland display` before the window exists.
+  Nothing can catch it — the failure is inside GTK init, so the fix has to be in
+  the environment beforehand. Detection is a probe of `/proc/driver/nvidia/version`
+  rather than a `#[cfg]`, so the module builds and runs the same everywhere and
+  answers "no" on macOS and on Mesa, leaving the accelerated path alone. An
+  existing `WEBKIT_DISABLE_DMABUF_RENDERER` always wins, including `=0`.
 
 **Platform surface.** After Linux became a shipping target the whole
 `#[cfg(target_os = "macos")]` surface is three things: `menu::build`'s two arms,
@@ -307,7 +317,9 @@ re-walk, watcher re-arm, marks flush and socket retirement — compiles on both,
 purpose: gating it was what kept it from ever being built off macOS.
 `config_dir()` already resolved to `~/.config/dreamd` on both platforms
 (`dirs::config_dir()` is deliberately its last resort), so the socket, the marks
-file and the themes directory need no per-platform anything.
+file and the themes directory need no per-platform anything. `webkit` is the
+pattern to copy for the next such quirk: a runtime probe of something only the
+affected system has, not a `cfg` arm nobody else compiles.
 
 **Highlight anchoring is the subtle part.** A quote is located in the *source* by
 `markdown::locate` in three fallbacks: exact `prefix+quote+suffix`, exact quote, then

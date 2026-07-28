@@ -26,6 +26,7 @@ pub mod send;
 pub mod theme;
 pub mod untrusted;
 pub mod watcher;
+pub mod webkit;
 
 use std::path::{Path, PathBuf};
 
