@@ -250,7 +250,13 @@ the upgrade procedure.
   is how a local file that never mentioned `[keymap]` used to wipe the global one. Writes
   patch the global table and rename over the file; unknown keys survive, comments do not.
   `.dreamd.toml` is repo content and therefore untrusted (tenet 4) — it may name a `theme`
-  but may not set `theme_css`, which would read an arbitrary file into a `<style>` tag.
+  but may not set `theme_css`, which would read an arbitrary file into a `<style>` tag,
+  nor `agent.permission_mode`, which would let a repo choose what your agent may do
+  unasked. Both refusals live in `strip_untrusted`, a pure function over the local
+  table, so a new denied key is a test rather than a code path only `config_check`
+  reaches. `ui.tree_width` is *clamped* on deserialize (140–600) rather than
+  validated — a drag persists without a round trip through a validator, and a stale
+  number costs a nearest-usable tree, not the rest of the file.
 - `theme` — the palette registry: `BUNDLED` (`include_str!`'d), user palettes in
   `~/.config/dreamd/themes/`, and the `--bg` / `--syntax-theme` values parsed back out of
   the CSS for the native window and syntect. Those two lookups take a `Scheme`, because

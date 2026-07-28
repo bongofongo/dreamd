@@ -1,5 +1,63 @@
 # Session log
 
+## 2026-07-28 — T2: the config surface the agent pass needs
+
+A short, deliberately mechanical thread: the second of the seven in
+`docs/plans/agent-ui-implementation.md`. It adds no behaviour — it adds the keys
+the behaviour will read, so T4 and T5 can be about the pane and the chrome rather
+than about plumbing. Done in a worktree and landed through a PR rather than
+straight to main, at the user's request.
+
+### What happened
+
+1. **`[agent]`, with a closed enum on each key.** `position` is `bottom`
+   (default) or `right`; `permission_mode` is `default` / `accept-edits`
+   (default) / `plan` / `bypass-permissions`. Enums rather than strings, because
+   T5 turns `permission_mode` into a launch flag and tenet 3 wants that to be a
+   match over four literal `const`s, never a format string. A typo is rejected
+   rather than clamped — there is no nearest sensible permission mode, and the
+   failure this enum exists to prevent is an agent silently running in the wrong
+   one.
+
+2. **`ui.tree_width`, clamped rather than validated.** 140–600, defaulting to
+   260, which is the sidebar's existing fixed width. The clamp is a
+   `deserialize_with`, so every reader sees a usable number and T4's drag handle
+   can persist without round-tripping through a validator; the file keeps
+   whatever was written. Out of range costs the nearest usable tree. A *negative*
+   width is still rejected outright — it never reaches `u32` — which is the same
+   shape `mode = "sepia"` already had.
+
+3. **The denylist became a function.** `.dreamd.toml` is repo content, and
+   `agent.permission_mode` is the second key it may not set: a repo you have not
+   read yet does not get to choose what your agent may do unasked. Rather than
+   adding a second inline `remove` to `Config::load`, both refusals moved into a
+   pure `strip_untrusted(&mut Table) -> Vec<(key, why)>`. That is the `guard`
+   argument applied one level down: a tenet enforced where a unit test can reach
+   it, instead of only where `config_check`'s sandboxed `XDG_CONFIG_HOME` can.
+   The warning line also got its path back in front of its explanation.
+
+4. **`keymap.send_stack_tmux`, the hidden binding of D6.** `Option<String>`,
+   `None` by default, `skip_serializing_if` — so "Reset all shortcuts", which
+   patches the global file with `default_keymap()`, cannot clear a value set by
+   hand. The settings panel never offers it because `KEY_ACTIONS` in `app.js` is
+   a hand-written list. Nothing dispatches it yet: the frontend half belongs to
+   T6, where Ctrl+Enter stops being the tmux path and `send.rs` would otherwise
+   become dead code.
+
+5. **Proved the new guards have teeth.** Three mutations, each run against both
+   the unit tests and `config_check`: defanging the `permission_mode` strip
+   (`remove` → `get`) turned a repo-local `bypass-permissions` into the effective
+   mode and went red in both; deleting the `deserialize_with` attribute went red
+   on three clamp assertions; giving `send_stack_tmux` a default binding went red
+   on the two that pin it absent. Restored, and green again.
+
+### What this leaves
+
+`cargo test --all-features` at 219, `config_check` at 49, clippy clean, and
+`theme_check` / `mcp_check` / `marks_check` / `paths.test.mjs` unmoved. T5 and T6
+are unblocked. No perf tier was run: nothing here is on the render path, and the
+whole change is fields on a struct read once at load.
+
 ## 2026-07-28 — CI that runs the program
 
 The session opened with a question: if a commit passes CI, will it work when

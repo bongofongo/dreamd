@@ -69,6 +69,96 @@ pub struct Config {
     /// Frontend keybinds, surfaced to JS at startup. Values are KeyboardEvent
     /// `key` combos like "Ctrl+P". Unknown actions are ignored by the frontend.
     pub keymap: Keymap,
+
+    /// The embedded Claude Code pane.
+    pub agent: Agent,
+
+    /// Chrome the user can drag into a shape and expect to find again.
+    pub ui: Ui,
+}
+
+/// The embedded Claude Code pane's preferences.
+///
+/// Both fields are read when the pane is *opened*, not continuously: `position`
+/// is applied by the frontend on mount and `permission_mode` reaches the child
+/// as a launch flag, so changing either mid-session is a restart, not a live
+/// update.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Agent {
+    /// Which edge the pane docks to.
+    pub position: Position,
+
+    /// The permission mode Claude Code launches in.
+    ///
+    /// Not settable from a repo-local `.dreamd.toml` — see [`Config::load`].
+    pub permission_mode: PermissionMode,
+}
+
+/// Which edge the agent pane docks to. `bottom` is how the pane has always
+/// worked; `right` is the tall-window shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Position {
+    #[default]
+    Bottom,
+    Right,
+}
+
+/// Claude Code's four permission modes, spelled the way a config file wants to
+/// read rather than the way the CLI flag spells them.
+///
+/// A closed enum rather than a string is what keeps tenet 3 intact: the launch
+/// command is a match over four literal `const`s, never a format string with a
+/// user value interpolated into it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PermissionMode {
+    /// Ask before every edit — Claude Code's own default.
+    Default,
+    /// Edits go through, everything else still asks. dreamd's default, because
+    /// the loop this pane exists for is read → ask → let it edit.
+    #[default]
+    AcceptEdits,
+    /// Plan first, touch nothing.
+    Plan,
+    /// Ask for nothing at all.
+    BypassPermissions,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Ui {
+    /// Sidebar width in CSS pixels, as left by the drag handle.
+    ///
+    /// Clamped on the way in rather than validated: a width outside the range
+    /// is a stale or hand-typed number, and the useful answer is the nearest
+    /// usable tree, not a rejected config file that takes every other key down
+    /// with it.
+    #[serde(deserialize_with = "de_tree_width")]
+    pub tree_width: u32,
+}
+
+/// The sidebar's original fixed width, and the range the drag handle may leave
+/// it in. Below the minimum the tree is unreadable and the gesture means
+/// "collapse" instead; above the maximum it is eating the document.
+pub const TREE_WIDTH_DEFAULT: u32 = 260;
+pub const TREE_WIDTH_MIN: u32 = 140;
+pub const TREE_WIDTH_MAX: u32 = 600;
+
+impl Default for Ui {
+    fn default() -> Self {
+        Self {
+            tree_width: TREE_WIDTH_DEFAULT,
+        }
+    }
+}
+
+fn de_tree_width<'de, D>(de: D) -> Result<u32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(u32::deserialize(de)?.clamp(TREE_WIDTH_MIN, TREE_WIDTH_MAX))
 }
 
 /// The user's appearance preference. [`Mode::System`] is not a thing CSS can be
@@ -110,6 +200,18 @@ pub struct Keymap {
     pub highlight: String,
     /// Send the stack to the agent.
     pub send_stack: String,
+    /// Send the stack down the *tmux* path instead — `send.rs`, a temp file and
+    /// `send-keys` into a pane running `claude`.
+    ///
+    /// Deliberately unbound and deliberately absent from the settings panel's
+    /// action list: the embedded pane is the product's send path, and this is
+    /// the one that lets you compare the two when the pane misbehaves. Bind it
+    /// by hand in `config.toml`; nothing in the UI will ever offer it.
+    ///
+    /// `Option` rather than an empty string so "never set" is a state the
+    /// frontend can test rather than a combo that can never match.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub send_stack_tmux: Option<String>,
     /// Toggle the stack panel.
     pub toggle_stack: String,
     /// Toggle the contents / outline panel.
@@ -159,6 +261,7 @@ impl Default for Keymap {
             palette_next: "Ctrl+N".into(),
             highlight: "Ctrl+H".into(),
             send_stack: "Ctrl+Enter".into(),
+            send_stack_tmux: None,
             toggle_stack: "Ctrl+O".into(),
             // I for "index"; B is the sidebar, the way every editor spells it.
             toggle_outline: "Ctrl+I".into(),
@@ -241,6 +344,8 @@ impl Default for Config {
             tmux_target: None,
             tmux_autodetect: true,
             keymap: Keymap::default(),
+            agent: Agent::default(),
+            ui: Ui::default(),
         }
     }
 }
@@ -255,16 +360,9 @@ impl Config {
     pub fn load(repo_root: &Path) -> Self {
         let mut merged = global_table();
         if let Some(mut local) = read_table(&local_path(repo_root)) {
-            // `.dreamd.toml` is repo content, and repo content is untrusted
-            // (tenet 4) — you get it by cloning. `theme_css` reads an arbitrary
-            // file and injects it into the webview as a stylesheet, where a
-            // `background-image: url(https://…)` would turn that into a
-            // read-and-exfiltrate primitive. A repo may pick a *named* theme,
-            // which can only resolve to a bundled palette or one the user
-            // wrote themselves.
-            if local.remove("theme_css").is_some() {
+            for (key, why) in strip_untrusted(&mut local) {
                 eprintln!(
-                    "dreamd: ignoring theme_css in {} — repo-local config may only set `theme`",
+                    "dreamd: ignoring {key} in {} — {why}",
                     local_path(repo_root).display()
                 );
             }
@@ -280,6 +378,39 @@ impl Config {
             Config::default()
         })
     }
+}
+
+/// Remove the keys a repo-local `.dreamd.toml` may not set, returning a
+/// `(key, why)` pair for each one removed so the caller can name the file it
+/// came from.
+///
+/// `.dreamd.toml` is repo content, and repo content is untrusted (tenet 4) —
+/// you get it by cloning. Two keys are more than a preference:
+///
+/// - `theme_css` reads an arbitrary file and injects it into the webview as a
+///   stylesheet, where a `background-image: url(https://…)` would turn that
+///   into a read-and-exfiltrate primitive. A repo may still pick a *named*
+///   `theme`, which can only resolve to a bundled palette or one the user wrote.
+/// - `agent.permission_mode` chooses how much the agent may do without asking.
+///   A cloned repo that could set `bypass-permissions` would be deciding that
+///   on your behalf, before you had read a line of it.
+///
+/// `agent.position` and `ui.tree_width` are left alone: they move furniture and
+/// read nothing.
+fn strip_untrusted(local: &mut Table) -> Vec<(&'static str, &'static str)> {
+    let mut warnings = Vec::new();
+    if local.remove("theme_css").is_some() {
+        warnings.push(("theme_css", "repo-local config may only set `theme`"));
+    }
+    if let Some(Value::Table(agent)) = local.get_mut("agent") {
+        if agent.remove("permission_mode").is_some() {
+            warnings.push((
+                "agent.permission_mode",
+                "a repo does not choose what your agent may do unasked",
+            ));
+        }
+    }
+    warnings
 }
 
 // ---- paths ---------------------------------------------------------------
@@ -585,5 +716,150 @@ mod tests {
     #[test]
     fn mode_defaults_to_system() {
         assert_eq!(Mode::default(), Mode::System);
+    }
+
+    // ---- agent / ui -------------------------------------------------------
+
+    /// What `Config::load` does after the two files are merged, minus the
+    /// filesystem — `config_dir()` is `config_check`'s to touch, not a unit
+    /// test's.
+    fn config_of(toml: &str) -> Config {
+        Config::deserialize(Value::Table(table(toml))).expect("valid config fixture")
+    }
+
+    #[test]
+    fn the_agent_and_ui_keys_default_without_being_written() {
+        let cfg = config_of("");
+        assert_eq!(cfg.agent.position, Position::Bottom);
+        assert_eq!(cfg.agent.permission_mode, PermissionMode::AcceptEdits);
+        assert_eq!(cfg.ui.tree_width, TREE_WIDTH_DEFAULT);
+    }
+
+    #[test]
+    fn the_new_keys_layer_global_under_local_like_every_other_key() {
+        let mut base = table(
+            "[agent]\nposition = \"bottom\"\npermission_mode = \"plan\"\n\
+             [ui]\ntree_width = 300\n",
+        );
+        deep_merge(&mut base, table("[agent]\nposition = \"right\"\n"));
+        let cfg = Config::deserialize(Value::Table(base)).expect("merged config");
+        assert_eq!(cfg.agent.position, Position::Right, "local value applies");
+        assert_eq!(
+            cfg.agent.permission_mode,
+            PermissionMode::Plan,
+            "an untouched sibling in the same section was lost"
+        );
+        assert_eq!(cfg.ui.tree_width, 300, "an untouched section was lost");
+    }
+
+    #[test]
+    fn a_local_file_mentioning_only_agent_does_not_wipe_the_global_keymap() {
+        // The `deep_merge` regression, re-asserted for a new section: a
+        // sub-table arriving from the local file must not replace a sibling
+        // sub-table it never mentioned.
+        let mut base = table("[keymap]\npalette = \"Ctrl+Space\"\n");
+        deep_merge(&mut base, table("[agent]\nposition = \"right\"\n"));
+        let cfg = Config::deserialize(Value::Table(base)).expect("merged config");
+        assert_eq!(cfg.keymap.palette, "Ctrl+Space");
+        assert_eq!(cfg.agent.position, Position::Right);
+    }
+
+    #[test]
+    fn a_repo_may_move_the_pane_but_not_choose_its_permissions() {
+        let mut local = table(
+            "[agent]\nposition = \"right\"\npermission_mode = \"bypass-permissions\"\n\
+             [ui]\ntree_width = 200\n",
+        );
+        let warnings = strip_untrusted(&mut local);
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert_eq!(warnings[0].0, "agent.permission_mode");
+
+        let cfg = Config::deserialize(Value::Table(local)).expect("stripped config");
+        assert_eq!(
+            cfg.agent.permission_mode,
+            PermissionMode::AcceptEdits,
+            "a repo chose the permission mode"
+        );
+        assert_eq!(cfg.agent.position, Position::Right, "position is harmless");
+        assert_eq!(cfg.ui.tree_width, 200, "tree_width is harmless");
+    }
+
+    #[test]
+    fn stripping_leaves_a_local_file_that_oversteps_nothing_alone() {
+        let mut local = table("theme = \"nord\"\n[agent]\nposition = \"right\"\n");
+        assert!(strip_untrusted(&mut local).is_empty());
+        assert_eq!(local.len(), 2);
+    }
+
+    #[test]
+    fn theme_css_is_still_stripped_and_still_says_so() {
+        let mut local = table("theme_css = \"/etc/passwd\"\n");
+        let warnings = strip_untrusted(&mut local);
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0].0, "theme_css");
+        assert!(local.is_empty());
+    }
+
+    #[test]
+    fn tree_width_is_clamped_on_the_way_in_rather_than_rejected() {
+        assert_eq!(config_of("[ui]\ntree_width = 10\n").ui.tree_width, 140);
+        assert_eq!(config_of("[ui]\ntree_width = 0\n").ui.tree_width, 140);
+        assert_eq!(config_of("[ui]\ntree_width = 99999\n").ui.tree_width, 600);
+        assert_eq!(config_of("[ui]\ntree_width = 320\n").ui.tree_width, 320);
+    }
+
+    #[test]
+    fn an_unknown_position_or_permission_mode_is_rejected() {
+        // Not clamped, unlike a width: there is no nearest sensible edge, and a
+        // typo that silently ran the agent in the wrong mode is the failure
+        // this enum exists to prevent.
+        assert!(Config::deserialize(Value::Table(table("[agent]\nposition = \"top\"\n"))).is_err());
+        assert!(Config::deserialize(Value::Table(table(
+            "[agent]\npermission_mode = \"acceptEdits\"\n"
+        )))
+        .is_err());
+    }
+
+    #[test]
+    fn every_permission_mode_round_trips_through_its_config_spelling() {
+        for (text, want) in [
+            ("default", PermissionMode::Default),
+            ("accept-edits", PermissionMode::AcceptEdits),
+            ("plan", PermissionMode::Plan),
+            ("bypass-permissions", PermissionMode::BypassPermissions),
+        ] {
+            let cfg = config_of(&format!("[agent]\npermission_mode = \"{text}\"\n"));
+            assert_eq!(cfg.agent.permission_mode, want);
+            assert_eq!(
+                toml::Value::try_from(want).expect("serialize").as_str(),
+                Some(text),
+                "the value dreamd writes back is not the one it reads"
+            );
+        }
+    }
+
+    // ---- the hidden tmux keybind -----------------------------------------
+
+    #[test]
+    fn the_tmux_send_keybind_is_unbound_by_default() {
+        assert_eq!(Keymap::default().send_stack_tmux, None);
+        // And is not written out, so "reset all shortcuts" — which patches the
+        // global file with `default_keymap()` — cannot clear a binding the user
+        // set by hand.
+        let text = toml::to_string(&Keymap::default()).expect("serialize");
+        assert!(
+            !text.contains("send_stack_tmux"),
+            "the hidden binding leaked into a written keymap:\n{text}"
+        );
+    }
+
+    #[test]
+    fn the_tmux_send_keybind_is_read_when_a_user_binds_it_by_hand() {
+        let cfg = config_of("[keymap]\nsend_stack_tmux = \"Ctrl+Alt+Enter\"\n");
+        assert_eq!(
+            cfg.keymap.send_stack_tmux.as_deref(),
+            Some("Ctrl+Alt+Enter")
+        );
+        assert_eq!(cfg.keymap.send_stack, "Ctrl+Enter", "a sibling was lost");
     }
 }

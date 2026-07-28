@@ -24,7 +24,7 @@ hand-verified; one is the pane, which is the largest and wants a session to itse
 wipe-on-send, partial wipe, the re-annotation rules. Everything else reads its
 output, so it goes first.
 
-**T2 — Config surface.** Rust. `agent.position`, `agent.permission_mode`,
+**T2 — Config surface.** Done. `agent.position`, `agent.permission_mode`,
 `ui.tree_width`, the hidden tmux keybind. Small, mechanical, unblocks T4 and T5.
 
 **T3 — Palette fade.** CSS plus `theme.rs`. The per-mode desaturation ratio for
@@ -151,6 +151,28 @@ section.
 ### Done when
 
 `cargo test --all-features` green and `cargo run --example config_check` green.
+
+### Done (2026-07-28)
+
+Shipped as written, with three notes for the threads downstream.
+
+The local-file denylist moved out of `Config::load` into a pure
+`strip_untrusted(&mut Table)` returning `(key, why)` pairs, so both refusals are
+unit-testable rather than reachable only through `config_check`'s sandboxed
+`XDG_CONFIG_HOME`.
+
+`ui.tree_width` is **clamped on deserialize**, not validated: 140–600, default
+260 (the sidebar's old fixed width). Out of range is the nearest usable tree, not
+a rejected file that takes every other key down with it. A *negative* width is
+still rejected outright, because it never reaches `u32`. The file keeps whatever
+was written; every reader sees the clamp, so T4 can persist a drag without
+round-tripping through a validator.
+
+`keymap.send_stack_tmux` is `Option<String>`, `None`, and
+`skip_serializing_if` — so "Reset all shortcuts", which patches the global file
+with `default_keymap()`, cannot clear a binding set by hand. Nothing dispatches
+it yet: the frontend half belongs to T6, where Ctrl+Enter stops being the tmux
+path.
 
 ---
 

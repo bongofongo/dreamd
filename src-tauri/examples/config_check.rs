@@ -10,7 +10,7 @@
 //! cargo run --example config_check
 //! ```
 
-use dreamd::config::{self, Config, Mode};
+use dreamd::config::{self, Config, Mode, PermissionMode, Position};
 use dreamd::theme;
 use std::path::Path;
 
@@ -147,6 +147,121 @@ fn main() {
         "an explicit mode beats the implied one",
         theme::scheme_for(&Config::load(&repo), theme::Scheme::Light),
         theme::Scheme::Light,
+    );
+
+    // --- the agent section ------------------------------------------------
+    write_global("");
+    write_local(&repo, None);
+    let cfg = Config::load(&repo);
+    checks.eq(
+        "default pane position",
+        cfg.agent.position,
+        Position::Bottom,
+    );
+    checks.eq(
+        "default permission mode",
+        cfg.agent.permission_mode,
+        PermissionMode::AcceptEdits,
+    );
+    checks.eq(
+        "default tree width",
+        cfg.ui.tree_width,
+        config::TREE_WIDTH_DEFAULT,
+    );
+
+    write_global("[agent]\nposition = \"right\"\npermission_mode = \"plan\"\n");
+    write_local(&repo, Some("[agent]\nposition = \"bottom\"\n"));
+    let cfg = Config::load(&repo);
+    checks.eq(
+        "a repo may move the pane",
+        cfg.agent.position,
+        Position::Bottom,
+    );
+    checks.eq(
+        "and leaves the global mode standing",
+        cfg.agent.permission_mode,
+        PermissionMode::Plan,
+    );
+
+    // Same shape as the theme_css check above: repo content does not get to
+    // decide how much the agent may do without asking.
+    write_local(
+        &repo,
+        Some("[agent]\npermission_mode = \"bypass-permissions\"\n"),
+    );
+    checks.eq(
+        "repo-local permission_mode is refused",
+        Config::load(&repo).agent.permission_mode,
+        PermissionMode::Plan,
+    );
+
+    // A local file naming only `[agent]` must not blank the global `[keymap]` —
+    // the merge bug, re-checked for the section this pass adds.
+    write_global("[agent]\nposition = \"right\"\n\n[keymap]\npalette = \"Ctrl+Space\"\n");
+    write_local(&repo, Some("[agent]\nposition = \"bottom\"\n"));
+    checks.eq(
+        "an [agent]-only local file preserves global keybinds",
+        Config::load(&repo).keymap.palette,
+        "Ctrl+Space",
+    );
+
+    // --- tree width write-back --------------------------------------------
+    write_global("");
+    write_local(&repo, None);
+    config::set_global_key("ui.tree_width", 320.into()).expect("set width");
+    checks.eq(
+        "a written width reloads",
+        Config::load(&repo).ui.tree_width,
+        320u32,
+    );
+    // Out of range is clamped rather than rejected: the drag handle's job is to
+    // leave a usable tree, not to take the rest of the config down with a bad
+    // number. The file keeps what was written; every reader sees the clamp.
+    let cfg = config::set_global_key("ui.tree_width", 5.into()).expect("set narrow width");
+    checks.eq("a too-narrow width clamps up", cfg.ui.tree_width, 140u32);
+    checks.eq(
+        "and the clamp survives a reload",
+        Config::load(&repo).ui.tree_width,
+        140u32,
+    );
+    let cfg = config::set_global_key("ui.tree_width", 4000.into()).expect("set wide width");
+    checks.eq("a too-wide width clamps down", cfg.ui.tree_width, 600u32);
+    checks.ok(
+        "a negative width is rejected outright",
+        config::set_global_key("ui.tree_width", (-40).into()).is_err(),
+    );
+
+    // --- the hidden tmux keybind -------------------------------------------
+    write_global("");
+    write_local(&repo, None);
+    checks.eq(
+        "send_stack_tmux ships unbound",
+        Config::load(&repo).keymap.send_stack_tmux,
+        None,
+    );
+    write_global("[keymap]\nsend_stack_tmux = \"Ctrl+Alt+Enter\"\n");
+    checks.eq(
+        "and is read when bound by hand",
+        Config::load(&repo).keymap.send_stack_tmux,
+        Some("Ctrl+Alt+Enter".to_string()),
+    );
+    // "Reset all shortcuts" patches the global file with `default_keymap()`.
+    // The binding is skipped on serialize, so it is not in that patch and the
+    // hand-set value survives — which is the whole point of a hidden binding.
+    config::patch_global(
+        toml::Table::try_from(dreamd::config::Keymap::default())
+            .map(|t| {
+                let mut outer = toml::Table::new();
+                outer.insert("keymap".into(), t.into());
+                outer
+            })
+            .expect("keymap table"),
+    )
+    .expect("reset shortcuts");
+    checks.eq(
+        "and a shortcut reset does not clear it",
+        Config::load(&repo).keymap.send_stack_tmux,
+        Some("Ctrl+Alt+Enter".to_string()),
     );
 
     // --- write-back -------------------------------------------------------
