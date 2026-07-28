@@ -31,6 +31,7 @@
    * colour, wrong as a highlighter, where the mark is a background and the
    * text has to survive it. Lightened into the same family instead. */
   --hl: #e8c56a;
+  --hl-prior: 30%;
   --stale: #f52a65;
   --stale-bg: #f7d6de;
   --stale-text: #1a1a1a;
@@ -53,6 +54,7 @@
   --accent-dim: #283457;
 
   --hl: #e0af68;
+  --hl-prior: 7%;
   --stale: #f7768e;
   --stale-bg: #38202c;
 

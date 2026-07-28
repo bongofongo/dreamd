@@ -329,6 +329,32 @@ pub fn syntax_theme(css: &str, scheme: Scheme) -> Option<String> {
     (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
+/// What `ui/theme.css` uses for `--hl-prior` when the palette declares none.
+///
+/// This is a *duplicate* of a literal in the stylesheet, and duplicated on
+/// purpose: the CSS fallback is what actually paints, and it has to work in a
+/// webview that never asks Rust anything. The copy here is what lets a caller —
+/// and `theme_check` — answer "what will a palette that says nothing get?"
+/// without re-parsing the base stylesheet. `the_css_fallback_matches_the_const`
+/// is what keeps the two from drifting.
+pub const PRIOR_FADE_FALLBACK: &str = "16%";
+
+/// The `--hl-prior` percentage for `scheme`: how much of `--hl` survives on a
+/// highlight carried over from an earlier session.
+///
+/// Never `None`. A palette written before this variable existed — which is every
+/// user palette on disk — must still fade, so an undeclared value resolves to
+/// [`PRIOR_FADE_FALLBACK`] rather than propagating a `None` that a caller would
+/// have to interpolate into a style string as the word "none" or drop the
+/// declaration over, either of which restores the full-strength fill. Showing a
+/// year-old highlight at full strength is the loud failure; too quiet is the
+/// quiet one.
+pub fn prior_fade(css: &str, scheme: Scheme) -> String {
+    custom_property(css, "--hl-prior", scheme)
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| PRIOR_FADE_FALLBACK.to_string())
+}
+
 /// Whether a stylesheet declares any `[data-mode]` block — i.e. whether it is a
 /// family or a flat pre-family palette. Public so `theme_check` can insist that
 /// every bundled palette is one.
@@ -766,5 +792,96 @@ mod tests {
         );
         assert_eq!(background(css, Scheme::Light), Some((255, 255, 255)));
         assert_eq!(background(css, Scheme::Dark), Some((0, 0, 0)));
+    }
+
+    // ---- --hl-prior -------------------------------------------------------
+
+    #[test]
+    fn the_prior_fade_is_read_from_the_scheme_it_was_asked_for() {
+        // The whole point of D15: one number cannot serve both members of a
+        // family, so the light block's value must not leak into the dark read
+        // or the reverse.
+        let css = concat!(
+            ":root[data-mode=\"light\"] { --hl: #f2d16b; --hl-prior: 24%; }\n",
+            ":root[data-mode=\"dark\"] { --hl: #f2d16b; --hl-prior: 6%; }\n",
+        );
+        assert_eq!(
+            custom_property(css, "--hl-prior", Scheme::Light).as_deref(),
+            Some("24%")
+        );
+        assert_eq!(
+            custom_property(css, "--hl-prior", Scheme::Dark).as_deref(),
+            Some("6%")
+        );
+        assert_eq!(prior_fade(css, Scheme::Light), "24%");
+        assert_eq!(prior_fade(css, Scheme::Dark), "6%");
+    }
+
+    #[test]
+    fn a_dark_only_prior_fade_does_not_leak_into_light() {
+        // The asymmetric case, which is the one a `css.contains("--hl-prior")`
+        // check would pass: only one appearance declares it, and the other must
+        // fall back rather than borrow.
+        let css = ":root[data-mode=\"dark\"] { --hl-prior: 6%; }";
+        assert_eq!(custom_property(css, "--hl-prior", Scheme::Light), None);
+        assert_eq!(prior_fade(css, Scheme::Light), PRIOR_FADE_FALLBACK);
+        assert_eq!(prior_fade(css, Scheme::Dark), "6%");
+    }
+
+    #[test]
+    fn the_prior_fade_is_not_confused_with_the_highlight_colour() {
+        // `--hl` and `--hl-prior` share a prefix, and `custom_property`'s
+        // boundary rule is what keeps `--hl:` from matching inside
+        // `--hl-prior:`. Both directions, because the scan runs backwards.
+        let css = ":root { --hl: #f2d16b; --hl-prior: 18%; }";
+        assert_eq!(
+            custom_property(css, "--hl", Scheme::Light).as_deref(),
+            Some("#f2d16b")
+        );
+        assert_eq!(prior_fade(css, Scheme::Light), "18%");
+        // ...and with the declarations the other way round, so neither result
+        // depends on which came last.
+        let css = ":root { --hl-prior: 18%; --hl: #f2d16b; }";
+        assert_eq!(
+            custom_property(css, "--hl", Scheme::Light).as_deref(),
+            Some("#f2d16b")
+        );
+        assert_eq!(prior_fade(css, Scheme::Light), "18%");
+    }
+
+    #[test]
+    fn a_palette_that_declares_no_prior_fade_still_fades() {
+        // Every user palette on disk is one of these. `prior_fade` must never
+        // hand a caller a `None` to interpolate into a style string.
+        for css in [
+            ":root { --bg: #123456; }",
+            ":root[data-mode=\"light\"] { --bg: #fff; }\n:root[data-mode=\"dark\"] { --bg: #000; }",
+            "",
+            // Declared but empty, which parses as Some("") and would paint as a
+            // malformed `color-mix` rather than as a fade.
+            ":root { --hl-prior: ; }",
+        ] {
+            for scheme in [Scheme::Light, Scheme::Dark] {
+                assert_eq!(
+                    prior_fade(css, scheme),
+                    PRIOR_FADE_FALLBACK,
+                    "{scheme:?} did not fall back for {css:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_css_fallback_matches_the_const() {
+        // `PRIOR_FADE_FALLBACK` is a copy of a literal in `ui/theme.css`, and
+        // the stylesheet is the one that paints. If they drift, Rust answers a
+        // question about a palette differently from the webview that renders it.
+        let css = strip_comments(BASE_CSS);
+        assert!(
+            css.contains(&format!("var(--hl-prior, {PRIOR_FADE_FALLBACK})")),
+            "ui/theme.css does not fall back to {PRIOR_FADE_FALLBACK}"
+        );
+        // And the fade is keyed off the attribute `app.js` sets, not a class.
+        assert!(css.contains("mark.hl[data-prior]"));
     }
 }
