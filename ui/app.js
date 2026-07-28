@@ -2213,6 +2213,19 @@ const pty = {
   vendor: null,      // the in-flight (or settled) vendor-load promise
   running: false,    // whether a child process is alive on the Rust side
   listening: false,  // whether the pty-data / pty-exit listeners are attached
+  prefs: null,       // the last `agent_prefs` payload, once the pane has opened
+  staged: null,      // a permission mode chosen but not yet restarted into
+};
+
+/// How each `agent.permission_mode` reads in the header, and in the sentence
+/// that warns what a restart costs. The values are the config spellings, so the
+/// `<option>` value is what `set_config` is handed with no translation table in
+/// between — `pty.rs` owns the mapping from these onto four literal commands.
+const MODE_LABELS = {
+  "default": "ask each time",
+  "accept-edits": "accept edits",
+  "plan": "plan only",
+  "bypass-permissions": "no prompts",
 };
 
 /// Inject the vendored bundles, once. Resolves when `Terminal` and
@@ -2257,13 +2270,24 @@ function loadTerminalVendor() {
 /// xterm paints its own colours, so hand it the palette's. Read from the
 /// *applied* variables rather than parsed out of the stylesheet, for the reason
 /// `applyTheme` gives: the engine has already done the cascade.
+/// Six keys, and no ANSI palette. The sixteen indexed colours are left entirely
+/// to Claude Code (D19): a diff is drawn in ANSI red and green, and a "reading
+/// coloured" red is the one restyle here that could make a removed line look
+/// like a kept one. Chrome is dreamd's, content is the TUI's.
 function terminalTheme() {
   const v = (name, fallback) => appliedCssVar(name) || fallback;
   return {
     background: v("--sidebar-bg", "#100e17"),
     foreground: v("--fg", "#e8e4f3"),
     cursor: v("--accent", "#a48cf5"),
+    // The glyph *under* the block cursor. Without it xterm inverts, which on an
+    // accent-coloured cursor puts the accent's complement on screen.
+    cursorAccent: v("--sidebar-bg", "#100e17"),
     selectionBackground: v("--hover", "#292435"),
+    // The colour of a selection in an unfocused terminal — clicking into the
+    // document to copy what the agent said is the common case, and xterm's
+    // default for it is a grey that reads as "gone".
+    selectionInactiveBackground: v("--hover", "#292435"),
   };
 }
 
@@ -2293,7 +2317,14 @@ function togglePane() {
 async function openPane() {
   const pane = $("pty-pane");
   pane.classList.add("open");
+  // The grid that docks the pane right is declared on `#main-wrap`, which
+  // cannot see its child's class — see the `agent-right` block in index.html.
+  document.body.classList.add("pane-open");
   try {
+    // Ahead of the vendor load, because it decides the pane's geometry and a
+    // terminal built into the wrong box would `fit()` to it. One round trip on
+    // first open only; nothing here runs at boot.
+    await loadAgentPrefs();
     await loadTerminalVendor();
     if (!pty.term) buildTerminal();
     fitPane();
@@ -2307,16 +2338,55 @@ async function openPane() {
 
 /// Hide it. Deliberately *not* a kill: the scrollback and the conversation
 /// survive behind `display: none`, and view mode hides the pane the same way
-/// for the same reason.
+/// for the same reason. Escape lands here too (D12) — closing is hiding, and
+/// only an explicit Ctrl+C to the child stops the process.
 function closePane() {
   $("pty-pane").classList.remove("open");
+  document.body.classList.remove("pane-open");
   contentEl.focus({ preventScroll: true });
+}
+
+/// The pane's config, read once per process on its first open — `agent.position`
+/// and `agent.permission_mode` are both launch-time values, so there is nothing
+/// to re-read while it is up. A failure leaves the defaults the markup already
+/// carries rather than refusing to open a terminal over a config problem.
+async function loadAgentPrefs() {
+  if (pty.prefs) return pty.prefs;
+  try {
+    pty.prefs = await invoke("agent_prefs");
+  } catch (e) {
+    console.error(e);
+    pty.prefs = { position: "bottom", permission_mode: "accept-edits" };
+  }
+  applyPanePosition(pty.prefs.position);
+  $("pty-mode").value = pty.prefs.permission_mode;
+  return pty.prefs;
+}
+
+/// Dock bottom or right. The refit is not decoration: the fit addon computes
+/// rows and cols from the box it is in, and a pane that changed edge without
+/// one would leave the child holding the old grid — wrapped lines, a status bar
+/// drawn off the end, and box-drawing that no longer meets.
+///
+/// `fitPane` is called *and* the `ResizeObserver` will fire; both are wanted.
+/// The observer is asynchronous and the reader would otherwise watch one frame
+/// of stale grid, and a position change that happens to preserve the pixel size
+/// fires no observer at all.
+function applyPanePosition(position) {
+  document.body.classList.toggle("agent-right", position === "right");
+  fitPane();
 }
 
 function buildTerminal() {
   pty.term = new window.Terminal({
+    // Monospace, and staying monospace (D18): Claude Code draws its boxes out
+    // of `─│┌┐└┘` and they only meet on a fixed advance width.
     fontFamily: appliedCssVar("--font-mono") || "ui-monospace, Menlo, monospace",
-    fontSize: 12,
+    fontSize: 13,
+    // A little air between rows, which is most of what separates a terminal
+    // that reads as a document surface from one that reads as a console. Any
+    // higher and the box-drawing verticals start to show gaps.
+    lineHeight: 1.15,
     cursorBlink: true,
     // The child is a long-lived agent session; 5000 lines is what makes
     // scrolling back to what it did earlier useful rather than decorative.
@@ -2336,10 +2406,34 @@ function buildTerminal() {
   //
   // Returning false is xterm's "I handled it" — it must not also go to the
   // child, or `claude` would receive a stray ^T on the way out.
+  //
+  // Two keys now, not one, and the second one costs something real.
+  //
+  // Escape is Claude Code's *interrupt* — it is how you stop a turn you regret
+  // mid-answer. D12 claims it for "close the pane" in every mode, so while the
+  // pane has focus that interrupt is gone: the only way to stop a running turn
+  // from in here is Ctrl+C, which in Claude Code is closer to "exit" than to
+  // "cancel that thought". That is the price of Escape meaning one thing
+  // everywhere in dreamd, and it was decided knowing it.
+  //
+  // Bare Escape only. A modified one is a different key and stays the child's,
+  // which is what keeps `Alt+Escape`-style sequences intact.
+  //
+  // The compromise on the table and deliberately NOT built here: double-Escape,
+  // where the first press goes to the child and a second within a short window
+  // closes the pane. It is a feel question — the window length decides whether
+  // it reads as responsive or as broken — and it needs a human at the keyboard,
+  // not a guess in a diff.
   pty.term.attachCustomKeyEventHandler((e) => {
-    if (e.type === "keydown" && matchCombo(e, keymap.toggle_pane)) {
+    if (e.type !== "keydown") return true;
+    if (matchCombo(e, keymap.toggle_pane)) {
       e.preventDefault();
       togglePane();
+      return false;
+    }
+    if (e.key === "Escape" && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
+      e.preventDefault();
+      closePane();
       return false;
     }
     return true;
@@ -2356,6 +2450,7 @@ function buildTerminal() {
     listen("pty-data", (e) => { if (pty.term) pty.term.write(fromB64(e.payload)); });
     listen("pty-exit", (e) => {
       pty.running = false;
+      $("pty-pane").classList.add("dead");
       const code = e.payload;
       setPaneStatus(code === null || code === undefined ? "exited" : `exited (${code})`);
       if (pty.term) pty.term.write("\r\n\x1b[2m[process exited — ⟳ to restart]\x1b[0m\r\n");
@@ -2365,7 +2460,11 @@ function buildTerminal() {
 
 async function startPaneProcess() {
   setPaneStatus("");
+  $("pty-pane").classList.remove("dead");
   const { rows, cols } = pty.term;
+  // No mode on the wire. `pty_spawn` reads `agent.permission_mode` from the
+  // config it already holds, which is why `commitModeChange` writes the config
+  // *before* it restarts — see tenet 3 and `pty::pane_command`.
   await invoke("pty_spawn", { rows, cols });
   pty.running = true;
 }
@@ -2399,6 +2498,58 @@ async function restartPane() {
     pty.term.focus();
   } catch (e) {
     setPaneStatus(String(e.message || e));
+  }
+}
+
+// ---- permission mode ------------------------------------------------------
+// Claude Code reads its permission mode once, at launch, so changing it here is
+// necessarily a restart — and a restart is a new session, which means the
+// conversation in the scrollback is gone. That cost is the whole reason this is
+// three functions instead of one `onchange`: the change is *staged*, the price
+// is written on screen in a sentence, and it only happens if the reader says so.
+//
+// The preference is written back through `set_config`, the same path the
+// settings panel and `dreamd config set` take, so a mode chosen here is the
+// mode the next launch starts in (workshop 4.6).
+
+/// Selecting a mode stages it. Nothing has been written or restarted yet.
+function stageModeChange() {
+  const next = $("pty-mode").value;
+  const current = (pty.prefs && pty.prefs.permission_mode) || "accept-edits";
+  if (next === current) { cancelModeChange(); return; }
+  pty.staged = next;
+  // A pane with no live child has no conversation to lose, so there is nothing
+  // to warn about — write it and let the next start pick it up.
+  if (!pty.running) { commitModeChange(); return; }
+  $("pty-confirm-text").textContent =
+    `Switch to “${MODE_LABELS[next] || next}”? Claude Code reads the mode at launch, ` +
+    `so this restarts the session and the conversation above is lost.`;
+  $("pty-pane").classList.add("staging");
+}
+
+/// Put the select back and drop the staged mode. The select is the only thing
+/// that moved, so this is the whole of the undo.
+function cancelModeChange() {
+  pty.staged = null;
+  $("pty-pane").classList.remove("staging");
+  if (pty.prefs) $("pty-mode").value = pty.prefs.permission_mode;
+}
+
+/// Write the preference, then restart into it. In that order, and it matters:
+/// `pty_spawn` reads the mode out of the config rather than off the wire, so a
+/// restart that ran first would come up in the *old* mode.
+async function commitModeChange() {
+  const mode = pty.staged;
+  if (!mode) return;
+  pty.staged = null;
+  $("pty-pane").classList.remove("staging");
+  try {
+    await invoke("set_config", { patch: { agent: { permission_mode: mode } } });
+    if (pty.prefs) pty.prefs.permission_mode = mode;
+    if (pty.running || pty.term) await restartPane();
+  } catch (e) {
+    setPaneStatus(String(e.message || e));
+    cancelModeChange();
   }
 }
 
@@ -2516,6 +2667,9 @@ function wireUi() {
   $("btn-pane").onclick = () => togglePane();
   $("pty-close").onclick = () => closePane();
   $("pty-restart").onclick = () => restartPane();
+  $("pty-mode").onchange = () => stageModeChange();
+  $("pty-mode-go").onclick = () => commitModeChange();
+  $("pty-mode-cancel").onclick = () => cancelModeChange();
   // In highlight mode, finishing a text selection auto-starts the flow.
   contentEl.addEventListener("mouseup", () => {
     if (!highlightMode || pending) return;
@@ -2595,12 +2749,11 @@ function isEditable(el) {
 
 function wireKeys() {
   document.addEventListener("keydown", (e) => {
-    // The pane's keys are the child's, without exception — including Escape,
-    // which is how you interrupt Claude Code mid-answer, and including the
-    // combos every branch below claims. `toggle_pane` is the one key dreamd
-    // keeps, and it is claimed inside xterm rather than here: see
+    // The pane's keys are the child's, including every combo the branches below
+    // claim. dreamd keeps exactly two — `toggle_pane` and Escape (D12) — and
+    // both are claimed inside xterm rather than here: see
     // `attachCustomKeyEventHandler` in `buildTerminal` for why this branch
-    // cannot be where that happens.
+    // cannot be where that happens, and what claiming Escape costs.
     if (inTerminal(e.target)) return;
     if (e.key === "Escape") {
       // Recording a keybind swallows Escape as "cancel", not "close panel".
@@ -2620,11 +2773,12 @@ function wireKeys() {
       // and the highlights go with it. There is no separate `:nohlsearch` state
       // to arbitrate, and no way to be left looking at highlights with nothing
       // on screen to explain them.
-      // `pty-pane` is in the list, but only for an Escape pressed *outside* the
-      // terminal — one pressed inside it never reaches here, because the branch
-      // above hands it to the child. So this is the reading pane's Escape
-      // closing a pane it can see, and it hides rather than kills: the session
-      // is still there on the next open.
+      // `pty-pane` is in the list, but this branch only ever sees an Escape
+      // pressed *outside* the terminal — one pressed inside it is claimed by
+      // `attachCustomKeyEventHandler` and never reaches here. Both paths end at
+      // `closePane`, which is what makes D12 one rule rather than two: Escape
+      // closes the pane in every mode, and it hides rather than kills, so the
+      // session is still there on the next open.
       const claimed = ["palette-overlay", "annot-overlay", "confirm-overlay",
                        "settings-overlay", "file-menu", "find-bar", "pty-pane"]
         .some((id) => $(id).classList.contains("open"));

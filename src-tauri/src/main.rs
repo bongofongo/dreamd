@@ -957,8 +957,25 @@ fn pty_spawn(
             let _ = handle.emit(PTY_EXIT, code);
         }
     });
-    *slot = Some(pty::Pty::spawn(rows, cols, &state.root(), sink)?);
+    // Read here rather than accepted as an argument: the mode is a launch flag
+    // chosen from a closed enum in `pty::pane_command`, and taking it off the
+    // wire would put a caller-supplied value on the path to a shell for no gain
+    // (tenet 3). The frontend's mode control writes the config first, then
+    // restarts — so by the time it reaches here the preference *is* the config.
+    let mode = state.config.lock().unwrap().agent.permission_mode;
+    *slot = Some(pty::Pty::spawn(rows, cols, &state.root(), mode, sink)?);
     Ok(true)
+}
+
+/// The pane's preferences, fetched on its *first open* rather than at boot.
+///
+/// Its own command instead of a slice of `get_settings` because that one loads
+/// the theme list and walks the user themes directory — work a terminal has no
+/// use for, on a path whose whole contract is that a session which never opens
+/// the pane pays nothing for it.
+#[tauri::command]
+fn agent_prefs(state: State<AppState>) -> config::Agent {
+    state.config.lock().unwrap().agent.clone()
 }
 
 /// Keystrokes from xterm.js, base64 so a paste of arbitrary bytes survives the
@@ -1253,6 +1270,7 @@ fn main() {
             print_document,
             delete_file,
             open_external,
+            agent_prefs,
             pty_spawn,
             pty_write,
             pty_resize,

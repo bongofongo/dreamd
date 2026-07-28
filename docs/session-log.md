@@ -1,5 +1,32 @@
 # Session log
 
+## 2026-07-28 — t5-agent-pane
+
+- `agent.permission_mode` reaches the child: four compiled-in commands, a `match`
+  over the closed enum, no format string (tenet 3). `pty_spawn` reads the mode
+  from `AppState` rather than off the wire.
+- New `agent_prefs` command — position + mode, fetched on the pane's first open,
+  not at boot.
+- `agent.position` implemented. `#main-wrap` stays a flex column; the right dock
+  is a two-track grid gated on a `body.pane-open` class, because a `display:none`
+  grid item still holds its track open.
+- Restyle per D18/D19: liveness dot, header, terminal padding, themed xterm
+  scrollbar, `cursorAccent`, inactive-selection colour. Grid stays monospace and
+  the 16 ANSI colours are left alone — a reading-coloured red would make a
+  removed diff line look kept.
+- Escape closes the pane from inside the terminal (D12). Costs Claude Code's
+  interrupt; the comment says so. Double-Escape deliberately not built.
+- Permission-mode select in the header: staged, warns that a restart loses the
+  conversation, then writes `set_config` *before* restarting.
+- Verified: `cargo test --all-features` (231), `config_check` (49), `ui-check.mjs`
+  (130), fmt, clippy `-D warnings`, `cargo build`. No perf tier run.
+- Teeth proven by mutation: wrong `match` arm, `$` in a command literal, Escape
+  claim removed, `agent-right` toggle disabled, restart-before-write, silent mode
+  apply, refit removed. The last one is *not* caught — the `ResizeObserver`
+  covers every path the harness can drive; the explicit `fitPane` is belt only.
+- Hand check: everything visual. ui-check asserts what the page knows, not what
+  it paints, and the GUI cannot be driven here.
+
 ## 2026-07-28 — t4-chrome
 
 - Tree drag: handle on `#sidebar`'s right border, width in `--tree-width` on

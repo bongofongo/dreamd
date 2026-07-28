@@ -245,11 +245,12 @@ await page.locator("#st-theme-grid .th-card", { hasText: "gruvbox" }).first()
   .locator("button", { hasText: "Duplicate" }).click();
 await page.waitForTimeout(250);
 check("duplicate switches to the custom tab", await page.locator("#st-pane-custom.sel").isVisible());
-// Six shared type metrics plus the fifteen in the appearance being edited
-// (thirteen colours, --syntax-theme, --stale-text). An exact count on purpose:
-// it is what catches the Custom tab silently listing one block instead of two.
+// Six shared type metrics plus the sixteen in the appearance being edited
+// (thirteen colours, --syntax-theme, --stale-text, and T3's --hl-prior). An
+// exact count on purpose: it is what catches the Custom tab silently listing
+// one block instead of two.
 const varRows = await page.locator("#st-vars .st-var").count();
-check("var editor lists shared + one appearance", varRows === 21, `got ${varRows}`);
+check("var editor lists shared + one appearance", varRows === 22, `got ${varRows}`);
 check(
   "colour vars get a picker",
   (await page.locator('#st-vars input[type="color"]').count()) >= 13,
@@ -321,15 +322,15 @@ await page.waitForTimeout(250);
 check("and its dark block", (await varOf("--bg")) === "#282828", await varOf("--bg"));
 
 // The Custom tab edits one block at a time, so the var list is the shared block
-// plus the appearance being edited — six and fourteen, which is why the count
-// above is still twenty.
+// plus the appearance being edited, which is why the count above holds here
+// too.
 await page.locator("#st-theme-grid .th-card", { hasText: "gruvbox" }).first()
   .locator("button", { hasText: "Duplicate" }).click();
 await page.waitForTimeout(250);
 const blockBtns = await page.locator("#st-block .st-mode-btn").count();
 check("custom tab offers both blocks", blockBtns === 2, `got ${blockBtns}`);
 const darkRows = await page.locator("#st-vars .st-var").count();
-check("editing dark lists shared + dark", darkRows === 21, `got ${darkRows}`);
+check("editing dark lists shared + dark", darkRows === 22, `got ${darkRows}`);
 await page.locator("#st-block .st-mode-btn", { hasText: "light" }).first().click();
 await page.waitForTimeout(150);
 const lightVal = await page.locator("#st-vars .st-var", { hasText: "--bg" })
@@ -859,14 +860,16 @@ check("a burst of events settles to one correct overlay", (await hlCount()) === 
 // chunk-boundary assertion below is real. What it paints is not checked, here
 // or anywhere; `CLAUDE.md` is explicit that this harness asserts what the page
 // knows, not what it shows.
-const pane = await newPage();
-pane.on("pageerror", (e) => results.push("FAIL pageerror (pane): " + e.message));
-pane.on("console", (m) => {
-  if (m.type() === "error") results.push("FAIL console.error (pane): " + m.text());
-});
-await pane.addInitScript(({ base }) => {
+//
+// The stub is a named function rather than an inline arrow because it is
+// installed on two pages: one docked bottom and one docked right, which is the
+// only way to assert `agent.position` actually reaches the layout.
+const paneStub = ({ base, position }) => {
   const calls = [];
   window.__CALLS__ = calls;
+  // What `agent_prefs` answers, and what `set_config` writes into — the two
+  // halves of the mode control's round trip.
+  window.__AGENT__ = { position, permission_mode: "accept-edits" };
   const listeners = new Map();
   window.__EMIT__ = (name, payload) => {
     for (const fn of listeners.get(name) || []) fn({ payload });
@@ -892,6 +895,13 @@ await pane.addInitScript(({ base }) => {
             children: [{ name: "doc.md", is_dir: false, path: "/repo/doc.md", rel: "doc.md", children: [] }],
           };
           case "get_highlights": case "reanchor": case "get_stack": return [];
+          case "agent_prefs": return { ...window.__AGENT__ };
+          // The real one merges into the global config file and hands back the
+          // whole `Settings` payload; the pane only ever reads the write back
+          // out of `agent_prefs`, so recording the patch is the whole contract.
+          case "set_config":
+            if (args.patch && args.patch.agent) Object.assign(window.__AGENT__, args.patch.agent);
+            return { config: {}, local_overrides: [] };
           // No process. This asserts the frontend's half of the contract;
           // `src-tauri/src/pty.rs`'s tests own the process half.
           case "pty_spawn": return true;
@@ -908,11 +918,33 @@ await pane.addInitScript(({ base }) => {
       },
     },
   };
-}, { base });
-await pane.goto(pathToFileURL(join(UI, "index.html")).href);
-await pane.waitForFunction(() => document.getElementById("content").textContent.includes("alpha bravo"));
+};
+
+/// A page with the pane stub installed, docked to `position`, booted as far as
+/// the document.
+async function newPanePage(position) {
+  const p = await newPage();
+  p.on("pageerror", (e) => results.push(`FAIL pageerror (pane/${position}): ` + e.message));
+  p.on("console", (m) => {
+    if (m.type() === "error") results.push(`FAIL console.error (pane/${position}): ` + m.text());
+  });
+  await p.addInitScript(paneStub, { base, position });
+  await p.goto(pathToFileURL(join(UI, "index.html")).href);
+  await p.waitForFunction(() => document.getElementById("content").textContent.includes("alpha bravo"));
+  return p;
+}
+
+const pane = await newPanePage("bottom");
 
 const called = (cmd) => pane.evaluate((c) => window.__CALLS__.filter((k) => k.cmd === c), cmd);
+/// Leave the pane open without pressing a key. Used between assertion groups so
+/// one broken keybind fails one check instead of derailing every later one:
+/// `openPane` is idempotent, so this is a no-op when the pane is already up.
+const ensurePaneOpen = async () => {
+  await pane.evaluate(() =>
+    document.getElementById("pty-pane").classList.contains("open") ? null : openPane());
+  await pane.waitForTimeout(300);
+};
 const lastWrite = async () => {
   const w = await called("pty_write");
   return w.length ? w[w.length - 1].args.data : null;
@@ -953,24 +985,52 @@ await pane.waitForTimeout(150);
 check("a keystroke in the pane does not reach the global keymap", !(await pane.locator("#find-bar.open").isVisible()));
 check("it reaches pty_write instead", (await lastWrite()) === btoa("/"), String(await lastWrite()));
 
-// Escape belongs to the child — it is how Claude Code is interrupted — so it
-// must neither close the pane nor leave view mode.
+// D12: Escape closes the pane, in every mode — including from inside the
+// terminal, where it used to be the child's interrupt. The session survives:
+// closing is hiding, so `pty_kill` must not have been called.
+const killsBeforeEscape = (await called("pty_kill")).length;
+const writesBeforeEscape = (await called("pty_write")).length;
 await pane.keyboard.press("Escape");
 await pane.waitForTimeout(150);
-check("Escape in the pane goes to the child, not to the app", await pane.locator("#pty-pane.open").isVisible());
-check("and is written as ESC", (await lastWrite()) === btoa("\x1b"), String(await lastWrite()));
+check("Escape inside the pane closes it", !(await pane.locator("#pty-pane.open").isVisible()));
+check(
+  "and is not also sent to the child",
+  (await called("pty_write")).length === writesBeforeEscape,
+  String(await lastWrite()),
+);
+check(
+  "and leaves the session running",
+  (await called("pty_kill")).length === killsBeforeEscape,
+);
+
+// Put the pane back open whatever the assertions above found. Every check from
+// here on needs a visible pane, and a keyboard toggle would invert instead of
+// normalise — so a regression in the Escape rule reports as the one failed
+// check it is, rather than as a click timeout six assertions later.
+await ensurePaneOpen();
+check(
+  "reopening after Escape starts no second process",
+  await pane.locator("#pty-pane.open").isVisible() && (await called("pty_spawn")).length === 1,
+  `${(await called("pty_spawn")).length} spawns`,
+);
 
 // The way back out, and the check this feature shipped without at first: xterm
 // calls `stopPropagation` on every key it handles, so the toggle pressed
 // *inside* the pane never reaches `wireKeys` and the pane was a keyboard trap.
 // Remove `attachCustomKeyEventHandler` from `buildTerminal` and this goes red.
+const writesBeforeToggle = (await called("pty_write")).length;
 await pane.keyboard.press("Control+t");
 await pane.waitForTimeout(200);
 check("the toggle key closes the pane from inside it", !(await pane.locator("#pty-pane.open").isVisible()));
-check("and is not also sent to the child", (await lastWrite()) === btoa("\x1b"), String(await lastWrite()));
+check(
+  "and is not also sent to the child",
+  (await called("pty_write")).length === writesBeforeToggle,
+  String(await lastWrite()),
+);
 await pane.keyboard.press("Control+t");
 await pane.waitForTimeout(300);
 check("and reopens it", await pane.locator("#pty-pane.open").isVisible());
+await ensurePaneOpen();
 
 // The reason output is base64 (`pty.rs`'s module docs). Two events, splitting a
 // 4-byte character 3/1: decoded per chunk this is two U+FFFDs.
@@ -1017,6 +1077,148 @@ await pane.keyboard.press("Control+t");
 await pane.waitForTimeout(300);
 check("reopening reuses the session", (await called("pty_spawn")).length === 2 &&
   (await pane.evaluate(() => document.querySelectorAll('script[src="vendor/xterm.js"]').length)) === 1);
+
+// --- the permission-mode control ---
+// The mode is a launch flag, so changing it is a restart and a restart is a new
+// conversation. What is asserted here is that the cost is *shown* — a staged
+// change with a sentence about it — rather than paid silently on `change`.
+check(
+  "the header shows the mode the pane launched in",
+  (await pane.locator("#pty-mode").inputValue()) === "accept-edits",
+  await pane.locator("#pty-mode").inputValue(),
+);
+// Each click below is guarded on the strip actually being up. A mode control
+// that applied on `change` would otherwise take the whole harness down with a
+// click timeout instead of reporting the three checks it broke.
+const clickIfStaged = async (id) => {
+  if (await pane.locator("#pty-confirm").isVisible()) await pane.locator(id).click();
+  await pane.waitForTimeout(300);
+};
+const patchesBefore = (await called("set_config")).length;
+await pane.locator("#pty-mode").selectOption("plan");
+await pane.waitForTimeout(150);
+check("choosing a mode stages it rather than applying it", await pane.locator("#pty-confirm").isVisible());
+check(
+  "and says what the restart costs",
+  /restarts the session/.test(await pane.textContent("#pty-confirm-text")),
+  await pane.textContent("#pty-confirm-text"),
+);
+check("nothing is written until it is confirmed", (await called("set_config")).length === patchesBefore);
+
+await clickIfStaged("#pty-mode-cancel");
+check("declining hides the strip", !(await pane.locator("#pty-confirm").isVisible()));
+check(
+  "and puts the select back",
+  (await pane.locator("#pty-mode").inputValue()) === "accept-edits",
+  await pane.locator("#pty-mode").inputValue(),
+);
+check("and still writes nothing", (await called("set_config")).length === patchesBefore);
+
+const spawnsBeforeMode = (await called("pty_spawn")).length;
+const killsBeforeMode = (await called("pty_kill")).length;
+await pane.locator("#pty-mode").selectOption("plan");
+await pane.waitForTimeout(150);
+await clickIfStaged("#pty-mode-go");
+check(
+  "confirming writes the preference back",
+  (await pane.evaluate(() => window.__AGENT__.permission_mode)) === "plan",
+  await pane.evaluate(() => window.__AGENT__.permission_mode),
+);
+// Order, not just occurrence: `pty_spawn` reads the mode out of the config it
+// already holds, so a restart that ran before the write would come back up in
+// the old mode. This is the assertion that catches that inversion.
+const seq = await pane.evaluate(() =>
+  window.__CALLS__.map((c) => c.cmd).filter((c) => c === "set_config" || c === "pty_spawn"));
+check(
+  "and writes it before restarting into it",
+  seq[seq.length - 2] === "set_config" && seq[seq.length - 1] === "pty_spawn",
+  seq.join(","),
+);
+check(
+  "and the restart is a real one",
+  (await called("pty_spawn")).length === spawnsBeforeMode + 1 &&
+    (await called("pty_kill")).length === killsBeforeMode + 1,
+);
+
+// --- docked right (`agent.position`) --------------------------------------
+// A second page, because position is read once on the pane's first open — the
+// only honest way to check the other value is to boot into it.
+const right = await newPanePage("right");
+await right.keyboard.press("Control+t");
+await right.waitForFunction(() => typeof pty !== "undefined" && !!pty.term, null, { timeout: 15000 })
+  .catch(() => {});
+await right.waitForTimeout(600);
+
+check("the pane mounts docked right", await right.locator("#pty-pane.open").isVisible());
+check(
+  "and the position reached the layout",
+  await right.evaluate(() => document.body.classList.contains("agent-right")),
+);
+const geom = await right.evaluate(() => {
+  const p = document.getElementById("pty-pane").getBoundingClientRect();
+  const d = document.getElementById("content-scroll").getBoundingClientRect();
+  return { px: Math.round(p.x), pw: Math.round(p.width), ph: Math.round(p.height),
+           dr: Math.round(d.right), dh: Math.round(d.height) };
+});
+// Beside the document rather than under it, and full height — the shape a
+// bottom dock cannot produce, so this fails if the grid never applied.
+check(
+  "it sits beside the document, not under it",
+  geom.px >= geom.dr && geom.pw > 200 && geom.ph >= geom.dh,
+  JSON.stringify(geom),
+);
+const rightSpawns = await right.evaluate(() => window.__CALLS__.filter((c) => c.cmd === "pty_spawn"));
+check(
+  "and starts one process sized to the narrower box",
+  rightSpawns.length === 1 && rightSpawns[0].args.cols > 0 && rightSpawns[0].args.rows > 0,
+  JSON.stringify(rightSpawns.map((c) => c.args)),
+);
+// The bottom dock is the same window and the same terminal, so a right dock
+// that never re-fit would come up with the bottom dock's column count.
+check(
+  "the right dock is narrower than the bottom dock it replaced",
+  rightSpawns[0].args.cols < spawns[0].args.cols,
+  `right ${rightSpawns[0].args.cols} vs bottom ${spawns[0].args.cols}`,
+);
+// A position change must re-fit, not leave the child holding the old grid —
+// wrapped lines and box-drawing that no longer meets. Flipped at runtime here
+// because that is the only way to watch the resize actually happen: on a first
+// open the fit is folded into `openPane`, so nothing distinguishes a pane that
+// re-fit from one that was simply built in the right box.
+const resizesBeforeFlip = await right.evaluate(() =>
+  window.__CALLS__.filter((c) => c.cmd === "pty_resize").length);
+await right.evaluate(() => applyPanePosition("bottom"));
+await right.waitForTimeout(400);
+const flipped = await right.evaluate(() => {
+  const r = window.__CALLS__.filter((c) => c.cmd === "pty_resize");
+  return { n: r.length, last: r.length ? r[r.length - 1].args : null,
+           right: document.body.classList.contains("agent-right") };
+});
+check("flipping the dock un-sets the layout class", !flipped.right);
+check(
+  "and tells the child its new grid",
+  flipped.n > resizesBeforeFlip && flipped.last.cols > rightSpawns[0].args.cols,
+  JSON.stringify(flipped),
+);
+await right.evaluate(() => applyPanePosition("right"));
+await right.waitForTimeout(400);
+
+// Escape is the same rule in the other dock (D12), and still not a kill.
+await right.keyboard.press("Escape");
+await right.waitForTimeout(150);
+check("Escape closes the right-docked pane too", !(await right.locator("#pty-pane.open").isVisible()));
+check(
+  "and leaves that session running as well",
+  (await right.evaluate(() => window.__CALLS__.filter((c) => c.cmd === "pty_kill").length)) === 0,
+);
+// The grid must give the whole width back, or a closed pane leaves a column of
+// nothing where it was.
+check(
+  "closing gives the document the full width back",
+  await right.evaluate(() =>
+    Math.round(document.getElementById("content-scroll").getBoundingClientRect().width) ===
+    Math.round(document.getElementById("main-wrap").getBoundingClientRect().width)),
+);
 
 // --- chrome: tree drag, floating outline, root field ----------------------
 // A sixth page, for T4. Everything here is a *structural* assertion — what the
@@ -1099,6 +1301,12 @@ await chrome.addInitScript(({ base }) => {
           case "get_settings": return settings();
           case "get_highlights": case "reanchor": case "get_stack": return [];
           case "stack_query_text": return "";
+          // This page presses every keymap entry, `toggle_pane` among them, so
+          // it opens the pane even though the pane is not what it asserts on.
+          // Without this the pane's first-open fetch reads `position` off null.
+          case "agent_prefs": return { position: "bottom", permission_mode: "accept-edits" };
+          case "pty_spawn": return true;
+          case "pty_write": case "pty_resize": case "pty_kill": return null;
           case "send_stack": return { method: "stub", detail: "nothing to send" };
           case "add_highlight": return "h0123456789abcdef";
           case "set_config":

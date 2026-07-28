@@ -314,21 +314,119 @@
         background: var(--sidebar-bg, #100e17);
       }
       #pty-pane.open { display: flex; }
+
+      /* --- docked right (D-4.2, `agent.position`) ---------------------------
+         `#main-wrap` is a flex column, and it has to stay one: `#find-bar` is
+         its other block child and belongs *under* the document, not beside it.
+         So the right dock is a two-track grid instead, with the reader and the
+         find bar stacked in column 1 and the pane spanning both rows of
+         column 2.
+
+         Gated on `body.pane-open` rather than on the pane's own `.open` class
+         because the grid is declared on the *parent*: a `display: none` pane is
+         still a grid item, so the second track would hold its width open with
+         nothing in it. `:has()` would express this directly; a body class is
+         the same thing without betting on WebKitGTK's version of it.
+
+         `#outline-panel` and `#stack-panel` are `position: absolute` with inset
+         values, so they resolve against `#main-wrap`'s padding box in both
+         layouts and neither gains a grid track. */
+      /* `:not(.view-mode)` because view mode hides the pane with `display:
+         none` while `pane-open` is still true — without it the second track
+         would hold a pane-width strip of nothing open beside the document, in
+         the one mode whose entire job is to give the document the window. */
+      body.agent-right.pane-open:not(.view-mode) #main-wrap {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) clamp(320px, 38%, 720px);
+        grid-template-rows: minmax(0, 1fr) auto;
+      }
+      body.agent-right.pane-open #content-scroll { grid-area: 1 / 1; }
+      body.agent-right.pane-open #find-bar { grid-area: 2 / 1; }
+      body.agent-right.pane-open #pty-pane {
+        grid-area: 1 / 2 / span 2 / auto;
+        flex: initial; min-height: 0; min-width: 0;
+        border-top: none;
+        border-left: 1px solid var(--border, #2e2940);
+      }
+
+      /* --- the header ------------------------------------------------------
+         App chrome, not terminal chrome (D18/D19): the pane should read as a
+         dreamd surface with a terminal inside it rather than as a terminal with
+         a strip glued on. The grid below it is left monospace and its ANSI
+         colours are left entirely to Claude Code — a restyled red/green diff is
+         the one thing here that could actively mislead. */
       #pty-head {
-        display: flex; align-items: center; gap: 8px;
-        padding: 4px 6px 4px 10px;
+        display: flex; align-items: center; gap: 10px;
+        flex: 0 0 auto;
+        padding: 7px 8px 7px 12px;
         border-bottom: 1px solid var(--border, #2e2940);
-        font-size: 12px; opacity: 0.75;
+        font-size: 12px;
         user-select: none; -webkit-user-select: none;
       }
-      #pty-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      #pty-dot {
+        flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%;
+        background: var(--accent, #a48cf5);
+        box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent, #a48cf5) 18%, transparent);
+      }
+      /* An exited child dims the dot to the border colour and drops the halo —
+         the same information the status text spells out, at a glance. */
+      #pty-pane.dead #pty-dot { background: var(--border, #2e2940); box-shadow: none; }
+      #pty-title {
+        flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        font-weight: 600; letter-spacing: 0.02em; opacity: 0.85;
+      }
       /* Reads "exited (1)" when the child is gone, and nothing at all while it
          is running — a healthy pane says nothing. */
       #pty-status { font-family: var(--font-mono, ui-monospace, Menlo, monospace); font-size: 11px; opacity: 0.7; }
+      #pty-mode {
+        flex: 0 0 auto; font: inherit; font-size: 11px;
+        padding: 2px 4px; border-radius: 5px;
+        background: var(--btn-bg, #1f1c2b); color: inherit;
+        border: 1px solid var(--border, #2e2940);
+        opacity: 0.8; cursor: pointer;
+      }
+      #pty-mode:hover, #pty-mode:focus-visible { opacity: 1; border-color: var(--accent, #a48cf5); }
+
+      /* The mode-change confirmation strip. Hidden until a change is staged;
+         `display: none` rather than a height transition, so a pane that never
+         changes mode never lays it out. */
+      #pty-confirm {
+        display: none; align-items: center; gap: 8px;
+        flex: 0 0 auto; padding: 7px 8px 7px 12px;
+        font-size: 12px;
+        border-bottom: 1px solid var(--border, #2e2940);
+        background: var(--hover, #292435);
+      }
+      #pty-pane.staging #pty-confirm { display: flex; }
+      #pty-confirm-text { flex: 1; min-width: 0; opacity: 0.85; }
+      button.pty-cta {
+        flex: 0 0 auto; font: inherit; font-size: 11px;
+        padding: 3px 9px; border-radius: 5px; cursor: pointer;
+        background: var(--btn-bg, #1f1c2b); color: inherit;
+        border: 1px solid var(--border, #2e2940);
+      }
+      button.pty-cta:hover { border-color: var(--accent, #a48cf5); }
+      #pty-mode-go { border-color: var(--accent, #a48cf5); color: var(--accent, #a48cf5); }
+
       /* The terminal fills what is left. `min-height: 0` because a flex child
          defaults to `min-height: auto`, which lets xterm's own sizing push the
-         dock taller than its 40% instead of scrolling inside it. */
-      #pty-term { flex: 1; min-height: 0; padding: 4px 0 0 8px; }
+         dock taller than its 40% instead of scrolling inside it.
+
+         The padding is the single largest visual payoff per line here: xterm
+         paints its grid flush to the element's edges, and a terminal whose
+         first column touches a border is the thing that reads as "embedded
+         console" no matter what the header does. */
+      #pty-term { flex: 1; min-height: 0; min-width: 0; padding: 10px 6px 8px 14px; }
+      /* xterm's scroller is a plain overflowing div, so it gets the platform
+         scrollbar unless told otherwise — a light-grey macOS bar over a dark
+         palette is the most conspicuous un-themed pixel in the pane. */
+      #pty-term .xterm-viewport { scrollbar-width: thin; }
+      #pty-term .xterm-viewport::-webkit-scrollbar { width: 8px; }
+      #pty-term .xterm-viewport::-webkit-scrollbar-track { background: transparent; }
+      #pty-term .xterm-viewport::-webkit-scrollbar-thumb {
+        background: var(--border, #2e2940); border-radius: 4px;
+      }
+      #pty-term .xterm-viewport::-webkit-scrollbar-thumb:hover { background: var(--accent, #a48cf5); }
 
       /* The `::highlight()` rules that paint matches are deliberately NOT here.
          They are written into `#find-css` the first time the bar is opened —
@@ -908,10 +1006,33 @@
              opens a terminal parses none of it. See `openPane` in app.js. -->
         <div id="pty-pane">
           <div id="pty-head">
+            <!-- Lit while a child is alive, dim when it has exited. The status
+                 text beside it stays the precise answer; this is the one you
+                 read without reading. -->
+            <span id="pty-dot" aria-hidden="true"></span>
             <span id="pty-title">Claude Code</span>
+            <!-- The permission mode Claude Code launches in. Changing it is a
+                 restart, because the mode is a launch flag — so the change is
+                 staged into `#pty-confirm` below rather than applied, and the
+                 select snaps back if you decline. -->
+            <select id="pty-mode" aria-label="Permission mode" data-tip="Permission mode — changing it restarts the session">
+              <option value="default">ask each time</option>
+              <option value="accept-edits">accept edits</option>
+              <option value="plan">plan only</option>
+              <option value="bypass-permissions">no prompts</option>
+            </select>
             <span id="pty-status" aria-live="polite"></span>
             <button id="pty-restart" class="icon" data-tip="Restart the pane's process">⟳</button>
             <button id="pty-close" class="icon" data-tip="Hide pane (the process keeps running)" data-tip-key="toggle_pane">✕</button>
+          </div>
+          <!-- Shown only while a mode change is staged. It exists so that
+               "restarting loses the conversation" is a sentence the reader is
+               shown before it happens, rather than something they infer from an
+               empty scrollback afterwards. -->
+          <div id="pty-confirm" role="alert">
+            <span id="pty-confirm-text"></span>
+            <button id="pty-mode-go" class="pty-cta">Restart</button>
+            <button id="pty-mode-cancel" class="pty-cta">Keep this session</button>
           </div>
           <div id="pty-term"></div>
         </div>
