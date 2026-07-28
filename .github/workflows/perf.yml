@@ -318,10 +318,18 @@ jobs:
     name: install-smoke (${{ matrix.image }})
     steps:
       # Xvfb everywhere; a GUI stack only where the artifact is not expected to
-      # bring its own. bash is explicit because debian's /bin/sh is dash and
-      # smoke.sh uses `compgen`; the ubuntu and debian images already have it,
-      # but naming it costs nothing and documents the requirement.
+      # bring its own.
+      #
+      # `shell: bash` on every step here is load-bearing, not decoration. Inside
+      # a container the runner resolves the default shell to `sh`, and on Arch
+      # and Fedora that is a symlink to bash while on Ubuntu and Debian it is
+      # dash — so the first run of this job passed on two arms and died on the
+      # other two with `illegal option -o pipefail`, from a `set` line that had
+      # nothing to do with the artifact under test. Naming the shell is what
+      # makes the four arms differ only in the distro, which is the entire point
+      # of running four.
       - name: Runtime dependencies
+        shell: bash
         run: |
           set -eux
           case "${{ matrix.image }}" in
@@ -345,6 +353,7 @@ jobs:
       # upload-artifact does not carry the executable bit, so restore it on the
       # two things that need one. The tarball keeps its own modes internally.
       - name: Install and launch
+        shell: bash
         env:
           SMOKE_EXPECT: window
           SMOKE_TIMEOUT: "120"

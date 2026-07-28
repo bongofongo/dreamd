@@ -55,6 +55,14 @@ echo "==> dreamd $VERSION for $TARGET"
 
 ARGS=(--target "$TARGET" --bundles "$BUNDLES" --ci)
 [[ -n "${NO_SIGN:-}" ]] && ARGS+=(--no-sign)
+# VERBOSE=1 is the only way to see *why* linuxdeploy failed. The bundler runs it
+# through `cmd.output()` — stderr captured and dropped — whenever its log level
+# is Error, and only switches to the variant that surfaces the child's output
+# when it is not. So the bare `failed to run linuxdeploy` above is not a terse
+# error, it is the complete one, and a rerun with this set is the only way to
+# turn it into a sentence. canary.yml sets it always, because a scheduled job
+# nobody is watching gets exactly one chance to explain itself.
+[[ -n "${VERBOSE:-}" ]] && ARGS+=(--verbose)
 ( cd "$ROOT" && cargo tauri build "${ARGS[@]}" )
 
 mkdir -p "$DIST"

@@ -118,7 +118,17 @@ enough to emit `SHT_RELR`. linuxdeploy's bundled `strip` cannot parse
 `.relr.dyn` and fails on every system library it copies in, and Tauri swallows
 its stderr, so the only symptom is `failed to run linuxdeploy`. `ubuntu-22.04`
 predates it, so `release.yml` is unaffected and must not set it. A rerun after a
-failure needs the `bundle/` directory deleted first.
+failure needs the `bundle/` directory deleted first. Still true on Arch as of
+2026-07-28: `NO_SIGN=1 NO_STRIP=1 packaging/build.sh x86_64-unknown-linux-gnu`
+produces all three artifacts on the development box.
+
+**`failed to run linuxdeploy` is the whole error, not a summary of one.**
+tauri-bundler runs linuxdeploy through `cmd.output()` — stderr captured and
+discarded — whenever its own log level is Error, and only switches to the
+variant that surfaces the child's output above that. `VERBOSE=1` on `build.sh`
+appends `--verbose` and is the only way to turn that string into a sentence;
+`canary.yml` sets it unconditionally, because a scheduled job nobody is
+watching gets one chance to explain itself. Reach for it before theorising.
 
 **Releases are signed and notarized.** Turned on 2026-07-26; `packaging/SIGNING.md`
 is the runbook, including rotation and back-out. The identity is
@@ -398,7 +408,11 @@ highlights from a corpus fixture.
   `APPIMAGE_EXTRACT_AND_RUN=1` on top, because linuxdeploy is an AppImage and a
   container has no FUSE. **Scheduled, not per-push, and it gates nothing** — the
   failure it watches for is "the distro moved", not "this commit broke it", so a
-  red canary is a message about Arch before it is one about the tree. Rust is
+  red canary is a message about Arch before it is one about the tree. Its first
+  run (2026-07-28) failed to bundle while the same command succeeded on the
+  development box, which is the third reading and the one to check next: not
+  "Arch moved" but "the *container* lacks something a real Arch install has".
+  Distinguishing those is what `VERBOSE=1` is there for. Rust is
   pinned to 1.97.1 like `ci.yml`, leaving the system libraries as the only
   moving part. It also *launches* twice — `smoke.sh` against a `--features perf`
   build, which is the only place a rolling webkit2gtk is asked to bring a window

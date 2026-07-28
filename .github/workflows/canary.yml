@@ -137,10 +137,18 @@ jobs:
       # build.sh rather than a raw `cargo tauri build` because build.sh *is* the
       # release pipeline, and it asserts what reaches dist/ — the artifacts the
       # cask links to and the PKGBUILD hashes.
+      #
+      # VERBOSE is not a debugging leftover. tauri-bundler runs linuxdeploy
+      # through `cmd.output()` and throws the captured stderr away unless its own
+      # log level is above Error, so a failure here reports the bare string
+      # `failed to run linuxdeploy` and nothing else — which is precisely what
+      # this job's first run produced, and it was not enough to act on. A
+      # scheduled job nobody is watching gets one chance to explain itself.
       - name: Bundle
         env:
           NO_SIGN: "1"
           NO_STRIP: "1"
+          VERBOSE: "1"
           APPIMAGE_EXTRACT_AND_RUN: "1"
         run: packaging/build.sh x86_64-unknown-linux-gnu
 
