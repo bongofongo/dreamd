@@ -130,6 +130,46 @@ pub struct Highlight {
     pub origin: Origin,
     /// `Some` once an agent has answered. The evidence survives resolution.
     pub resolved: Option<Resolution>,
+    /// Unix seconds of the send that put this mark in front of an agent, and
+    /// `None` once it is answered. It sits beside `state` rather than inside it
+    /// because a passage can go stale *while* it is out with the agent, and a
+    /// single enum would have to pick one of the two and would pick wrong.
+    ///
+    /// Persisted, so pending survives a restart. It is the container-wide
+    /// `#[serde(default)]` that lets a marks file written before this field
+    /// existed load unchanged.
+    pub sent_at: Option<u64>,
+    /// Was this mark made in an earlier session? Not a property of the mark but
+    /// of *when it was read*: [`crate::marks_file::admit`] sets it on everything
+    /// it admits, and nothing else ever does. That is the entire implementation
+    /// of "highlighted in a previous session" — no clock, no session id, no
+    /// schema field.
+    ///
+    /// The serde attributes are not `skip`, and the difference matters, because
+    /// **one derive serves two boundaries**: the marks file and the IPC reply the
+    /// frontend paints from. A plain `skip` would keep it off disk and out of
+    /// the frontend's hands in the same stroke, leaving the fade with nothing to
+    /// read. So instead:
+    ///
+    /// `skip_deserializing` — a marks file, hand-edited or copied, can never
+    /// assert that a mark is prior; only having been admitted decides that.
+    ///
+    /// `skip_serializing_if` — `false` is the overwhelming majority and stays
+    /// off the wire entirely, which is also why the frontend must treat an
+    /// absent key as false rather than testing for its presence.
+    ///
+    /// Off disk it is kept by [`crate::marks_file::doc_from`], which clears the
+    /// flag on the copy it writes; the writer has no business carrying a flag
+    /// about the reader.
+    #[serde(skip_deserializing, skip_serializing_if = "is_false")]
+    pub prior: bool,
+}
+
+/// `skip_serializing_if` hands its predicate a reference; `bool`'s own `Not`
+/// takes it by value.
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 /// A queued (highlight + annotation) pair, as sent to the frontend stack panel.
@@ -240,20 +280,52 @@ impl Store {
             annotation: None,
             origin,
             resolved: None,
+            sent_at: None,
+            prior: false,
         });
         id
     }
 
     /// Attach/replace an annotation and enqueue the pair on the stack.
+    ///
+    /// Two rules ride along, and both are about what annotating *means*:
+    ///
+    /// It clears `prior`. The fade a prior mark carries reads as "untouched this
+    /// sitting", and annotating is touching, so the mark returns to full
+    /// saturation.
+    ///
+    /// It does **not** clear `sent_at`. Re-annotating a mark that is out with an
+    /// agent does not retract the question already asked — it stacks a second
+    /// one about the same passage, which is what the re-push below produces
+    /// once [`mark_sent`](Store::mark_sent) has taken the id off the stack.
     pub fn set_annotation(&mut self, id: &str, text: String) -> bool {
         let Some(h) = self.highlights.iter_mut().find(|h| h.id == id) else {
             return false;
         };
         h.annotation = Some(text);
+        h.prior = false;
         if !self.stack.iter().any(|x| x == id) {
             self.stack.push(id.to_string());
         }
         true
+    }
+
+    /// Record that `ids` have gone to an agent: stamp `sent_at` and take exactly
+    /// those ids off the stack.
+    ///
+    /// Exactly those — not the whole stack. `Send selected` sends a subset, and
+    /// clearing everything would silently drop questions that were never asked.
+    /// The highlights themselves all survive; only the queue shrinks.
+    pub fn mark_sent(&mut self, ids: &[Id]) {
+        let at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        for h in self.highlights.iter_mut() {
+            if ids.iter().any(|id| id == &h.id) {
+                h.sent_at = Some(at);
+            }
+        }
+        self.stack.retain(|x| !ids.iter().any(|id| id == x));
     }
 
     pub fn remove(&mut self, id: &str) {
@@ -286,6 +358,9 @@ impl Store {
             return false;
         };
         h.resolved = Some(Resolution { note, at });
+        // The question has been answered, so it is no longer out with anyone —
+        // this is what makes the pending glyph go away.
+        h.sent_at = None;
         self.remove_from_stack(id);
         true
     }
@@ -720,6 +795,134 @@ mod tests {
             store.get(&ids[0]).expect("present").line_start,
             2,
             "resolving cleared the reanchor gate and paid for a second scan"
+        );
+    }
+
+    // ---- pending, and prior ------------------------------------------------
+
+    #[test]
+    fn a_mark_made_this_session_is_neither_prior_nor_pending() {
+        // The baseline the rest of this section is measured against. `prior` is
+        // set by `marks_file::admit` and by nothing else, so a mark that never
+        // touched disk carries neither flag.
+        let (mut store, ids) = store_with("alpha\n", &["alpha"]);
+        store.set_annotation(&ids[0], "why?".into());
+        let h = store.get(&ids[0]).expect("present");
+        assert!(!h.prior);
+        assert_eq!(h.sent_at, None);
+    }
+
+    #[test]
+    fn mark_sent_stamps_the_marks_and_clears_only_what_it_sent() {
+        // D17: `Send selected` sends a subset. Clearing the whole stack would
+        // silently discard questions that were never asked — and the order of
+        // what is left is the order they were queued in, which is the order the
+        // agent should eventually see them in.
+        let (mut store, ids) = store_with("alpha\nbeta\ngamma\n", &["alpha", "beta", "gamma"]);
+        for (i, text) in ["a", "b", "c"].iter().enumerate() {
+            store.set_annotation(&ids[i], (*text).to_string());
+        }
+
+        store.mark_sent(&[ids[1].clone()]);
+
+        assert_eq!(
+            store
+                .stack_pairs()
+                .iter()
+                .map(|p| p.highlight.id.clone())
+                .collect::<Vec<_>>(),
+            vec![ids[0].clone(), ids[2].clone()],
+            "the unsent entries stand, in order"
+        );
+        assert!(
+            store.get(&ids[1]).expect("present").sent_at.is_some(),
+            "the sent mark is stamped"
+        );
+        for i in [0, 2] {
+            assert_eq!(
+                store.get(&ids[i]).expect("present").sent_at,
+                None,
+                "an unsent mark must not be stamped"
+            );
+        }
+    }
+
+    #[test]
+    fn a_sent_mark_survives_the_send() {
+        // The stack shrinks; the highlight list does not. A send is not a
+        // delete — the passage stays anchored so the answer has something to
+        // land on.
+        let (mut store, ids) = store_with("alpha\n", &["alpha"]);
+        store.set_annotation(&ids[0], "why?".into());
+        store.mark_sent(&ids);
+        assert!(store.stack_pairs().is_empty());
+        let h = store.get(&ids[0]).expect("the highlight survives");
+        assert_eq!(h.quote, "alpha");
+        assert_eq!(h.annotation.as_deref(), Some("why?"));
+        assert!(h.sent_at.expect("stamped") > 0);
+    }
+
+    #[test]
+    fn mark_sent_ignores_an_id_it_does_not_know() {
+        let (mut store, ids) = store_with("alpha\n", &["alpha"]);
+        store.set_annotation(&ids[0], "why?".into());
+        store.mark_sent(&["h0000000000000000".to_string()]);
+        assert_eq!(store.stack_pairs().len(), 1, "the queue is untouched");
+        assert_eq!(store.get(&ids[0]).expect("present").sent_at, None);
+    }
+
+    #[test]
+    fn resolve_clears_the_pending_stamp() {
+        // What makes the pending glyph go away. `resolve` is the only thing
+        // that clears `sent_at`; nothing times it out.
+        let (mut store, ids) = store_with("alpha\n", &["alpha"]);
+        store.set_annotation(&ids[0], "why?".into());
+        store.mark_sent(&ids);
+        assert!(store.get(&ids[0]).expect("present").sent_at.is_some());
+
+        assert!(store.resolve(&ids[0], Some("because".into())));
+        let h = store.get(&ids[0]).expect("the highlight survives");
+        assert_eq!(h.sent_at, None, "answered is not pending");
+        assert_eq!(h.quote, "alpha", "the evidence is untouched");
+    }
+
+    #[test]
+    fn re_annotating_revives_a_prior_mark() {
+        // D13. The fade means "untouched this sitting", so annotating — which
+        // is touching — returns the mark to full saturation.
+        let (mut store, ids) = store_with("alpha\n", &["alpha"]);
+        store.highlights.iter_mut().for_each(|h| h.prior = true);
+        store.set_annotation(&ids[0], "why?".into());
+        assert!(!store.get(&ids[0]).expect("present").prior);
+    }
+
+    #[test]
+    fn re_annotating_a_pending_mark_mints_a_second_question() {
+        // D14. The question already out with the agent is not retracted — the
+        // stamp stays — and the passage is queued again, so the send that
+        // follows asks a second thing about the same lines.
+        let (mut store, ids) = store_with("alpha\nbeta\n", &["alpha", "beta"]);
+        store.set_annotation(&ids[0], "why?".into());
+        store.mark_sent(&[ids[0].clone()]);
+
+        store.set_annotation(&ids[1], "unrelated".into());
+        store.set_annotation(&ids[0], "and also why?".into());
+
+        let h = store.get(&ids[0]).expect("present");
+        assert!(
+            h.sent_at.is_some(),
+            "re-annotating must not retract the question already asked"
+        );
+        assert_eq!(h.annotation.as_deref(), Some("and also why?"));
+        assert_eq!(
+            store
+                .stack_pairs()
+                .iter()
+                .map(|p| p.highlight.id.clone())
+                .collect::<Vec<_>>(),
+            vec![ids[1].clone(), ids[0].clone()],
+            "the fresh entry goes to the back of the queue, behind what was \
+             already waiting"
         );
     }
 
