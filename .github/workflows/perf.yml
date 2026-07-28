@@ -71,13 +71,16 @@ jobs:
         with:
           fetch-depth: 0
 
+      # No libxdo-dev: `libxdo` appears nowhere in Cargo.lock, so nothing here
+      # links it. ci.yml dropped it on 2026-07-27 and this file was missed; see
+      # the longer note there before adding it back.
       - name: Linux system dependencies
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev \
-            libssl-dev libxdo-dev patchelf file jq
+            libssl-dev patchelf file jq
           # GNU time is a separate package and is not the shell builtin; without
           # it perf/scripts/startup.sh reports peak RSS as null rather than
           # guessing. Only the pass and deep tiers reach that script, but
@@ -211,13 +214,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # No libxdo-dev, for the reason given on the bench job above.
       - name: Linux system dependencies
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev \
-            libssl-dev libxdo-dev patchelf file
+            libssl-dev patchelf file
 
       - uses: dtolnay/rust-toolchain@stable
         with:
