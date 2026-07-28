@@ -1,5 +1,132 @@
 # Session log
 
+## 2026-07-28 — CI that runs the program
+
+The session opened with a question: if a commit passes CI, will it work when
+pulled onto the Arch box? The answer was no, and the interesting part was *why* —
+nothing in the repo had ever started dreamd. It ends with CI that launches the
+program on Linux and installs its artifacts on four distros that did not build
+them.
+
+### What happened
+
+1. **Landed the two things sitting in the working tree.** `src-tauri/src/webkit.rs`
+   sets `WEBKIT_DISABLE_DMABUF_RENDERER` at the top of `main`, before any thread
+   exists: WebKitGTK's DMA-BUF renderer allocates through GBM, which fails on the
+   NVIDIA proprietary driver, and on Wayland the malformed `wl_buffer` is a
+   *protocol* error, so the compositor drops the connection and GDK aborts inside
+   GTK init with nothing to catch. Detection is a probe of
+   `/proc/driver/nvidia/version` rather than a `#[cfg]`, so the module compiles
+   and runs identically everywhere and answers "no" on macOS and on Mesa. An
+   existing value always wins, including `=0`. `.github/workflows/canary.yml`
+   landed alongside it.
+
+2. **Audited what green CI actually guaranteed, and it was less than it looked.**
+   Nothing launched the program on any runner; `ui-check.mjs` drives Chromium
+   behind a stub of the Rust commands while the machine runs WebKitGTK 2.52;
+   `package-smoke` only asserted the artifacts were non-empty files; and every
+   Linux runner is `ubuntu-22.04`, the exact inverse of a rolling development box.
+   A commit that compiled, tested green and aborted inside GTK init would have
+   been green everywhere.
+
+3. **Wrote a plan (P0–P5) and implemented the first two tiers.** The organising
+   insight was that `ui/app.js:149` emits a `first_paint` perf mark that is
+   unreachable unless GTK initialised, wry built a real WebKitGTK webview,
+   `frontendDist` loaded, the CSP admitted both classic scripts and IPC completed
+   in both directions — the whole startup path in one grep, and the instrumentation
+   already existed.
+
+4. **`packaging/smoke.sh`.** Launches dreamd under Xvfb in its own fixture repo
+   with `XDG_CONFIG_HOME` pointed at a scratch directory, so tenet 2 stays true of
+   a CI run. `SMOKE_EXPECT=paint` waits for `first_paint` and needs `--features
+   perf`; `SMOKE_EXPECT=window` is for a release artifact, which carries no
+   instrumentation and must be smoked as shipped — the MCP socket appearing (bound
+   in `.setup`, hence downstream of a window), a `WebKit*` descendant process, and
+   survival. It proves a window, not a page, and says so. Needs nothing but bash,
+   coreutils and `/proc`, which is what lets it run in a bare container beside a
+   downloaded artifact. Verified locally in both modes against the real binary and,
+   as a negative control, against `/bin/sh -c 'sleep 300'`, which it correctly
+   refuses to call "up".
+
+5. **Wired it into three workflows.** `ci.yml` gained a `launch` job with two arms,
+   with and without the DMA-BUF renderer; the accelerated arm is
+   `continue-on-error` because a hosted runner has no GPU. `canary.yml` launches
+   against a rolling webkit and then against the AppImage it just bundled.
+   `perf.yml` gained `install-smoke`: the Linux bundles built on `ubuntu-22.04`,
+   uploaded with `smoke.sh` riding along (the containers have no checkout), then
+   installed and launched in `ubuntu:24.04`, `debian:12`, `archlinux:latest` and
+   `fedora:latest`. The deb goes through `apt-get install ./`, so the bundler's
+   `Depends` is checked by being resolved. The glibc 2.35 floor was an argument;
+   it is now an assertion.
+
+6. **Three rounds of real failures, each diagnosed from evidence.** See below.
+
+7. **Dropped `libxdo-dev` from `perf.yml`**, which `ci.yml` had removed on
+   2026-07-27 while this file was missed — so CLAUDE.md's claim that it was gone
+   from both runners was true of one of them. `libxdo` appears nowhere in
+   `Cargo.lock`, and the new `launch` job starts the GUI on a runner that never
+   installs it, so the runtime side is covered too now.
+
+### Mistakes & deviations
+
+- **`set -euxo pipefail` in a container.** My own bug, and it failed in the most
+  misleading way possible: inside a container the runner resolves the default
+  shell to `sh`, which Arch and Fedora symlink to bash and Ubuntu and Debian point
+  at dash. Two arms passed and two died on `illegal option -o pipefail`, from a
+  `set` line that had nothing to do with the artifact under test. `shell: bash`
+  now makes the four arms differ only in the distro, which is the point of four.
+
+- **Assumed the canary's `failed to run linuxdeploy` was the `SHT_RELR` failure it
+  was written to watch for. It was not.** Running the same command on the
+  development box produced all three artifacts, which ruled out distro drift and
+  left "the container lacks something a real Arch install has". Guessed
+  `squashfs-tools`, then killed that theory by noticing it is absent locally while
+  the local bundle succeeds. Stopped guessing at that point and made the failure
+  legible instead: `build.sh` gained `VERBOSE=1`, which appends `--verbose` so
+  tauri-bundler stops discarding linuxdeploy's stderr, and `canary.yml` sets it
+  unconditionally. It named the real problem on first use —
+  `cp: cannot stat '/usr/lib/gdk-pixbuf-2.0/2.10.0'`. No package declares that
+  directory: gdk-pixbuf2 compiles the common loaders in and ships none, modern
+  librsvg no longer installs one, `loaders.cache` is generated by a pacman hook and
+  owned by nothing, and on this machine the path exists only because `libwmf`
+  happens to be installed. A container built from the README's dependency line has
+  no `/usr/lib/gdk-pixbuf-2.0` at all. The lesson is recorded in CLAUDE.md as the
+  *third* reading of a red canary, alongside "Arch moved" and "this commit broke
+  it".
+
+- **`debian:12` then died on `xauth command not found`** — `xauth` is a
+  *Recommends* of `xvfb`, so `--no-install-recommends` drops it, while
+  `ubuntu:24.04` happened to have it and passed. Exactly the kind of difference
+  four arms exist to surface.
+
+- **Burned the unauthenticated GitHub API budget** with a watcher polling every
+  30s across three runs, which cost 60 requests in six minutes and left the next
+  hour blind. `gh` is installed and authenticated now; it read the canary's log
+  directly and ended the guessing in one command.
+
+### State
+
+`cargo build` clean, 208 tests pass. On `e0fee5c` every workflow was green: `ci`
+(both `launch` arms, `rust` on both platforms, `ui`), `perf` (all four
+`install-smoke` arms, both `package-smoke` arms, both `bench` arms) and `canary`,
+whose step list confirms it launched both the instrumented build and the AppImage
+it had just bundled. `ci` is green on `c25dec0`; the `perf` run for that commit —
+the one that proves the `libxdo-dev` removal against a full Linux bundle — was
+still in flight at wrap-up.
+
+**`perf-pass` was deliberately not run.** The only `src-tauri/` change this session
+is one `Path::exists()` at process start, and `perf/baseline.json` is macOS-only —
+`run.sh` refuses a comparison off Darwin, so five minutes here would have produced
+numbers with nothing to compare them against. Nothing about the change is on a
+measured path beyond a single stat during cold start.
+
+Open, and named in the files rather than left implicit: the AppImage's
+self-containment is still unchecked, because every `install-smoke` arm has webkit
+installed by the time it runs; the NVIDIA/Wayland abort itself remains a hand-check,
+since no hosted runner has the driver or a compositor; and P1–P5 of the plan
+(desktop-integration invariants, a `tauri-driver` job against real WebKitGTK, a
+headless-Wayland arm, CLI-surface coverage, `dreamd --doctor`) are outstanding.
+
 ## 2026-07-27 — the Linux pipeline, actually run
 
 The previous session wrote the Linux half and shipped it untested — CI was to be

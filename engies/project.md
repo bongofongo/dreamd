@@ -2,7 +2,7 @@
 
 *This page is the daily landing spot for everyone on the team. It's kept up to date
 automatically and written so that you can be away for a week, read this in five
-minutes, and know exactly where things stand. Last updated: 2026-07-27.*
+minutes, and know exactly where things stand. Last updated: 2026-07-28.*
 
 ## What we're building
 
@@ -234,6 +234,31 @@ causes were wrong.
   that is where its users look.
 
 ## Recent updates
+
+- **2026-07-28** — **The automatic checks now start the program, which they had
+  never done.** The entry below ends on the observation that "the checks pass" and
+  "a person can install it and use it" are different questions. This session
+  closed most of that gap. Until now every check stopped short of the one thing a
+  user does first: none of them opened dreamd. A change could compile, pass all
+  208 tests, and still fail to put a window on the screen — and nothing would have
+  noticed until somebody downloaded it.
+
+  Two things changed. Dreamd now survives starting up on Linux machines with
+  NVIDIA graphics cards, where it previously died before its window appeared, with
+  an error message that came from deep inside the graphics system and could not be
+  caught or reported. And the checks now launch the program on every change, then
+  take the finished downloads and *install and run them* on four different Linux
+  distributions that did not build them — which is the closest an automatic check
+  can get to being a user.
+
+  Getting there took three rounds of failures, all in the checks rather than in
+  dreamd itself, and one of them is worth recording: a packaging step failed with
+  a one-line error that gave no reason, and the fix turned out to be teaching the
+  packaging tool to explain itself rather than guessing at the cause. It then named
+  the real problem immediately. Two things are still checked only by hand, and are
+  written down as such rather than assumed: whether the all-in-one Linux download
+  really carries everything it needs, and the NVIDIA startup fix itself, which
+  needs hardware no automated machine has.
 
 - **2026-07-27** — **The Linux version was run on a real Linux machine for the
   first time, and three things were wrong.** The entry below describes making
