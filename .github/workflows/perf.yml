@@ -267,3 +267,117 @@ jobs:
           done
           ls -la dist/
           exit "$fail"
+
+      # Hand the Linux bundles to install-smoke below. smoke.sh rides along in
+      # the same artifact on purpose: the containers that consume this have no
+      # checkout — several of them have no git — and shipping the one script
+      # they need is cheaper than teaching four package managers to install one.
+      - name: Upload Linux artifacts
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-bundles
+          path: |
+            dist/*
+            packaging/smoke.sh
+          retention-days: 3
+
+  # The question package-smoke cannot answer: does the thing it built *run*, on
+  # a machine that is not the one that built it?
+  #
+  # The Linux artifacts are built on ubuntu-22.04, pinned so the ELF links glibc
+  # 2.35 and therefore runs on everything newer. That claim has always been an
+  # argument rather than an assertion — nothing ever executed the binary off the
+  # build image. These four containers are the assertion, and they are chosen to
+  # be the *other* end of the range: 24.04 and bookworm for the ordinary case,
+  # Arch for a rolling glibc and a webkit two years ahead of the build image, and
+  # Fedora for a distro whose library layout agrees with neither.
+  #
+  # Each runs its natural artifact and then the AppImage, so every bundle the
+  # release publishes is launched somewhere. The deb arms deliberately install
+  # *no* webkit beforehand: `apt-get install ./dreamd.deb` must pull it through
+  # the package's own Depends, which is the only check that field has ever had.
+  #
+  # Not covered: the AppImage's self-containment claim. Every container here has
+  # webkit installed by the time it runs, either by the deb or by the runtime
+  # step, so an AppImage that had quietly stopped bundling its libraries would
+  # still pass. Doing that honestly needs a bare container and a fifth arm.
+  install-smoke:
+    needs: package-smoke
+    runs-on: ubuntu-latest
+    container: ${{ matrix.image }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { image: "ubuntu:24.04", kind: deb }
+          - { image: "debian:12", kind: deb }
+          - { image: "archlinux:latest", kind: tar }
+          - { image: "fedora:latest", kind: tar }
+    name: install-smoke (${{ matrix.image }})
+    steps:
+      # Xvfb everywhere; a GUI stack only where the artifact is not expected to
+      # bring its own. bash is explicit because debian's /bin/sh is dash and
+      # smoke.sh uses `compgen`; the ubuntu and debian images already have it,
+      # but naming it costs nothing and documents the requirement.
+      - name: Runtime dependencies
+        run: |
+          set -eux
+          case "${{ matrix.image }}" in
+            ubuntu*|debian*)
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get update
+              apt-get install -y --no-install-recommends bash xvfb ca-certificates
+              ;;
+            archlinux*)
+              pacman -Syu --noconfirm --needed bash webkit2gtk-4.1 gtk3 xorg-server-xvfb
+              ;;
+            fedora*)
+              dnf -y install bash webkit2gtk4.1 gtk3 xorg-x11-server-Xvfb
+              ;;
+          esac
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-bundles
+
+      # upload-artifact does not carry the executable bit, so restore it on the
+      # two things that need one. The tarball keeps its own modes internally.
+      - name: Install and launch
+        env:
+          SMOKE_EXPECT: window
+          SMOKE_TIMEOUT: "120"
+          WEBKIT_DISABLE_DMABUF_RENDERER: "1"
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+        run: |
+          set -euxo pipefail
+          chmod +x packaging/smoke.sh
+          chmod +x dist/*.AppImage
+
+          case "${{ matrix.kind }}" in
+            deb)
+              # Resolves and installs the .deb's declared dependencies. If the
+              # bundler ever stops declaring libwebkit2gtk, this is where it
+              # shows up — as a package that installs and then cannot start.
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get install -y ./dist/*.deb
+              packaging/smoke.sh dreamd
+              ;;
+            tar)
+              # The tarball is the bundler's staged deb tree, so it extracts to
+              # a prefix and the binary sits at usr/bin/dreamd. This is the path
+              # install.sh and the PKGBUILD both take.
+              mkdir -p /opt/dreamd
+              tar -xzf dist/*.tar.gz -C /opt/dreamd
+              test -f /opt/dreamd/usr/bin/dreamd
+              # install.sh chmods too rather than trusting the archive's modes;
+              # this mirrors it so the two agree about what the tarball promises.
+              chmod +x /opt/dreamd/usr/bin/dreamd
+              packaging/smoke.sh /opt/dreamd/usr/bin/dreamd
+              ;;
+          esac
+
+          # Every arm also runs the AppImage, so all three bundles are launched
+          # somewhere on every run rather than only on the distro that matches.
+          packaging/smoke.sh ./dist/*.AppImage

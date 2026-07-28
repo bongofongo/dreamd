@@ -149,6 +149,80 @@ jobs:
           node perf/corpus/gen.mjs
           cargo run --release --example locate_check
 
+  # Does it *run*? Nothing else in this repo asks.
+  #
+  # `cargo test` never touches a window, `ui-check.mjs` drives Chromium behind a
+  # stub of the Rust commands, and perf.yml's package-smoke only asserts the
+  # artifacts are non-empty files. A commit that compiles, passes every test and
+  # aborts inside GTK init would be green everywhere — which is precisely the
+  # shape of the NVIDIA/Wayland failure src/webkit.rs works around, and precisely
+  # the shape that macOS-side development cannot notice.
+  #
+  # packaging/smoke.sh launches the binary under Xvfb and waits for the
+  # `first_paint` mark, which ui/app.js emits only after GTK initialised, wry
+  # built a real WebKitGTK webview, frontendDist loaded, the CSP admitted both
+  # classic scripts and an IPC round trip completed in both directions. That is
+  # why this job builds `--features perf`: the instrumentation is the assertion.
+  #
+  # ubuntu-22.04 rather than -latest, to match every other Linux runner here —
+  # this is the webkit2gtk the release links against. canary.yml runs the same
+  # script against a rolling one.
+  launch:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # WebKitGTK 2.46+ renders through a DMA-BUF path that allocates with
+          # GBM, and a hosted runner has no GPU and no /dev/dri. Disabling it is
+          # the arm that must stay green.
+          - { name: dmabuf-off, disable_dmabuf: "1", soft: false }
+          # The accelerated path, on llvmpipe. Informational: a failure here is a
+          # statement about software rendering in a VM, not about a user's
+          # machine, and turning main red for it would make this job noise. It is
+          # still worth running — if it stops working entirely, that is worth
+          # knowing before a user with Mesa reports it.
+          - { name: dmabuf-on, disable_dmabuf: "", soft: true }
+    continue-on-error: ${{ matrix.soft }}
+    name: launch (${{ matrix.name }})
+    steps:
+      - uses: actions/checkout@v4
+
+      # The same list the rust job installs, plus xvfb. The -dev packages pull
+      # the runtime libraries the binary actually loads, so there is no separate
+      # runtime list to keep in sync.
+      - name: Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev \
+            libssl-dev patchelf file xvfb
+
+      - uses: dtolnay/rust-toolchain@1.97.1
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+          key: launch-${{ matrix.name }}
+
+      # `--features perf` is not optional here: without it `perf_enabled` returns
+      # false, ui/app.js never calls `perf_mark`, and there is nothing to wait
+      # for. It is also what the `rust` job's clippy and test steps already build,
+      # so this costs no new compilation shape.
+      - name: Build with instrumentation
+        run: cargo build --features perf
+
+      - name: Launch smoke
+        env:
+          SMOKE_EXPECT: paint
+          SMOKE_TIMEOUT: "120"
+        run: |
+          if [ -n "${{ matrix.disable_dmabuf }}" ]; then
+            export WEBKIT_DISABLE_DMABUF_RENDERER=1
+          fi
+          packaging/smoke.sh ./target/debug/dreamd
+
   # ubuntu, not macos-14: nothing the frontend is checked for is engine-specific,
   # and both of these run against a JS engine rather than against WKWebView.
   ui:

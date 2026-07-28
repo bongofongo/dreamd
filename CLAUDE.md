@@ -61,6 +61,19 @@ config layering + write-back, the bundled palettes, the MCP transport, the marks
 file on disk) and each exits non-zero on failure. **The GUI itself is
 verified only by hand** — `ui-check.mjs` asserts what the page knows, not what it
 paints; don't claim coverage beyond that.
+
+`packaging/smoke.sh` is the one check that *launches* the program. Under Xvfb,
+in its own fixture repo with `XDG_CONFIG_HOME` pointed at a scratch directory,
+in one of two modes. `SMOKE_EXPECT=paint` waits for the `first_paint` mark,
+which `ui/app.js` cannot emit unless GTK initialised, wry built a real
+WebKitGTK webview, `frontendDist` loaded, the CSP admitted both classic scripts
+and IPC completed in both directions — so it needs `--features perf`, and it is
+the stronger check. `SMOKE_EXPECT=window` is for a release artifact, which
+carries no instrumentation and must be smoked as shipped: the MCP socket
+appearing (bound in `.setup`, i.e. after the window exists), a `WebKit*`
+descendant process, and survival. It proves a window, not a page. Both are
+Linux-only and need nothing but bash, coreutils and `/proc`, which is what lets
+them run inside a bare container next to a downloaded artifact.
 `perf/run.sh` takes an exclusive lock: one tier at a time, no `cargo` alongside it.
 
 ```sh
@@ -69,6 +82,9 @@ packaging/check-version.sh 0.2.0     # CI assertion; tag must match the tree
 packaging/check-signing.sh           # CI preflight; the six APPLE_* secrets, from env
 NO_SIGN=1 packaging/build.sh aarch64-apple-darwin      # full release artifact, local
 NO_SIGN=1 packaging/build.sh x86_64-unknown-linux-gnu  # AppImage + .deb + .tar.gz
+
+SMOKE_EXPECT=paint packaging/smoke.sh ./target/debug/dreamd   # needs --features perf
+SMOKE_EXPECT=window packaging/smoke.sh ./dist/dreamd-*.AppImage
 ```
 
 ## Packaging
@@ -346,17 +362,32 @@ highlights from a corpus fixture.
   a **macos-14 / ubuntu-22.04 matrix** for every push and PR, then `config_check`,
   `theme_check`, `mcp_check`, `marks_check` and `locate_check` (the last against a
   cached corpus) on both, plus `node --test ui/paths.test.mjs` and `ui-check.mjs`
-  in a separate ubuntu job. The Linux arm is what keeps the untaken `cfg` arm from
-  rotting — that is exactly what happened to the Linux one while CI was macOS-only.
+  in a separate ubuntu job, plus a `launch` job that runs `packaging/smoke.sh`
+  against a `--features perf` build under Xvfb — the only thing in CI that starts
+  the program, and the answer to "it compiled, tested green and aborted inside
+  GTK init". Two arms, with and without `WEBKIT_DISABLE_DMABUF_RENDERER`; the
+  accelerated one is `continue-on-error` because a hosted runner has no GPU and
+  a failure there is a statement about llvmpipe. The Linux arm is what keeps the
+  untaken `cfg` arm from rotting — that is exactly what happened to the Linux one while CI was macOS-only.
   Run those harnesses locally before pushing — CI is the backstop, not the first
   check. The toolchain is **pinned** (`dtolnay/rust-toolchain@1.97.1`); bumping it
   is a deliberate commit that also clears whatever the new clippy found.
 - `.github/workflows/perf.yml` runs the quick tier and an unsigned
-  `packaging/build.sh` on **both** platforms. It gates nothing and moves no
-  baseline — a shared runner is not a quiet machine. Dispatch it with
+  `packaging/build.sh` on **both** platforms. Its *numbers* gate nothing and move
+  no baseline — a shared runner is not a quiet machine — but its packaging jobs
+  do fail the workflow. Dispatch it with
   `compare_ref` set for a same-runner A/B; the `package-smoke` job is the real
   value, because a tagged release is frozen and a broken Linux arm found at tag
-  time cannot be re-run.
+  time cannot be re-run. `install-smoke` is the half package-smoke cannot do: it
+  takes the Linux bundles built on ubuntu-22.04 and *installs and launches* them
+  in `ubuntu:24.04`, `debian:12`, `archlinux:latest` and `fedora:latest`
+  containers — the deb through `apt-get install ./`, so the bundler's `Depends`
+  is checked by being resolved; the tarball at `usr/bin/dreamd`, the path
+  `install.sh` and the PKGBUILD both take; and the AppImage on every arm. That
+  is what turns the glibc 2.35 floor from an argument into an assertion. It does
+  **not** check the AppImage's self-containment: every arm has webkit installed
+  by the time it runs, so a bundle that quietly stopped carrying its libraries
+  would still pass.
 - `.github/workflows/canary.yml` builds, tests and bundles on an
   **`archlinux:latest` container**, weekly. Every other Linux runner is
   `ubuntu-22.04` — pinned for the glibc 2.35 floor, and therefore the exact
@@ -369,9 +400,11 @@ highlights from a corpus fixture.
   failure it watches for is "the distro moved", not "this commit broke it", so a
   red canary is a message about Arch before it is one about the tree. Rust is
   pinned to 1.97.1 like `ci.yml`, leaving the system libraries as the only
-  moving part. It does *not* cover the NVIDIA/Wayland crash `webkit` works
-  around: no hosted runner has the driver or a compositor, and that stays a
-  hand-check.
+  moving part. It also *launches* twice — `smoke.sh` against a `--features perf`
+  build, which is the only place a rolling webkit2gtk is asked to bring a window
+  up rather than merely to link, and against the bundled AppImage as shipped. It
+  does *not* cover the NVIDIA/Wayland crash `webkit` works around: no hosted
+  runner has the driver or a compositor, and that stays a hand-check.
 - Repeatable flows become skills in `.claude/skills/`.
 - Performance is measured, not guessed. `/perf-quick` (~60s) after an edit,
   `/perf-pass` (~5min) before a large commit touching `src-tauri/` or `ui/` (do `/perf-quick` for smaller commits), `/perf-deep`
