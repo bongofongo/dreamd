@@ -21,6 +21,7 @@ pub mod menu;
 pub mod notify;
 pub mod perf;
 pub mod pty;
+pub mod rootfield;
 pub mod search;
 pub mod send;
 pub mod theme;

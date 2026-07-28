@@ -279,6 +279,32 @@ The tree width clamps at both ends.
 All four are visual. In particular the drag strip cannot be asserted at all — the
 only proof is that a view-mode window moves when you drag its top edge.
 
+### Done (2026-07-28)
+
+Shipped as written, with four notes.
+
+The auto-close rule is dismissal on any reader scroll, not a timeout — plus an
+explicit `closeOutline()` on a heading click, because a jump to the heading
+already on screen scrolls by nothing at all and would otherwise leave the panel
+standing.
+
+The completion command is `complete_directories`, and the rules it enforces
+live in a new `rootfield` module rather than in `main.rs`: absolute paths only
+(so nothing resolves against a Finder launch's `/` cwd), an existing directory
+only, directory *names* and never paths or file names, dot-directories only
+when the typed prefix asks for one, and a 200-entry cap. `set_root` is the
+second command and does nothing but decide whether the line is a path before
+handing it to `adopt_root`.
+
+The tree width reaches the frontend through a new `get_ui` command, issued in
+the same round trip as `get_keymap` — `get_settings` carries `[ui]` too, but it
+walks the themes directory and this is the boot path.
+
+The drag strip is `z-index: 0` with `#titlebar` at `z-index: 1`, rather than
+`pointer-events` juggling: while there is a titlebar it covers the strip and
+takes the mousedown, and both carry `data-tauri-drag-region` so the two cases
+are the same gesture.
+
 ---
 
 ## 5. T5 — The agent pane
