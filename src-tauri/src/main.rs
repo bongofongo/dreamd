@@ -425,6 +425,15 @@ fn get_stack(state: State<AppState>) -> Vec<Pair> {
 }
 
 /// One-button send. `ids` empty/absent = send the whole stack.
+///
+/// The stack is cleared from what was *actually* sent, not from `ids` and not
+/// wholesale: `selected_pairs` skips an id naming nothing and an unannotated
+/// mark, and only a send that succeeded is a send at all. A failure leaves the
+/// stack exactly as it was, which is the state the user can retry from.
+///
+/// The clipboard fallback counts as a send. It is still `Ok`, the questions
+/// still left the app, and the alternative — a stack that looks unsent while the
+/// text sits on the clipboard — is the one that gets asked twice.
 #[tauri::command]
 fn send_stack(state: State<AppState>, ids: Vec<Id>) -> Result<SendResult, String> {
     let pairs = {
@@ -436,7 +445,11 @@ fn send_stack(state: State<AppState>, ids: Vec<Id>) -> Result<SendResult, String
         }
     };
     let config = state.config.lock().unwrap().clone();
-    send::send(&config, &state.root(), &pairs)
+    let result = send::send(&config, &state.root(), &pairs)?;
+    let sent: Vec<Id> = pairs.iter().map(|p| p.highlight.id.clone()).collect();
+    state.store.lock().unwrap().mark_sent(&sent);
+    state.touch();
+    Ok(result)
 }
 
 #[tauri::command]

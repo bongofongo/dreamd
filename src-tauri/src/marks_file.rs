@@ -300,6 +300,10 @@ pub fn admit(root: &Path, doc: MarksDoc) -> Store {
             if h.quote.trim().is_empty() {
                 return None;
             }
+            // Coming off disk is what "previous session" *means*. `prior` is
+            // `#[serde(skip)]`, so it is false on arrival no matter what the
+            // file said, and this is the only place it is ever set.
+            h.prior = true;
             Some(h)
         })
         .collect();
@@ -328,13 +332,24 @@ fn now_secs() -> u64 {
 ///
 /// Split out from [`save`] so a round trip can be exercised without a
 /// directory: build the doc, serialise it, parse it, hand it to [`admit`].
+///
+/// `prior` is cleared on the way out. It answers "was this read from a file",
+/// which is a fact about *this* session and means nothing to the next one —
+/// [`admit`] decides it again on load. The copy is free: `to_vec` was cloning
+/// already.
 pub fn doc_from(canonical_root: &Path, store: &Store) -> MarksDoc {
     let (highlights, stack) = store.parts();
     MarksDoc {
         version: VERSION,
         root: canonical_root.to_string_lossy().into_owned(),
         saved_at: now_secs(),
-        highlights: highlights.to_vec(),
+        highlights: highlights
+            .iter()
+            .map(|h| Highlight {
+                prior: false,
+                ..h.clone()
+            })
+            .collect(),
         stack: stack.to_vec(),
     }
 }
@@ -609,6 +624,167 @@ mod tests {
                 .map(|h| h.id.as_str())
                 .collect::<Vec<_>>(),
             vec!["h3"]
+        );
+    }
+
+    // ---- prior, and pending -----------------------------------------------
+
+    #[test]
+    fn everything_that_comes_off_disk_is_prior() {
+        // The entire implementation of "highlighted in a previous session".
+        // There is no clock and no session id — being admitted *is* the
+        // evidence, because the only thing `admit` ever reads is a file another
+        // session wrote.
+        let store = admit(
+            &root(),
+            doc(
+                vec![
+                    mark("h1", "/w/notes/a.md", "alpha"),
+                    mark("h2", "/w/notes/b.md", "beta"),
+                ],
+                &["h1"],
+            ),
+        );
+        assert!(
+            store.parts().0.iter().all(|h| h.prior),
+            "{:?}",
+            store.parts().0
+        );
+
+        // ...and a mark minted in this session is not, so the flag actually
+        // discriminates rather than being true everywhere.
+        let mut fresh = Store::default();
+        let id = fresh.add_highlight(
+            "/w/notes/a.md".to_string(),
+            1,
+            1,
+            "alpha".to_string(),
+            String::new(),
+            String::new(),
+        );
+        assert!(!fresh.get(&id).expect("present").prior);
+    }
+
+    #[test]
+    fn prior_never_reaches_the_file() {
+        // Asserted against the serialized *text*, not a round trip: a round
+        // trip goes back through `admit`, which sets `prior` again and would
+        // hide the bug completely.
+        //
+        // The store is one that came off disk, so every mark in it *is* prior —
+        // the case that actually exercises `doc_from`'s strip. A store of marks
+        // made this session would pass no matter what, because the flag would be
+        // false anyway.
+        let mut store = admit(
+            &root(),
+            doc(vec![mark("h1", "/w/notes/a.md", "alpha")], &[]),
+        );
+        assert!(
+            store.get("h1").expect("admitted").prior,
+            "premise: it must still be prior when the document is built, so it \
+             must not be annotated here — annotating clears the flag (D13) and \
+             this test would then pass whatever `doc_from` does"
+        );
+        // ...and one made this session, sent, so the persisted half of the pair
+        // is in the same document.
+        let fresh = store.add_highlight(
+            "/w/notes/a.md".to_string(),
+            1,
+            1,
+            "beta".to_string(),
+            String::new(),
+            String::new(),
+        );
+        store.set_annotation(&fresh, "and?".into());
+        store.mark_sent(std::slice::from_ref(&fresh));
+
+        let json = serde_json::to_string(&doc_from(&root(), &store)).expect("serialize");
+        assert!(
+            !json.contains("prior"),
+            "a flag about this session's reading was written to disk: {json}"
+        );
+        // The other half of the pair *is* persisted — pending has to survive a
+        // restart — so this also pins that the two fields were not confused.
+        assert!(json.contains("sent_at"), "{json}");
+    }
+
+    #[test]
+    fn prior_still_reaches_the_frontend() {
+        // The other side of the same coin, and the reason `prior` is not a plain
+        // `#[serde(skip)]`: one derive serves the marks file *and* the IPC reply
+        // that `get_highlights` returns, so a skip that keeps the flag off disk
+        // also keeps it away from the code that paints the fade. This test is
+        // what fails if someone simplifies the attributes back.
+        let store = admit(
+            &root(),
+            doc(vec![mark("h1", "/w/notes/a.md", "alpha")], &[]),
+        );
+        let h = store.get("h1").expect("admitted");
+        let json = serde_json::to_string(&h).expect("serialize");
+        assert!(json.contains(r#""prior":true"#), "{json}");
+
+        // ...and false stays off the wire, so the frontend must read an absent
+        // key as false.
+        let mut fresh = Store::default();
+        let id = fresh.add_highlight(
+            "/w/notes/a.md".to_string(),
+            1,
+            1,
+            "beta".to_string(),
+            String::new(),
+            String::new(),
+        );
+        let json = serde_json::to_string(&fresh.get(&id).expect("present")).expect("serialize");
+        assert!(!json.contains("prior"), "{json}");
+    }
+
+    #[test]
+    fn a_file_written_before_pending_existed_loads_without_it() {
+        // Container-wide `#[serde(default)]` is what makes this work, and the
+        // reverse direction — a file *with* `sent_at` loading in a build that
+        // predates the field — is the same attribute plus the absence of
+        // `deny_unknown_fields`, already pinned by
+        // `a_file_from_a_future_version_loads_what_it_understands`.
+        let json = r#"{
+            "version": 1,
+            "root": "/w/notes",
+            "saved_at": 1753617600,
+            "highlights": [
+              {"id":"h1","file_path":"/w/notes/a.md","quote":"alpha",
+               "annotation":"why?","state":"active"}
+            ],
+            "stack": ["h1"]
+        }"#;
+        let parsed: MarksDoc = serde_json::from_str(json).expect("an older file still parses");
+        let store = admit(&root(), parsed);
+        let h = store.get("h1").expect("admitted");
+        assert_eq!(h.sent_at, None);
+        assert!(h.prior, "it still came off disk");
+        assert_eq!(store.stack_pairs().len(), 1);
+    }
+
+    #[test]
+    fn a_pending_stamp_survives_a_round_trip() {
+        let mut store = Store::default();
+        let id = store.add_highlight(
+            "/w/notes/a.md".to_string(),
+            1,
+            1,
+            "alpha".to_string(),
+            String::new(),
+            String::new(),
+        );
+        store.set_annotation(&id, "why?".into());
+        store.mark_sent(std::slice::from_ref(&id));
+        let sent_at = store.get(&id).expect("present").sent_at;
+
+        let json = serde_json::to_string(&doc_from(&root(), &store)).expect("serialize");
+        let back = admit(&root(), serde_json::from_str(&json).expect("deserialize"));
+
+        assert_eq!(back.get(&id).expect("present").sent_at, sent_at);
+        assert!(
+            back.stack_pairs().is_empty(),
+            "a sent mark left the stack before the file was written"
         );
     }
 

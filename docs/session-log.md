@@ -1,5 +1,85 @@
 # Session log
 
+## 2026-07-28 — T1: the store learns what "sent" and "last session" mean
+
+First thread of `docs/plans/agent-ui-implementation.md`, built in a worktree
+(`worktree-t1-store-semantics`) and opened as a PR rather than pushed to main,
+because the rest of the plan's threads read this thread's output and a reviewable
+diff is worth more than a fast landing here.
+
+T1 is deliberately the whole plan's foundation: every visual decision downstream —
+T3's fade, T4's rail, T6's pending glyph — reads a field this thread adds. It is
+also entirely pure, so it is all testable.
+
+### What happened
+
+1. **`Highlight` gained two fields.** `sent_at: Option<u64>` is the pending stamp,
+   persisted, and lives beside `state` rather than inside it because a passage can
+   go stale *while* it is out with an agent and a single enum would have to pick
+   one of the two and would pick wrong (D5). `prior: bool` is "made in an earlier
+   session", and its entire implementation is that `marks_file::admit` sets it on
+   everything it admits — no clock, no session id, no schema field (D4).
+
+2. **`Store::mark_sent`** stamps the ids it is given and removes *exactly* those
+   from the stack. Not the whole stack: `Send selected` sends a subset, and
+   clearing everything would silently discard questions that were never asked
+   (D17).
+
+3. **`set_annotation` grew two rules.** It clears `prior`, because the fade means
+   "untouched this sitting" and annotating is touching (D13). It does *not* clear
+   `sent_at`: re-annotating a pending mark stacks a second question about the same
+   passage rather than retracting the one already asked (D14). The second rule
+   needed no code — once `mark_sent` has taken the id off the stack, the existing
+   re-push does exactly this — but it needed a test, because "no code" is
+   indistinguishable from "not implemented" until something pins it.
+
+4. **`resolve` clears `sent_at`.** One line, and it is what makes the pending
+   glyph go away.
+
+5. **`send_stack` calls `mark_sent`** with the ids it actually sent — from the
+   assembled pairs, not from the argument, since `selected_pairs` skips an id
+   naming nothing and an unannotated mark. Only after a successful send: a failure
+   leaves the stack as it was, which is the state a retry starts from. The
+   clipboard fallback counts as a send, on the grounds that a stack that looks
+   unsent while the text sits on the clipboard is the one that gets asked twice.
+
+6. **Eleven tests, each proven to have teeth.** Every guard was broken, watched go
+   red, and restored — seven mutations on the first pass and two more after the
+   serde change below. One of them found a real hole; see the deviations.
+
+### Mistakes & deviations
+
+- **The plan specified `#[serde(skip)]` on `prior`, and that would have broken
+  T3.** One derive serves two boundaries: the marks file *and* the IPC reply
+  `get_highlights` returns. A plain `skip` keeps the flag off disk and out of the
+  frontend's hands in the same stroke — and T3's job is `app.js` setting
+  `data-prior` from that field. It is now
+  `skip_deserializing` (a hand-edited or copied file can never assert that a mark
+  is prior; only having been admitted decides that) plus
+  `skip_serializing_if = "is_false"` (false stays off the wire, so the frontend
+  must read an absent key as false), and `marks_file::doc_from` clears the flag on
+  the copy it writes. Both halves of the plan's intent hold, and
+  `prior_still_reaches_the_frontend` is what fails if someone simplifies the
+  attributes back.
+
+- **The first version of `prior_never_reaches_the_file` was toothless, and the
+  teeth check is the only reason that is known.** It annotated the prior mark
+  before serialising — which clears `prior` (D13), so no mark in the store carried
+  the flag and the assertion held whatever `doc_from` did. Deleting the strip left
+  the test green. The mark is no longer annotated, the premise assertion now says
+  *why* in the failure message, and the mutation goes red.
+
+### State
+
+`cargo build` clean, 220 tests pass (11 new), `cargo clippy --all-targets
+--all-features` clean, and `marks_check`, `config_check`, `theme_check` and
+`mcp_check` all pass. No frontend change, so `ui-check.mjs` is unaffected. No perf
+run: the plan gates none on this work and nothing here is on the render path — one
+`/perf-quick` at the end of the pass, after T6.
+
+T2 (config surface) is unblocked and independent; T3, T4's rail work and T6 now
+have the fields they read.
+
 ## 2026-07-28 — CI that runs the program
 
 The session opened with a question: if a commit passes CI, will it work when
