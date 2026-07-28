@@ -25,6 +25,7 @@
 //! [`crate::notify`] takes one: it keeps this module Tauri-free, so a test can
 //! drive a real pty with no window and no event loop.
 
+use crate::config::PermissionMode;
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
 use std::io::{Read, Write};
 use std::sync::Arc;
@@ -52,7 +53,7 @@ pub struct Pty {
     killer: Box<dyn ChildKiller + Send + Sync>,
 }
 
-/// The command the pane runs.
+/// The command the pane runs in Claude Code's own default permission mode.
 ///
 /// A **fixed** string, not a template: nothing the user or a document supplies
 /// is interpolated here (tenet 3). The login shell is the wrapper rather than
@@ -61,6 +62,30 @@ pub struct Pty {
 /// `~/.local/bin`. Spawning it directly works from a terminal and fails from
 /// the Dock, which is the worse of the two failures to ship.
 const PANE_COMMAND: &str = "exec claude";
+
+/// The other three. Four `const`s and a `match`, rather than one `const` and a
+/// flag appended to it, is what keeps tenet 3 intact: `config::PermissionMode`
+/// is a closed enum, so every string that can ever reach a shell is written out
+/// in this file and pinned by a test. There is no `format!`, no `push_str` and
+/// no path by which a config value — even a valid one — becomes shell text.
+const PANE_COMMAND_ACCEPT_EDITS: &str = "exec claude --permission-mode acceptEdits";
+const PANE_COMMAND_PLAN: &str = "exec claude --permission-mode plan";
+const PANE_COMMAND_BYPASS: &str = "exec claude --permission-mode bypassPermissions";
+
+/// Which of the four literals a mode launches.
+///
+/// `Default` maps to the bare command rather than to `--permission-mode
+/// default`: the flag is redundant there, and the bare form is what the pane
+/// ran before this key existed, so an unset config is byte-identical to the
+/// behaviour it replaced.
+fn pane_command(mode: PermissionMode) -> &'static str {
+    match mode {
+        PermissionMode::Default => PANE_COMMAND,
+        PermissionMode::AcceptEdits => PANE_COMMAND_ACCEPT_EDITS,
+        PermissionMode::Plan => PANE_COMMAND_PLAN,
+        PermissionMode::BypassPermissions => PANE_COMMAND_BYPASS,
+    }
+}
 
 /// The user's login shell, or a sane default. `SHELL` is what every terminal
 /// emulator reads; the fallback matters only for an environment that stripped
@@ -80,13 +105,23 @@ impl Pty {
     /// Open a pty, spawn the pane's command in it, and start pumping output at
     /// `sink`. `cwd` is the repo root, because `dreamd mcp` finds this repo's
     /// socket by walking up from the process's working directory.
-    pub fn spawn(rows: u16, cols: u16, cwd: &std::path::Path, sink: Sink) -> Result<Self, String> {
+    ///
+    /// `mode` selects one of four compiled-in commands — it is not a value that
+    /// travels into the shell. Changing it is a restart, because Claude Code
+    /// reads it once at launch.
+    pub fn spawn(
+        rows: u16,
+        cols: u16,
+        cwd: &std::path::Path,
+        mode: PermissionMode,
+        sink: Sink,
+    ) -> Result<Self, String> {
         Self::spawn_command(
             rows,
             cols,
             cwd,
             &login_shell(),
-            &["-l", "-c", PANE_COMMAND],
+            &["-l", "-c", pane_command(mode)],
             sink,
         )
     }
@@ -381,13 +416,56 @@ mod tests {
         wait_for(&log, |ev| matches!(ev, PtyEvent::Exit(_)));
     }
 
-    /// `PANE_COMMAND` is never run by a test — starting a real Claude Code
+    /// None of the four is ever run by a test — starting a real Claude Code
     /// session as a side effect of `cargo test` is not acceptable — so this is
     /// what holds the shape of what `spawn` passes the shell.
+    ///
+    /// Every mode is listed, so a fifth variant added to
+    /// [`PermissionMode`] fails the `match` in `pane_command` at compile time
+    /// and the exhaustiveness assertion here at run time.
     #[test]
-    fn the_pane_command_is_a_fixed_string_with_nothing_interpolated() {
-        assert_eq!(PANE_COMMAND, "exec claude");
-        assert!(!PANE_COMMAND.contains('{') && !PANE_COMMAND.contains('$'));
+    fn every_permission_mode_yields_a_fixed_command_with_nothing_interpolated() {
+        let all = [
+            (PermissionMode::Default, "exec claude"),
+            (
+                PermissionMode::AcceptEdits,
+                "exec claude --permission-mode acceptEdits",
+            ),
+            (PermissionMode::Plan, "exec claude --permission-mode plan"),
+            (
+                PermissionMode::BypassPermissions,
+                "exec claude --permission-mode bypassPermissions",
+            ),
+        ];
+        for (mode, want) in all {
+            let got = pane_command(mode);
+            assert_eq!(got, want, "for {mode:?}");
+            // Tenet 3, asserted rather than asserted-about: no interpolation
+            // marker, no shell metacharacter, nothing a value could have been
+            // spliced through.
+            assert!(
+                !got.contains('{')
+                    && !got.contains('$')
+                    && !got.contains('`')
+                    && !got.contains(';')
+                    && !got.contains('&')
+                    && !got.contains('|'),
+                "{got:?} carries shell syntax",
+            );
+        }
+        // Four distinct strings: a `match` arm that fell through to the wrong
+        // literal would still pass the loop above only if two agreed.
+        let mut seen: Vec<&str> = all.iter().map(|(m, _)| pane_command(*m)).collect();
+        seen.sort_unstable();
+        seen.dedup();
+        assert_eq!(seen.len(), 4, "each mode gets its own command");
+        // The default config launches accept-edits (dreamd's choice, not
+        // Claude Code's), so this is the command the pane actually runs unless
+        // the user says otherwise.
+        assert_eq!(
+            pane_command(PermissionMode::default()),
+            PANE_COMMAND_ACCEPT_EDITS,
+        );
         assert!(login_shell().starts_with('/'), "an absolute program path");
     }
 
