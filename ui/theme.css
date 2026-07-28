@@ -18,9 +18,15 @@
  * picks the syntect theme per mode with `--syntax-theme`.
  *
  * Variables below fall into two groups. The palette must declare the ones with
- * no fallback here (`theme_check` enforces all twenty). The ones written
- * `var(--x, <default>)` are optional: they let a theme change shape rather than
- * only colour, and a palette that ignores them looks exactly as it did. */
+ * no fallback here. The ones written `var(--x, <default>)` are optional: they
+ * let a theme change shape rather than only colour, and a palette that ignores
+ * them looks exactly as it did.
+ *
+ * `--hl-prior` is in both groups and is the only one that is: it has a fallback,
+ * because a user palette that predates it must still fade, and `theme_check`
+ * nonetheless requires it of all ten bundled families (twenty-one variables
+ * each), because a shipped palette leaning on a generic default is a palette
+ * whose fade nobody looked at. */
 
 /* Native scrollbars, form controls and the webview's own canvas, so they don't
  * stay dark under a light palette. Chrome business, not the palette's — a user
@@ -106,3 +112,51 @@ body { background: var(--bg); color: var(--text); }
 #content th { background: var(--btn-bg); }
 
 #content input[type="checkbox"] { margin-right: 0.5em; }
+
+/* A mark from an earlier session, faded. The rules for `mark.hl` itself live in
+ * index.html's structural block; only the *fade* is the palette's business, so
+ * only the fade is here.
+ *
+ * `--hl-prior` is a percentage, declared once per mode block, because one number
+ * cannot be right for both members of a family: a bright `--hl` on a near-black
+ * background is far more present at the same strength than the same hue on
+ * paper. Every bundled palette declares both; `theme_check` enforces it and
+ * insists the two differ.
+ *
+ * The fallback here is what a pre-family user file gets, and it is why there is
+ * a fallback at all — a palette that has never heard of this variable must still
+ * fade. Showing prior marks at full strength is the loud failure; being a little
+ * too quiet is the one worth defaulting to.
+ *
+ * `color: inherit` is not cosmetic. `mark.hl` forces `--hl-text` (near-black)
+ * because the text sits on a saturated fill; once the fill is a wash the fill is
+ * gone and near-black on a dark background is unreadable. The prose colour is
+ * the right one the moment the mark stops being a block.
+ *
+ * `.stale` keeps its own hue — stale is a state, not an age, and the two are
+ * read separately. Without this rule the tie on specificity would go to the
+ * later stylesheet, which is this one, and a stale mark would quietly stop
+ * looking stale the moment it was a session old. */
+mark.hl[data-prior] {
+  background: color-mix(in srgb, var(--hl, #f2d16b) var(--hl-prior, 16%), transparent);
+  color: inherit;
+}
+mark.hl.stale[data-prior] {
+  background: color-mix(in srgb, var(--stale, #ef6a7d) var(--hl-prior, 16%), transparent);
+  color: inherit;
+}
+
+/* `color-mix` is the only modern colour function in this file, and an engine
+ * that cannot parse it drops both declarations above, restoring the full-strength
+ * fill — precisely the loud failure. So the fade gets a floor that needs nothing
+ * newer than CSS 2: no fill at all, and a hairline of the hue to locate by. */
+@supports not (background: color-mix(in srgb, white 50%, transparent)) {
+  mark.hl[data-prior] {
+    background: none;
+    box-shadow: inset 0 -1px 0 var(--hl, #f2d16b);
+  }
+  mark.hl.stale[data-prior] {
+    background: none;
+    box-shadow: inset 0 -1px 0 var(--stale, #ef6a7d);
+  }
+}

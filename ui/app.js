@@ -734,11 +734,11 @@ function applyHighlights(list) {
     if (!doc) {
       // Few enough to place as we go; wrapping can only disturb text nodes we
       // have already passed.
-      if (!wrapByWalk(contentEl, quote, h.id)) addStaleChip(h);
+      if (!wrapByWalk(contentEl, quote, h.id, h.prior)) addStaleChip(h);
       continue;
     }
     const p = locateInNodes(doc, quote);
-    if (p) placements.push({ ...p, id: h.id });
+    if (p) placements.push({ ...p, id: h.id, prior: h.prior });
     else addStaleChip(h); // active but unlocatable in the DOM
   }
 
@@ -749,13 +749,13 @@ function applyHighlights(list) {
     const range = document.createRange();
     range.setStart(p.node, p.offset);
     range.setEnd(p.node, p.offset + p.length);
-    wrapRange(range, p.id, false);
+    wrapRange(range, p.id, false, p.prior);
   }
 }
 
 // Wrap the first occurrence of `quote` that lies within a single text node,
 // stopping the walk as soon as it is found. Returns true if it was placed.
-function wrapByWalk(container, quote, id) {
+function wrapByWalk(container, quote, id, prior) {
   if (!quote) return false;
   const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
   for (let node; (node = walker.nextNode()); ) {
@@ -764,7 +764,7 @@ function wrapByWalk(container, quote, id) {
     const range = document.createRange();
     range.setStart(node, idx);
     range.setEnd(node, idx + quote.length);
-    wrapRange(range, id, false);
+    wrapRange(range, id, false, prior);
     return true;
   }
   return false;
@@ -871,10 +871,17 @@ function selectionContext(range) {
   return { prefix: prefix.slice(-CONTEXT_CHARS), suffix: suffix.slice(0, CONTEXT_CHARS) };
 }
 
-function wrapRange(range, id, stale) {
+// `prior` is the fade `ui/theme.css` keys off. It is a *transient* flag — the
+// Rust side sets it only on marks read off disk, and declares it
+// `skip_serializing_if = "is_false"`, so the overwhelming majority of highlights
+// arrive over IPC with no `prior` key at all. Absent therefore means false, and
+// the coercion below is load-bearing: `data-prior="undefined"` is a present
+// attribute and would fade every mark in the document.
+function wrapRange(range, id, stale, prior) {
   const mark = document.createElement("mark");
   mark.className = "hl" + (stale ? " stale" : "");
   mark.dataset.id = id;
+  if (prior === true) mark.dataset.prior = "";
   try {
     range.surroundContents(mark);
   } catch (_) {
@@ -910,7 +917,8 @@ async function triggerHighlight() {
   const id = await invoke("add_highlight", {
     filePath: currentFile, quote, prefix, suffix,
   });
-  const mark = wrapRange(range, id, false);
+  // Minted this second, so never prior — the flag exists to say "read off disk".
+  const mark = wrapRange(range, id, false, false);
   pending = { id, mark };
   sel.removeAllRanges();
   openAnnot({ mode: "create", quote, id });
