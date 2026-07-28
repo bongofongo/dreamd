@@ -27,6 +27,30 @@
 - Hand check: everything visual. ui-check asserts what the page knows, not what
   it paints, and the GUI cannot be driven here.
 
+## 2026-07-28 — t4-chrome
+
+- Tree drag: handle on `#sidebar`'s right border, width in `--tree-width` on
+  `<html>`, persisted to `ui.tree_width` debounced 400ms. Past 140 it collapses
+  (D20); 600 is the cap, both mirroring `config::TREE_WIDTH_*`.
+- Outline floats top-right over the reader, fades by CSS, closes on a heading
+  click and on any reader scroll (D21) — a scroll rather than a timeout, which
+  cannot strand a half-faded panel.
+- `#repo-name` is now an `<input>`: basename unfocused, full path focused, `~`
+  expansion, Tab completion, error state that leaves the current root (D22).
+- New Rust: `rootfield` (absolute-only, existing directory only, directory
+  names never paths, dot-dirs only when asked, 200 cap) behind two commands,
+  `complete_directories` and `set_root`; plus `get_ui` for the boot width.
+- Drag strip: 10px `data-tauri-drag-region` at `z-index: 0`, titlebar at 1, not
+  in the view-mode hide list — the window is never un-draggable.
+- Verified: `cargo test --all-features` 244, `config_check` 49, `ui-check.mjs`
+  147, `node --test ui/paths.test.mjs` 10, fmt/clippy/build clean.
+- Teeth proven by mutation: 5 in `rootfield` (absolute check, dir-only filter,
+  hidden filter, listable-target check, cap), 6 in `ui/` (boot width, max
+  clamp, collapse-past-min, scroll-close, float position, error flag).
+- **Hand check, still:** all four are visual, and the drag strip cannot be
+  asserted at all — the only proof is a view-mode window moving when you drag
+  its top edge.
+
 ## 2026-07-28 — T2: the config surface the agent pass needs
 
 A short, deliberately mechanical thread: the second of the seven in

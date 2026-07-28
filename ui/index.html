@@ -60,12 +60,36 @@
       button.danger { border-color: var(--stale, #ef6a7d); color: var(--stale, #ef6a7d); }
       button.danger:hover { background: var(--stale-bg, #3a1a22); }
 
+      /* The window is never un-draggable.
+         A ~10px `data-tauri-drag-region` strip pinned to the top of the window,
+         with no background, no hover affordance and nothing to notice. It is
+         absent from the `body.view-mode` hide list on purpose — view mode hides
+         `#titlebar` outright, which is what left a full-bleed reading window
+         with nothing to grab.
+
+         Stacking, not `pointer-events`, is what keeps it out of the titlebar's
+         way: this is `z-index: 0` and `#titlebar` below is `z-index: 1`, so
+         while there *is* a titlebar it covers the strip and takes the mousedown
+         — and it carries the same attribute, so dragging there works either
+         way. In view mode the titlebar is gone and the strip is what the top
+         edge of the window hits.
+
+         The attribute is the whole implementation; the drag itself is wry's
+         injected handler calling `start_dragging`. That call needs
+         `core:window:allow-start-dragging` in `capabilities/default.json`,
+         which is NOT in `core:window:default` — a missing permission is denied
+         silently, with nothing wrong in the markup to find. */
+      #drag-strip {
+        position: fixed; top: 0; left: 0; right: 0; height: 10px; z-index: 0;
+      }
+
       /* titlebar: shares the row with the macOS traffic lights (overlay style) */
       #titlebar {
         display: flex; align-items: center; gap: 8px;
         height: 38px; flex: 0 0 38px; padding: 0 10px;
         border-bottom: 1px solid var(--border, #2e2940);
         background: var(--sidebar-bg, #100e17);
+        position: relative; z-index: 1; /* over #drag-strip — see above */
       }
       body.mac #titlebar { padding-left: 78px; } /* clear the traffic lights */
       #tb-actions { margin-left: auto; display: flex; gap: 6px; align-items: center; }
@@ -78,10 +102,15 @@
       #btn-stack .badge.show { display: block; }
       #btn-hl-mode.active { background: var(--hl, #f2d16b); border-color: var(--hl, #f2d16b); color: var(--hl-text, #1a1a1a); }
 
-      /* workspace grid: sidebar | main */
+      /* workspace grid: sidebar | main
+         The width is a variable rather than a literal because the drag handle
+         writes it — as an inline style on <html>, which outranks any `:root`
+         a palette might declare. `config.ui.tree_width` clamps it to 140–600
+         on the way in and out, so this fallback is the only other place the
+         old fixed 260 still appears. */
       #workspace {
         flex: 1; min-height: 0; display: grid;
-        grid-template-columns: 260px 1fr;
+        grid-template-columns: var(--tree-width, 260px) 1fr;
         grid-template-rows: minmax(0, 1fr);
         overflow: hidden;
       }
@@ -92,12 +121,48 @@
         border-right: 1px solid var(--border, #2e2940);
         display: flex; flex-direction: column; min-height: 0; min-width: 0;
         background: var(--sidebar-bg, #100e17);
+        position: relative; /* for #tree-resize */
       }
+      /* The drag handle, straddling the sidebar's right border. Wider than the
+         border it sits on (a 1px target is not a target) and invisible until
+         the pointer is on it. `body.dragging-tree` keeps the cursor and the
+         tint while the pointer is anywhere, because a fast drag outruns the
+         element. Hidden when the tree is collapsed: there is a border there,
+         but nothing to resize, and the expand arrow is the gesture instead. */
+      #tree-resize {
+        position: absolute; top: 0; bottom: 0; right: -3px; width: 7px;
+        cursor: col-resize; z-index: 25;
+        touch-action: none; user-select: none; -webkit-user-select: none;
+      }
+      #tree-resize:hover, body.dragging-tree #tree-resize { background: var(--accent, #a48cf5); opacity: 0.5; }
+      body.nav-collapsed #tree-resize { display: none; }
+      body.dragging-tree { cursor: col-resize; user-select: none; -webkit-user-select: none; }
       #sidebar-header {
         display: flex; align-items: center; gap: 6px;
         padding: 8px 8px 8px 12px; border-bottom: 1px solid var(--border, #2e2940);
       }
-      #repo-name { flex: 1; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      /* The root path field. An `<input>` rather than a span with an editor
+         swapped in on click: one element means one place the displayed root
+         comes from, and click-to-edit is then just focus. It reads as text
+         until it is focused — no border, no field background — because it is
+         the tree's heading first and an input second. */
+      #repo-name {
+        flex: 1; min-width: 0; font: inherit; font-weight: 600;
+        background: transparent; color: inherit;
+        border: 1px solid transparent; border-radius: 5px;
+        padding: 1px 4px; margin: -1px -4px;
+        text-overflow: ellipsis; outline: none;
+      }
+      #repo-name:hover { border-color: var(--border, #2e2940); }
+      #repo-name:focus {
+        border-color: var(--accent, #a48cf5);
+        background: var(--btn-bg, #1f1c2b);
+        font-weight: 400;
+        font-family: var(--font-mono, ui-monospace, Menlo, monospace); font-size: 12px;
+      }
+      /* Left where you were: the field keeps the text you typed and says it is
+         wrong, and the root behind it never moved. */
+      #repo-name.error { border-color: var(--stale, #ef6a7d); background: var(--stale-bg, #3a1a22); }
       #btn-collapse { flex: 0 0 auto; }
       #tree { overflow: auto; flex: 1; padding: 6px 0; min-height: 0; }
       .tree-empty { padding: 12px; opacity: 0.5; font-size: 0.9em; line-height: 1.5; }
@@ -367,15 +432,34 @@
          They are written into `#find-css` the first time the bar is opened —
          see the comment on that element and `installFindCss` in app.js. */
 
-      /* contents / outline panel — same visual language as #stack-panel, but
-         anchored left so both can be open at once. */
+      /* contents / outline panel — a floating card over the top-right of the
+         reading pane, not a dock.
+         Its whole job is one jump, so it is deliberately transient: narrow,
+         faded until the pointer is on it, and dismissed by a heading click or
+         by any scroll of the reader (`wireOutline` in app.js). Nothing here
+         tracks the reading position — it is a table of contents, not a
+         minimap.
+
+         It is allowed to overlap the text on a narrow window rather than
+         reflowing the reader: re-laying out the document to open a panel that
+         closes on the next scroll costs more than the overlap does. It also
+         overlaps `#stale-rail` and, when both are open, `#stack-panel` — hence
+         the z-index above both. Same reasoning: it is the shortest-lived thing
+         on screen.
+
+         `max-height` rather than `bottom`, so a three-heading document gets a
+         three-heading card. */
       #outline-panel {
-        position: absolute; top: 0; left: 0; bottom: 0; width: 260px;
-        background: var(--sidebar-bg, #100e17); border-right: 1px solid var(--border, #2e2940);
-        display: none; flex-direction: column; z-index: 20;
+        position: absolute; top: 8px; right: 8px; width: 240px; max-height: calc(100% - 16px);
+        background: var(--sidebar-bg, #100e17); border: 1px solid var(--border, #2e2940);
+        border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,0.35);
+        display: none; flex-direction: column; z-index: 21; overflow: hidden;
+        opacity: 0.45; transition: opacity 0.15s ease;
       }
       #outline-panel.open { display: flex; }
-      #outline-panel h3 { margin: 0; padding: 10px 12px; border-bottom: 1px solid var(--border, #2e2940); font-size: 13px; display: flex; align-items: center; justify-content: space-between; }
+      #outline-panel:hover, #outline-panel:focus-within { opacity: 1; }
+      @media (prefers-reduced-motion: reduce) { #outline-panel { transition: none; } }
+      #outline-panel h3 { margin: 0; padding: 8px 10px; border-bottom: 1px solid var(--border, #2e2940); font-size: 12px; display: flex; align-items: center; justify-content: space-between; }
       #outline-list { flex: 1; overflow: auto; padding: 6px 0; }
       .oi {
         display: block; width: 100%; text-align: left; border: none; background: none;
@@ -385,7 +469,7 @@
       .oi:hover { background: var(--hover, #292435); }
       /* Level is depth, not size: h1 reads as a section head, everything below
          it indents one step per level. Six levels at 12px would run the text off
-         a 260px panel, so the step is deliberately small. */
+         a 240px card, so the step is deliberately small. */
       .oi.l1 { font-weight: 600; }
       .oi.l2 { padding-left: 24px; }
       .oi.l3 { padding-left: 36px; opacity: 0.85; }
@@ -480,6 +564,9 @@
          `display: none`, its scrollback is intact, and `toggle_pane` brings it
          back exactly as it was. View mode is the distraction-free reading
          state, and a live terminal is the distraction. */
+      /* `#drag-strip` is deliberately absent from this list: it is the whole
+         reason the list can hide `#titlebar` at all. See its rule at the top
+         of this stylesheet. */
       body.view-mode #titlebar,
       body.view-mode #sidebar,
       body.view-mode #btn-expand,
@@ -763,7 +850,7 @@
            `button.code-copy` is in the list because the copy buttons are
            injected into every rendered code block and would otherwise print as
            a small empty box over each one. */
-        #titlebar, #sidebar, #btn-expand,
+        #titlebar, #drag-strip, #sidebar, #btn-expand,
         #outline-panel, #stack-panel, #stale-rail, #find-bar, #pty-pane,
         #file-menu, #tooltip, #toast,
         #palette-overlay, .modal-overlay,
@@ -834,6 +921,11 @@
        to open. This direction round means `dreamd file.md` never flashes a
        sidebar it is about to hide. -->
   <body class="nav-collapsed">
+    <!-- The strip that keeps the window draggable in view mode. Nothing but
+         the attribute; see the `#drag-strip` rule for why it is first and why
+         it sits under the titlebar. -->
+    <div id="drag-strip" data-tauri-drag-region></div>
+
     <div id="titlebar" data-tauri-drag-region>
       <div id="tb-actions">
         <button id="btn-outline" class="icon" data-tip="Toggle contents" data-tip-key="toggle_outline">
@@ -869,13 +961,19 @@
     <div id="workspace">
       <aside id="sidebar">
         <div id="sidebar-header">
-          <span id="repo-name">…</span>
+          <!-- Click-to-edit root: basename unfocused, full path focused. An
+               invalid path leaves you in the current root. See `wireRootField`. -->
+          <input id="repo-name" value="…" autocomplete="off" spellcheck="false"
+                 aria-label="Repository root — type a path to move it" />
           <button id="btn-collapse" class="icon" data-tip="Collapse file tree" data-tip-key="toggle_tree">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
           </button>
         </div>
         <div class="hint" id="search-hint">Press the palette key to search</div>
         <div id="tree"></div>
+        <!-- Last, so it paints over the header and the tree both. -->
+        <div id="tree-resize" role="separator" aria-orientation="vertical"
+             aria-label="Resize the file tree"></div>
       </aside>
 
       <div id="main-wrap">

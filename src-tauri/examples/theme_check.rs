@@ -36,6 +36,7 @@ const REQUIRED: &[&str] = &[
     "--accent",
     "--accent-dim",
     "--hl",
+    "--hl-prior",
     "--stale",
     "--stale-bg",
     "--font-body",
@@ -107,6 +108,15 @@ fn main() {
                 println!("FAIL  {name}: --syntax-theme is the same in both modes");
                 failed += 1;
             }
+            // D15, pinned: the same fade strength cannot be right for both
+            // members of a family. A bright `--hl` on a near-black background is
+            // far more present at a given percentage than the same hue on paper,
+            // so a value copied across the two blocks is a value that was never
+            // looked at in one of them.
+            if theme::prior_fade(css, Scheme::Light) == theme::prior_fade(css, Scheme::Dark) {
+                println!("FAIL  {name}: --hl-prior is the same in both modes");
+                failed += 1;
+            }
         }
 
         // What the app actually injects, not just the palette on its own.
@@ -144,6 +154,21 @@ fn main() {
     if theme::background(FLAT, Scheme::Light) != theme::background(FLAT, Scheme::Dark) {
         println!("FAIL  flat palette: --bg differs by mode");
         failed += 1;
+    }
+
+    // ...and it fades. A palette written before `--hl-prior` existed — which is
+    // every user file on disk — must not show last week's highlights at full
+    // strength, so the undeclared case resolves to a value rather than to
+    // nothing. This is the one required variable whose absence is survivable,
+    // which is exactly why it needs its own assertion.
+    for scheme in SCHEMES {
+        if theme::prior_fade(FLAT, scheme) != theme::PRIOR_FADE_FALLBACK {
+            println!(
+                "FAIL  flat palette [{}]: --hl-prior did not fall back",
+                label(scheme)
+            );
+            failed += 1;
+        }
     }
 
     println!(

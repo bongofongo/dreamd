@@ -245,11 +245,12 @@ await page.locator("#st-theme-grid .th-card", { hasText: "gruvbox" }).first()
   .locator("button", { hasText: "Duplicate" }).click();
 await page.waitForTimeout(250);
 check("duplicate switches to the custom tab", await page.locator("#st-pane-custom.sel").isVisible());
-// Six shared type metrics plus the fifteen in the appearance being edited
-// (thirteen colours, --syntax-theme, --stale-text). An exact count on purpose:
-// it is what catches the Custom tab silently listing one block instead of two.
+// Six shared type metrics plus the sixteen in the appearance being edited
+// (thirteen colours, --syntax-theme, --stale-text, and T3's --hl-prior). An
+// exact count on purpose: it is what catches the Custom tab silently listing
+// one block instead of two.
 const varRows = await page.locator("#st-vars .st-var").count();
-check("var editor lists shared + one appearance", varRows === 21, `got ${varRows}`);
+check("var editor lists shared + one appearance", varRows === 22, `got ${varRows}`);
 check(
   "colour vars get a picker",
   (await page.locator('#st-vars input[type="color"]').count()) >= 13,
@@ -321,15 +322,15 @@ await page.waitForTimeout(250);
 check("and its dark block", (await varOf("--bg")) === "#282828", await varOf("--bg"));
 
 // The Custom tab edits one block at a time, so the var list is the shared block
-// plus the appearance being edited — six and fourteen, which is why the count
-// above is still twenty.
+// plus the appearance being edited, which is why the count above holds here
+// too.
 await page.locator("#st-theme-grid .th-card", { hasText: "gruvbox" }).first()
   .locator("button", { hasText: "Duplicate" }).click();
 await page.waitForTimeout(250);
 const blockBtns = await page.locator("#st-block .st-mode-btn").count();
 check("custom tab offers both blocks", blockBtns === 2, `got ${blockBtns}`);
 const darkRows = await page.locator("#st-vars .st-var").count();
-check("editing dark lists shared + dark", darkRows === 21, `got ${darkRows}`);
+check("editing dark lists shared + dark", darkRows === 22, `got ${darkRows}`);
 await page.locator("#st-block .st-mode-btn", { hasText: "light" }).first().click();
 await page.waitForTimeout(150);
 const lightVal = await page.locator("#st-vars .st-var", { hasText: "--bg" })
@@ -1217,6 +1218,358 @@ check(
   await right.evaluate(() =>
     Math.round(document.getElementById("content-scroll").getBoundingClientRect().width) ===
     Math.round(document.getElementById("main-wrap").getBoundingClientRect().width)),
+);
+
+// --- chrome: tree drag, floating outline, root field ----------------------
+// A sixth page, for T4. Everything here is a *structural* assertion — what the
+// page knows, never what it paints. None of the four pieces can be seen from
+// here: the fade is CSS, the float is a rectangle, and the drag strip cannot be
+// asserted at all, because the only proof of it is a window that moves.
+//
+// The stub has a working event bus and a tiny filesystem, because two of the
+// three pieces are round trips: `set_root` has to come back through
+// `repo-changed` the way `adopt_root` emits it, and the completion list has to
+// come from something that can also answer "no".
+const chrome = await newPage();
+chrome.on("pageerror", (e) => results.push("FAIL pageerror (chrome): " + e.message));
+chrome.on("console", (m) => {
+  if (m.type() === "error") results.push("FAIL console.error (chrome): " + m.text());
+});
+await chrome.addInitScript(({ base }) => {
+  // Directories only, exactly as `rootfield::complete` answers: names, never
+  // paths, and never a file.
+  const FS = {
+    "/": ["other", "repo"],
+    // `deep` and `docs` agree on a `d`, `zeta` agrees with neither: the two
+    // halves of what a completion may type for you.
+    "/other/": ["deep", "docs", "zeta"],
+    "/other/deep/": [], "/other/docs/": [], "/other/zeta/": [],
+    "/repo/": [],
+  };
+  const KEYMAP = {
+    palette: "Ctrl+F", palette_prev: "Ctrl+P", palette_next: "Ctrl+N",
+    highlight: "Ctrl+H", send_stack: "Ctrl+Enter", toggle_stack: "Ctrl+O",
+    toggle_outline: "Ctrl+I", toggle_tree: "Ctrl+B", toggle_view: "Ctrl+M",
+    toggle_pane: "Ctrl+T", jump_top: "Home", jump_bottom: "End",
+    set_mark: "m", jump_mark: "'", jump_back: "Ctrl+[", jump_forward: "Ctrl+]",
+    find: "/", find_next: "n", find_prev: "Shift+N",
+    next_file: "]", prev_file: "[",
+    copy_stack: "Ctrl+C", settings: "Ctrl+,", save_annotation: "Ctrl+Y",
+    quick_highlight: true,
+  };
+  const state = { root: "/repo", patches: [] };
+  window.__STATE__ = state;
+
+  const listeners = new Map();
+  window.__EMIT__ = (name, payload) => {
+    for (const fn of listeners.get(name) || []) fn({ payload });
+  };
+
+  const tree = {
+    name: "repo", is_dir: true, path: "/repo", rel: "",
+    children: [{ name: "doc.md", is_dir: false, path: "/repo/doc.md", rel: "doc.md", children: [] }],
+  };
+  const settings = () => ({
+    config: { theme: "dreamd", mode: "system", extra_ignores: [], keymap: KEYMAP, ui: { tree_width: 320 } },
+    theme: "dreamd", scheme: "dark", themes: [], syntax_themes: [],
+    config_path: "/tmp/xdg/dreamd/config.toml", themes_dir: "/tmp/xdg/dreamd/themes",
+    local_overrides: [],
+  });
+
+  const body = "<h1 id='a'>One</h1>" + "<p>filler</p>".repeat(80) +
+    "<h2 id='b'>Two</h2>" + "<p>filler</p>".repeat(80) +
+    "<h2 id='c'>Three</h2>" + "<p>filler</p>".repeat(80);
+
+  window.__TAURI__ = {
+    core: {
+      async invoke(cmd, args) {
+        switch (cmd) {
+          case "perf_enabled": return false;
+          case "repo_info":
+            return { root: state.root, name: state.root.split("/").pop(), display: state.root };
+          case "get_keymap": return KEYMAP;
+          // The persisted width, deliberately not the default: a boot that
+          // never asked would still be sitting at 260 and look correct.
+          case "get_ui": return { tree_width: 320 };
+          case "get_theme": return { css: base, mode: "system", scheme: "dark", syntax_theme: null };
+          // Null, so the sidebar is open on boot — the tree drag is what this
+          // page exists for and a collapsed one has no width to assert on.
+          case "initial_file": return null;
+          case "render_markdown": return body;
+          case "list_markdown_files": return tree;
+          case "fuzzy_search": return [];
+          case "get_settings": return settings();
+          case "get_highlights": case "reanchor": case "get_stack": return [];
+          case "stack_query_text": return "";
+          // This page presses every keymap entry, `toggle_pane` among them, so
+          // it opens the pane even though the pane is not what it asserts on.
+          // Without this the pane's first-open fetch reads `position` off null.
+          case "agent_prefs": return { position: "bottom", permission_mode: "accept-edits" };
+          case "pty_spawn": return true;
+          case "pty_write": case "pty_resize": case "pty_kill": return null;
+          case "send_stack": return { method: "stub", detail: "nothing to send" };
+          case "add_highlight": return "h0123456789abcdef";
+          case "set_config":
+            state.patches.push(args.patch);
+            return settings();
+          case "complete_directories": {
+            const cut = args.path.lastIndexOf("/") + 1;
+            const dir = args.path.slice(0, cut), prefix = args.path.slice(cut);
+            if (!(dir in FS)) throw new Error("no directory " + dir);
+            return FS[dir].filter((n) => n.toLowerCase().startsWith(prefix.toLowerCase()));
+          }
+          case "set_root": {
+            const path = args.path.replace(/\/+$/, "") || "/";
+            if (!(path + "/" in FS)) throw new Error("no such path: " + args.path);
+            state.root = path;
+            window.__EMIT__("repo-changed", null);
+            return null;
+          }
+          default: return null;
+        }
+      },
+    },
+    event: {
+      async listen(name, fn) {
+        if (!listeners.has(name)) listeners.set(name, new Set());
+        listeners.get(name).add(fn);
+        return () => listeners.get(name).delete(fn);
+      },
+    },
+  };
+}, { base });
+await chrome.goto(pathToFileURL(join(UI, "index.html")).href);
+await chrome.waitForSelector("#tree .tree-item.file");
+// Opened by clicking the tree rather than by `initial_file`, because a
+// single-file launch boots with the sidebar collapsed and this page is here to
+// measure the sidebar.
+await chrome.locator("#tree .tree-item.file").click();
+await chrome.waitForFunction(() => document.getElementById("content").textContent.includes("One"));
+await chrome.waitForTimeout(200);
+
+const treeWidthPx = () =>
+  chrome.evaluate(() => Math.round(document.getElementById("sidebar").getBoundingClientRect().width));
+const collapsed = () => chrome.evaluate(() => document.body.classList.contains("nav-collapsed"));
+const widthPatches = () =>
+  chrome.evaluate(() => window.__STATE__.patches.map((p) => p.ui && p.ui.tree_width).filter((n) => n != null));
+
+// --- 4a. the tree drag ---
+check("the persisted tree width is applied on boot", (await treeWidthPx()) === 320, `${await treeWidthPx()}`);
+
+// Dragged well past the maximum: the clamp is the frontend's, so the config
+// file never has to reject what the handle sent.
+const dragTo = async (x, steps = 6) => {
+  const from = await chrome.evaluate(() => {
+    const r = document.getElementById("tree-resize").getBoundingClientRect();
+    return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + 40) };
+  });
+  await chrome.mouse.move(from.x, from.y);
+  await chrome.mouse.down();
+  await chrome.mouse.move(x, from.y, { steps });
+  await chrome.mouse.up();
+  await chrome.waitForTimeout(80);
+};
+
+await dragTo(1100);
+check("dragging past the maximum stops at 600", (await treeWidthPx()) === 600, `${await treeWidthPx()}`);
+check("and does not collapse the tree", !(await collapsed()));
+
+// One move, so the last width the drag applied is the one it started from:
+// with intermediate steps the assertion below would be about wherever the
+// pointer happened to cross 140.
+await dragTo(40, 1);
+check("dragging below the minimum collapses the tree", await collapsed());
+await chrome.keyboard.press("Control+b");
+await chrome.waitForTimeout(80);
+// Belt, and the difference between a diagnosis and a stack trace: if the drag
+// did *not* collapse the tree, that `Control+b` collapsed it instead — and
+// every check below this point needs a sidebar wide enough to click.
+if (await collapsed()) {
+  await chrome.locator("#btn-expand").click();
+  await chrome.waitForTimeout(80);
+}
+check(
+  "and the width it collapsed from is what comes back, not the default",
+  (await treeWidthPx()) === 600,
+  `${await treeWidthPx()}`,
+);
+
+await dragTo(200);
+check("a drag inside the range takes the width", (await treeWidthPx()) === 200, `${await treeWidthPx()}`);
+
+// Debounced: past the 400ms window there is one write per drag, and every
+// value on the wire is inside the range `config::Ui` clamps to.
+await chrome.waitForTimeout(600);
+const patched = await widthPatches();
+check("the drag persists the width", patched.length >= 1 && patched[patched.length - 1] === 200,
+  JSON.stringify(patched));
+check("and never sends a width outside the clamp",
+  patched.every((n) => n >= 140 && n <= 600), JSON.stringify(patched));
+
+// --- 4b. the floating outline ---
+const outlineOpen = () => chrome.locator("#outline-panel.open").isVisible();
+await chrome.keyboard.press("Control+i");
+await chrome.waitForTimeout(120);
+check("the outline mounts", (await outlineOpen()) && (await chrome.locator("#outline-list .oi").count()) === 3,
+  `${await chrome.locator("#outline-list .oi").count()} entries`);
+const boxes = await chrome.evaluate(() => {
+  const p = document.getElementById("outline-panel").getBoundingClientRect();
+  const pane = document.getElementById("main-wrap").getBoundingClientRect();
+  return { style: getComputedStyle(document.getElementById("outline-panel")).position,
+           gapRight: Math.round(pane.right - p.right), fromLeft: Math.round(p.left - pane.left),
+           height: Math.round(p.height), paneHeight: Math.round(pane.height) };
+});
+check("and floats at the top right of the reading pane rather than docking",
+  boxes.style === "absolute" && boxes.gapRight <= 12 && boxes.fromLeft > 100 && boxes.height < boxes.paneHeight,
+  JSON.stringify(boxes));
+
+await chrome.keyboard.press("Control+i");
+await chrome.waitForTimeout(120);
+check("and unmounts", !(await outlineOpen()));
+
+await chrome.keyboard.press("Control+i");
+await chrome.waitForTimeout(120);
+await chrome.locator("#outline-list .oi").nth(2).click();
+await chrome.waitForTimeout(300);
+check("a heading click dismisses it", !(await outlineOpen()));
+check("and still jumps", await chrome.evaluate(() => document.getElementById("content-scroll").scrollTop > 100));
+
+await chrome.keyboard.press("Control+i");
+await chrome.waitForTimeout(120);
+check("it reopens", await outlineOpen());
+await chrome.evaluate(() =>
+  document.getElementById("content-scroll").scrollBy({ top: -200, behavior: "instant" }));
+await chrome.waitForTimeout(200);
+check("and any scroll of the reader closes it", !(await outlineOpen()));
+
+// --- 4c. the root field ---
+const rootField = chrome.locator("#repo-name");
+const shownRoot = () => rootField.inputValue();
+const knownRoot = () => chrome.evaluate(() => repoRoot);
+
+check("the field shows the basename when it is not focused", (await shownRoot()) === "repo", await shownRoot());
+await rootField.click();
+await chrome.waitForTimeout(120);
+check("and the full path when it is", (await shownRoot()) === "/repo", await shownRoot());
+
+// Tab completion: two directories agree on nothing, so nothing is typed for
+// you; one match completes and opens the next segment.
+await rootField.fill("/other/");
+await chrome.keyboard.press("Tab");
+await chrome.waitForTimeout(200);
+check("candidates that agree on nothing type nothing for you",
+  (await shownRoot()) === "/other/", await shownRoot());
+check("but say what they are",
+  (await chrome.textContent("#toast")).includes("deep") && (await chrome.textContent("#toast")).includes("zeta"),
+  await chrome.textContent("#toast"));
+await rootField.fill("/other/d");
+await chrome.keyboard.press("Tab");
+await chrome.waitForTimeout(200);
+check("candidates that share a prefix extend as far as they agree",
+  (await shownRoot()) === "/other/d", await shownRoot());
+await rootField.fill("/other/de");
+await chrome.keyboard.press("Tab");
+await chrome.waitForTimeout(200);
+check("a single completion is taken", (await shownRoot()) === "/other/deep/", await shownRoot());
+
+// The round trip: submit, and the displayed root is what came back through
+// `repo-changed`, not what was typed.
+await rootField.fill("/other");
+await chrome.keyboard.press("Enter");
+await chrome.waitForTimeout(400);
+check("submitting moves the root through IPC", (await knownRoot()) === "/other", await knownRoot());
+check("and the field goes back to a basename", (await shownRoot()) === "other", await shownRoot());
+
+await rootField.click();
+await rootField.fill("/nowhere");
+await chrome.keyboard.press("Enter");
+await chrome.waitForTimeout(300);
+check("an invalid path is flagged", (await chrome.locator("#repo-name.error").count()) === 1);
+check("and leaves you in the current root", (await knownRoot()) === "/other", await knownRoot());
+await chrome.keyboard.press("Escape");
+await chrome.waitForTimeout(150);
+check("Escape abandons the edit", (await shownRoot()) === "other", await shownRoot());
+check("and does not also leave view mode or close anything",
+  !(await chrome.evaluate(() => document.body.classList.contains("view-mode"))));
+
+// The new element is an `<input>` in the chrome, so the bare-letter bindings
+// have to stay out of it — `m`, `/` and `n` are all live keys in the reader.
+await rootField.click();
+await rootField.fill("");
+await chrome.keyboard.type("m/n[");
+await chrome.waitForTimeout(150);
+check("typing a path does not fire the reader's bare-letter keys",
+  (await shownRoot()) === "m/n[" && !(await chrome.locator("#find-bar.open").isVisible()) &&
+  (await chrome.textContent("#toast")) !== "Mark set",
+  `${await shownRoot()} / ${await chrome.textContent("#toast")}`);
+await chrome.keyboard.press("Escape");
+await chrome.waitForTimeout(150);
+
+// Back to the repo with the document in it: moving the root closed the open
+// file, and half the keymap is about a document.
+await rootField.click();
+await rootField.fill("/repo");
+await chrome.keyboard.press("Enter");
+await chrome.waitForSelector("#tree .tree-item.file");
+await chrome.locator("#tree .tree-item.file").click();
+await chrome.waitForFunction(() => document.getElementById("content").textContent.includes("One"));
+await chrome.waitForTimeout(200);
+
+// --- every keymap entry still reaches a handler ---
+// The eleven actions with state this harness can see are asserted one by one.
+// The rest are pressed too, and what they are asserted on is that dispatch
+// after the new elements exist throws nothing — which the `pageerror` and
+// `console.error` listeners above are watching for.
+const asPlaywright = (combo) =>
+  combo.split("+").map((p) => (p === "Ctrl" ? "Control" : p)).join("+");
+const km = await chrome.evaluate(() => keymap);
+const OBSERVABLE = {
+  palette: "#palette-overlay.open",
+  settings: "#settings-overlay.open",
+  toggle_stack: "#stack-panel.open",
+  toggle_outline: "#outline-panel.open",
+  find: "#find-bar.open",
+  toggle_pane: "#pty-pane.open",
+};
+for (const [action, selector] of Object.entries(OBSERVABLE)) {
+  await chrome.keyboard.press(asPlaywright(km[action]));
+  await chrome.waitForTimeout(action === "toggle_pane" ? 1200 : 150);
+  check(`${action} still resolves to a handler`, await chrome.locator(selector).isVisible());
+  await chrome.keyboard.press("Escape");
+  await chrome.waitForTimeout(150);
+}
+// The pane above left focus in xterm's textarea, where every key belongs to
+// the child — see `inTerminal`. Everything below is a reader binding.
+await chrome.locator("#content").click();
+await chrome.waitForTimeout(120);
+for (const [action, cls] of [["toggle_tree", "nav-collapsed"], ["toggle_view", "view-mode"]]) {
+  const before = await chrome.evaluate((c) => document.body.classList.contains(c), cls);
+  await chrome.keyboard.press(asPlaywright(km[action]));
+  await chrome.waitForTimeout(150);
+  const after = await chrome.evaluate((c) => document.body.classList.contains(c), cls);
+  check(`${action} still resolves to a handler`, before !== after);
+  await chrome.keyboard.press(asPlaywright(km[action]));
+  await chrome.waitForTimeout(150);
+}
+await chrome.evaluate(() => document.getElementById("content-scroll").scrollTo({ top: 0, behavior: "instant" }));
+for (const [action, key] of [["jump_bottom", "End"], ["jump_top", "Home"]]) {
+  await chrome.keyboard.press(key);
+  await chrome.waitForTimeout(200);
+  const top = await chrome.evaluate(() => document.getElementById("content-scroll").scrollTop);
+  check(`${action} still resolves to a handler`, action === "jump_bottom" ? top > 0 : top === 0, `${top}`);
+}
+const errorsBefore = results.filter((r) => r.startsWith("FAIL")).length;
+for (const [action, combo] of Object.entries(km)) {
+  if (typeof combo !== "string" || action in OBSERVABLE) continue;
+  await chrome.keyboard.press(asPlaywright(combo));
+  await chrome.waitForTimeout(90);
+  await chrome.keyboard.press("Escape");
+  await chrome.waitForTimeout(60);
+}
+await chrome.waitForTimeout(300);
+check(
+  "pressing every remaining binding throws nothing",
+  results.filter((r) => r.startsWith("FAIL")).length === errorsBefore,
 );
 
 await browser.close();

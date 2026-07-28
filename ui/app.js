@@ -119,7 +119,15 @@ async function init() {
   } catch (e) { console.error(e); }
   perf.at("ipc_repo_info");
 
-  try { keymap = await invoke("get_keymap"); } catch (e) {}
+  // One round trip, two answers: the tree cannot lay itself out at the
+  // persisted width without `[ui]`, and asking for it after the keymap would
+  // put a second serial IPC in front of the first paint. `get_ui` is a lock
+  // read — `get_settings`, which also carries it, walks the themes directory.
+  try {
+    const [km, ui] = await Promise.all([invoke("get_keymap"), invoke("get_ui")]);
+    if (km) keymap = km;
+    applyTreeWidth(ui && ui.tree_width);
+  } catch (e) {}
   $("search-hint").textContent = `Press ${keymap.palette} to search`;
   perf.at("ipc_keymap");
 
@@ -302,9 +310,180 @@ async function adoptRepoInfo() {
   const info = await invoke("repo_info");
   repoRoot = info.root || "";
   hasRepo = info.hasRepo !== false;
-  const nameEl = $("repo-name");
-  nameEl.textContent = hasRepo ? info.display || info.name || info.root : "no repo";
-  nameEl.title = hasRepo ? info.root || "" : "";
+  paintRootField();
+}
+
+// ---- root path field -----------------------------------------------------
+// `#repo-name` is the tree's heading and the way to move the tree's root, in
+// one element (D22). Basename when it is not focused, because that is a
+// heading; the full path when it is, because that is what you edit. `~` is
+// expanded and the completion list built in Rust — see `rootfield.rs` for what
+// that surface is allowed to see.
+//
+// There is no history and no dropdown: the field remembers nothing across a
+// session and writes nothing to `~/.config/dreamd/`.
+
+function basenameOf(path) {
+  const trimmed = String(path || "").replace(/\/+$/, "");
+  return trimmed.slice(trimmed.lastIndexOf("/") + 1) || trimmed;
+}
+
+// The one place the field's text comes from. Called on boot, after every
+// `repo-changed`, and on blur — so an abandoned edit is discarded rather than
+// left looking like the root.
+function paintRootField() {
+  const el = $("repo-name");
+  el.classList.remove("error");
+  el.title = hasRepo ? repoRoot : "";
+  if (el === document.activeElement) el.value = repoRoot;
+  else el.value = hasRepo ? basenameOf(repoRoot) || repoRoot : "no repo";
+}
+
+function wireRootField() {
+  const el = $("repo-name");
+  el.addEventListener("focus", () => {
+    el.value = hasRepo ? repoRoot : "";
+    // Selected, so the first keystroke replaces a path nobody wants to erase
+    // by hand. Synchronously, and then the mouseup that is about to arrive is
+    // swallowed: a click focuses *first* and places the caret *after*, which
+    // would otherwise collapse the selection made here. Deferring the select
+    // to that mouseup instead (or to a frame later) races anything already
+    // typing into the field.
+    el.select();
+    el.addEventListener("mouseup", (e) => e.preventDefault(), { once: true });
+  });
+  el.addEventListener("blur", paintRootField);
+  el.addEventListener("input", () => el.classList.remove("error"));
+  el.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      // Not the document's Escape: that one closes overlays and leaves view
+      // mode, and abandoning an edit should do neither.
+      e.preventDefault();
+      e.stopPropagation();
+      el.blur();
+    } else if (e.key === "Tab" && !e.shiftKey) {
+      e.preventDefault();
+      completeRoot(el);
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      submitRoot(el);
+    }
+  });
+}
+
+async function submitRoot(el) {
+  const text = el.value.trim();
+  if (!text || text === repoRoot) { el.blur(); return; }
+  try {
+    await invoke("set_root", { path: text });
+    // Nothing else to do here. `adopt_root` swaps config, re-walks, re-arms
+    // the watcher, flushes marks, retires and re-binds the MCP socket, and
+    // then emits `repo-changed` — whose handler is the one that repaints.
+    el.blur();
+  } catch (err) {
+    // The error state leaves you in the current root: the text you typed
+    // stays so it can be corrected, and nothing behind it moved.
+    el.classList.add("error");
+    toast(String(err));
+  }
+}
+
+// Tab completion, directories only. One match completes; several extend as far
+// as they agree, which is the most that can be typed for you without choosing
+// between them — and the names are toasted rather than given a dropdown.
+async function completeRoot(el) {
+  const text = el.value;
+  let names;
+  try {
+    names = await invoke("complete_directories", { path: text });
+  } catch (err) {
+    el.classList.add("error");
+    toast(String(err));
+    return;
+  }
+  if (!names || !names.length) { toast("Nothing completes that"); return; }
+  const cut = text.lastIndexOf("/") + 1;
+  const typed = text.slice(cut);
+  const shared = names.reduce(commonPrefix);
+  // `shared` can be shorter than what was typed — the match is case-insensitive
+  // and `Notes` and `nothing` agree on nothing — and completing must never
+  // delete characters.
+  const insert = names.length === 1
+    ? names[0] + "/"
+    : shared.length > typed.length ? shared : typed;
+  el.value = text.slice(0, cut) + insert;
+  el.setSelectionRange(el.value.length, el.value.length);
+  if (names.length > 1) {
+    toast(names.slice(0, 8).join("   ") + (names.length > 8 ? `   …+${names.length - 8}` : ""));
+  }
+}
+
+function commonPrefix(a, b) {
+  let i = 0;
+  while (i < a.length && i < b.length && a[i] === b[i]) i++;
+  return a.slice(0, i);
+}
+
+// ---- tree width ----------------------------------------------------------
+// The handle on the sidebar's right border and `config.ui.tree_width` are the
+// same number. Rust clamps it to this range on the way in, so a stale or
+// hand-typed value costs the nearest usable tree rather than a rejected config
+// file; these constants mirror `config::TREE_WIDTH_*` and exist so the drag
+// never *sends* something out of range in the first place.
+const TREE_MIN = 140;
+const TREE_MAX = 600;
+const TREE_DEFAULT = 260;
+let treeWidth = TREE_DEFAULT;
+
+// Written as an inline style on <html>, which outranks any `:root` rule a
+// palette might carry.
+function applyTreeWidth(px) {
+  const want = Number(px) || TREE_DEFAULT;
+  treeWidth = Math.round(Math.min(TREE_MAX, Math.max(TREE_MIN, want)));
+  document.documentElement.style.setProperty("--tree-width", `${treeWidth}px`);
+}
+
+// Debounced: a drag across the window is one config write, not forty.
+let treeWidthTimer = null;
+function persistTreeWidth() {
+  clearTimeout(treeWidthTimer);
+  treeWidthTimer = setTimeout(() => {
+    invoke("set_config", { patch: { ui: { tree_width: treeWidth } } })
+      .catch((e) => console.error(e));
+  }, 400);
+}
+
+function wireTreeDrag() {
+  const handle = $("tree-resize");
+  const sidebar = $("sidebar");
+  handle.addEventListener("pointerdown", (e) => {
+    // No `setPointerCapture`: dragging past the minimum collapses the tree,
+    // which hides this element, and a capture held by a `display: none`
+    // element is not something to rely on. Window listeners for the length of
+    // the drag do the same job and cannot be lost that way.
+    e.preventDefault();
+    const left = sidebar.getBoundingClientRect().left;
+    document.body.classList.add("dragging-tree");
+    const onMove = (ev) => {
+      const raw = ev.clientX - left;
+      // D20: at the extreme the drag *is* `toggle_tree`. The width is left at
+      // the last usable one, so expanding again restores what you had rather
+      // than snapping back to the default.
+      if (raw < TREE_MIN) { document.body.classList.add("nav-collapsed"); return; }
+      document.body.classList.remove("nav-collapsed");
+      applyTreeWidth(raw);
+    };
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+      document.body.classList.remove("dragging-tree");
+      persistTreeWidth();
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
+  });
 }
 
 // Every file path the tree currently shows. The watcher cannot tell a rename
@@ -734,11 +913,11 @@ function applyHighlights(list) {
     if (!doc) {
       // Few enough to place as we go; wrapping can only disturb text nodes we
       // have already passed.
-      if (!wrapByWalk(contentEl, quote, h.id)) addStaleChip(h);
+      if (!wrapByWalk(contentEl, quote, h.id, h.prior)) addStaleChip(h);
       continue;
     }
     const p = locateInNodes(doc, quote);
-    if (p) placements.push({ ...p, id: h.id });
+    if (p) placements.push({ ...p, id: h.id, prior: h.prior });
     else addStaleChip(h); // active but unlocatable in the DOM
   }
 
@@ -749,13 +928,13 @@ function applyHighlights(list) {
     const range = document.createRange();
     range.setStart(p.node, p.offset);
     range.setEnd(p.node, p.offset + p.length);
-    wrapRange(range, p.id, false);
+    wrapRange(range, p.id, false, p.prior);
   }
 }
 
 // Wrap the first occurrence of `quote` that lies within a single text node,
 // stopping the walk as soon as it is found. Returns true if it was placed.
-function wrapByWalk(container, quote, id) {
+function wrapByWalk(container, quote, id, prior) {
   if (!quote) return false;
   const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
   for (let node; (node = walker.nextNode()); ) {
@@ -764,7 +943,7 @@ function wrapByWalk(container, quote, id) {
     const range = document.createRange();
     range.setStart(node, idx);
     range.setEnd(node, idx + quote.length);
-    wrapRange(range, id, false);
+    wrapRange(range, id, false, prior);
     return true;
   }
   return false;
@@ -871,10 +1050,17 @@ function selectionContext(range) {
   return { prefix: prefix.slice(-CONTEXT_CHARS), suffix: suffix.slice(0, CONTEXT_CHARS) };
 }
 
-function wrapRange(range, id, stale) {
+// `prior` is the fade `ui/theme.css` keys off. It is a *transient* flag — the
+// Rust side sets it only on marks read off disk, and declares it
+// `skip_serializing_if = "is_false"`, so the overwhelming majority of highlights
+// arrive over IPC with no `prior` key at all. Absent therefore means false, and
+// the coercion below is load-bearing: `data-prior="undefined"` is a present
+// attribute and would fade every mark in the document.
+function wrapRange(range, id, stale, prior) {
   const mark = document.createElement("mark");
   mark.className = "hl" + (stale ? " stale" : "");
   mark.dataset.id = id;
+  if (prior === true) mark.dataset.prior = "";
   try {
     range.surroundContents(mark);
   } catch (_) {
@@ -910,7 +1096,8 @@ async function triggerHighlight() {
   const id = await invoke("add_highlight", {
     filePath: currentFile, quote, prefix, suffix,
   });
-  const mark = wrapRange(range, id, false);
+  // Minted this second, so never prior — the flag exists to say "read off disk".
+  const mark = wrapRange(range, id, false, false);
   pending = { id, mark };
   sel.removeAllRanges();
   openAnnot({ mode: "create", quote, id });
@@ -1751,6 +1938,26 @@ function toggleOutline() {
   if (open && outlineDirty) buildOutline();
 }
 
+function closeOutline() {
+  $("outline-panel").classList.remove("open");
+}
+
+// The panel floats over the reading pane and is meant to be transient (D21):
+// it fades when the pointer is away — CSS, not JS — and any scroll of the
+// reader closes it.
+//
+// A scroll rather than a timeout, deliberately: a timeout can strand a panel
+// half-faded over a paragraph, and it has to pick a number that is wrong for
+// somebody. A scroll is the reader having moved on, whether the movement came
+// from the wheel or from the jump the panel was opened to make.
+function wireOutline() {
+  scrollEl.addEventListener(
+    "scroll",
+    () => { if ($("outline-panel").classList.contains("open")) closeOutline(); },
+    { passive: true },
+  );
+}
+
 function refreshOutline() {
   outlineDirty = true;
   if ($("outline-panel").classList.contains("open")) buildOutline();
@@ -1780,6 +1987,11 @@ function buildOutline() {
     // miss, so unlike the `#anchor` path the push is unconditional.
     btn.onclick = () => {
       pushJump(here());
+      // Dismissed explicitly rather than left to the scroll listener: a jump
+      // to the heading already on screen scrolls by nothing at all, and a
+      // panel that survived that click would be the one case where the
+      // gesture appeared not to have worked.
+      closeOutline();
       h.scrollIntoView({ block: "start" });
     };
     frag.appendChild(btn);
@@ -2472,7 +2684,7 @@ function wireUi() {
 
   $("btn-print").onclick = printDocument;
   $("btn-outline").onclick = toggleOutline;
-  $("outline-close").onclick = () => $("outline-panel").classList.remove("open");
+  $("outline-close").onclick = closeOutline;
   $("btn-stack").onclick = toggleStack;
   $("stack-close").onclick = () => $("stack-panel").classList.remove("open");
   $("btn-send").onclick = () => sendStack([]);
@@ -2519,6 +2731,9 @@ function wireUi() {
 
   wireFind();
   wireSettings();
+  wireRootField();
+  wireTreeDrag();
+  wireOutline();
 }
 
 function isEditable(el) {

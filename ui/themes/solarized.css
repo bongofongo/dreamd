@@ -30,6 +30,7 @@
   --accent-dim: #d4e5f2;
 
   --hl: #b58900;
+  --hl-prior: 10%;
   --stale: #dc322f;
   --stale-bg: #f6dcd8;
   --stale-text: #ffffff;
@@ -52,6 +53,7 @@
   --accent-dim: #05404a;
 
   --hl: #b58900;
+  --hl-prior: 9%;
   --stale: #dc322f;
   --stale-bg: #3d1c1c;
   --stale-text: #ffffff;

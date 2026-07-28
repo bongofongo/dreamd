@@ -15,6 +15,12 @@
  * An unrecognised name falls back to base16-ocean.dark. Declare it per mode:
  * one theme for both is how a light palette ends up with dark code blocks.
  *
+ * `--hl-prior` is the other odd one: a *percentage*, not a colour. It is how
+ * much of `--hl` survives on a highlight made in an earlier session, and it is
+ * per mode for the same reason `--syntax-theme` is — the same strength that
+ * reads as a whisper on paper is a lit bar on a near-black background. Omit it
+ * and `ui/theme.css` falls back to 16%, which fades but is nobody's best number.
+ *
  * Serif, because this is a reader. Not sepia, because that is `manuscript` —
  * the paper here has a lilac cast and the night is indigo rather than slate. */
 
@@ -53,6 +59,7 @@
   --accent-dim: #e6dffa;
 
   --hl: #f2d16b;
+  --hl-prior: 24%;
   --stale: #c2455c;
   --stale-bg: #fbe3e7;
   --stale-text: #ffffff;
@@ -75,6 +82,7 @@
   --accent-dim: #2b2447;
 
   --hl: #f2d16b;
+  --hl-prior: 6%;
   --stale: #ef6a7d;
   --stale-bg: #3a1a22;
   --stale-text: #1a1a1a;

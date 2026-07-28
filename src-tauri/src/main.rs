@@ -15,7 +15,7 @@ use dreamd::fs_walk::FileNode;
 use dreamd::send::SendResult;
 use dreamd::{
     cli, config, guard, home_relative, markdown, marks_file, mcp, notify, perf, pty, read_source,
-    send, theme, watcher,
+    rootfield, send, theme, watcher,
 };
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -282,6 +282,37 @@ fn repo_info(state: State<AppState>) -> serde_json::Value {
         // say so; nothing in `ui/` reads it yet.
         "persists": state.persists.load(Ordering::Relaxed),
     })
+}
+
+/// The `[ui]` section on its own.
+///
+/// Separate from `get_settings`, which lists every bundled palette and walks
+/// the user themes directory, because this one is on the boot path: the tree
+/// cannot lay itself out at the persisted width without it, and asking for the
+/// whole settings payload to learn one integer would put that walk in front of
+/// the first paint.
+#[tauri::command]
+fn get_ui(state: State<AppState>) -> config::Ui {
+    state.config.lock().unwrap().ui.clone()
+}
+
+/// Directory *names* under what has been typed into the root field, for its
+/// tab completion. See `rootfield` for what this surface may and may not do —
+/// notably that it never returns a file name and never a path.
+#[tauri::command]
+fn complete_directories(path: String) -> Result<Vec<String>, String> {
+    rootfield::complete(&path, dirs::home_dir().as_deref())
+}
+
+/// Point the app at a path typed into the root field. The heavy lifting is
+/// `adopt_root`'s — config swap, re-walk, watcher re-arm, marks flush, MCP
+/// socket retire and re-bind — and this only decides whether the line is a
+/// path at all, so a typo leaves the reader in the root they were in.
+#[tauri::command]
+fn set_root(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    let target = rootfield::target(&path, dirs::home_dir().as_deref())?;
+    adopt_root(&app, target);
+    Ok(())
 }
 
 #[tauri::command]
@@ -1207,6 +1238,9 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             list_markdown_files,
             repo_info,
+            get_ui,
+            complete_directories,
+            set_root,
             initial_file,
             render_markdown,
             fuzzy_search,
