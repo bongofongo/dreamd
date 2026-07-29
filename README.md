@@ -353,7 +353,19 @@ permission_mode = "accept-edits"         # or "default" / "plan" / "bypass-permi
 
 [ui]
 tree_width = 260                         # sidebar width in px, 140–600
+menubar = false                          # the native File / Edit / Help bar
+titlebar = false                         # the WM's close / minimize / maximize bar
 ```
+
+Both `[ui]` chrome keys are off by default and live under Settings → Window,
+where they apply immediately. `menubar` is read on Linux and Windows only — on
+macOS the menubar belongs to the application rather than to the window — and
+`titlebar` defaults to `true` there, because macOS draws it as an overlay that
+costs no vertical space. Turning the menubar off takes its `Ctrl+Shift+O` /
+`Ctrl+Alt+O` with it: the bar is detached rather than hidden, which is the only
+state GTK will not undo the next time the window is shown. Click the repo name
+above the file tree to move to another folder without it. A window with no
+titlebar is still movable — drag the top few pixels of it.
 
 Both `[agent]` keys are read when the pane opens, so changing either takes effect
 on the next cold start rather than mid-session. `send_stack_tmux` is unbound and
@@ -365,7 +377,9 @@ sets one thing leaves the rest of your setup alone. It may name a `theme` but
 cannot set `theme_css` — a cloned repo does not get to point dreamd at an
 arbitrary file on your disk — and it cannot set `agent.permission_mode`, for the
 same reason: a repo you have not read yet does not get to decide what your agent
-may do without asking.
+may do without asking. Nor `ui.menubar` or `ui.titlebar`: your window frame is
+part of your desktop, and a repo that could take the close button off it is not
+setting a preference. It may still resize the tree.
 
 From the shell:
 

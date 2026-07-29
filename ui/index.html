@@ -1225,6 +1225,7 @@
           <span class="title">Settings</span>
           <div id="settings-tabs">
             <button class="st-tab sel" data-pane="keys">Keys</button>
+            <button class="st-tab" data-pane="window">Window</button>
             <button class="st-tab" data-pane="themes">Themes</button>
             <button class="st-tab" data-pane="custom">Custom theme</button>
           </div>
@@ -1235,6 +1236,15 @@
           <div class="st-pane sel" id="st-pane-keys">
             <p class="st-note">Click a shortcut to record a new one. Esc cancels; changes save straight to your config.</p>
             <div id="st-keys"></div>
+          </div>
+
+          <!-- Both rows are built by `renderWindow`, not written out here: the
+               menubar row is absent on macOS, where the bar belongs to the
+               application rather than to this window and the toggle would be
+               dead. -->
+          <div class="st-pane" id="st-pane-window">
+            <p class="st-note">The two bars your desktop draws around the reader, rather than anything dreamd paints. Both take effect immediately, and both are off by default — the document is the point.</p>
+            <div id="st-window"></div>
           </div>
 
           <div class="st-pane" id="st-pane-themes">

@@ -3489,6 +3489,7 @@ function closeSettings() {
 function selectPane(pane) {
   for (const t of document.querySelectorAll(".st-tab")) t.classList.toggle("sel", t.dataset.pane === pane);
   for (const p of document.querySelectorAll(".st-pane")) p.classList.toggle("sel", p.id === "st-pane-" + pane);
+  if (pane === "window") renderWindow();
   if (pane === "themes") renderThemes();
   if (pane === "custom") openCustom();
 }
@@ -3624,6 +3625,58 @@ function comboFromEvent(e) {
   if (e.metaKey) parts.push("Meta");
   parts.push(key);
   return parts.join("+");
+}
+
+// ---- window tab ----
+//
+// The two bars the platform draws around the reader, rather than anything dreamd
+// paints: the native menubar and the window manager's titlebar. Off by default
+// everywhere except the macOS titlebar, which is an overlay and costs no room —
+// and this pane is the only way back once they are gone, which is why it is a
+// tab of its own and not a footnote in Themes.
+//
+// The Rust side applies both to the live window inside `set_config`, so there is
+// nothing to re-render here beyond the checkbox itself and no restart to
+// prompt for.
+const WINDOW_TOGGLES = [
+  {
+    key: "menubar",
+    label: "Native menubar",
+    sub: "The File / Edit / Help bar. Its two Open shortcuts go with it — click the repo name above the file tree to move to another folder.",
+    // On macOS the menubar is the application's, not this window's, and
+    // `hide_menu` is a documented no-op there — the row would be a switch
+    // wired to nothing.
+    mac: false,
+  },
+  {
+    key: "titlebar",
+    label: "Native titlebar",
+    sub: "The window manager's bar, with close, minimize and maximize. Drag the top edge of the window to move it without one.",
+    mac: true,
+  },
+];
+
+function renderWindow() {
+  const box = $("st-window");
+  const isMac = document.body.classList.contains("mac");
+  box.innerHTML = "";
+
+  for (const t of WINDOW_TOGGLES) {
+    if (isMac && !t.mac) continue;
+    const row = document.createElement("div");
+    row.className = "st-row";
+    row.innerHTML =
+      `<span class="lbl">${escapeHtml(t.label)}` +
+      `<span class="sub">${escapeHtml(t.sub)}</span></span>`;
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = !!settings.config.ui[t.key];
+    cb.onchange = async () => {
+      if (!(await applyPatch({ ui: { [t.key]: cb.checked } }))) cb.checked = !cb.checked;
+    };
+    row.appendChild(cb);
+    box.appendChild(row);
+  }
 }
 
 // ---- themes tab ----

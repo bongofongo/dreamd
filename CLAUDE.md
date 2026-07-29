@@ -254,9 +254,14 @@ the upgrade procedure.
   `.dreamd.toml` is repo content and therefore untrusted (tenet 4) — it may name a `theme`
   but may not set `theme_css`, which would read an arbitrary file into a `<style>` tag,
   nor `agent.permission_mode`, which would let a repo choose what your agent may do
-  unasked. Both refusals live in `strip_untrusted`, a pure function over the local
-  table, so a new denied key is a test rather than a code path only `config_check`
-  reaches. `ui.tree_width` is *clamped* on deserialize (140–600) rather than
+  unasked, nor `ui.menubar`/`ui.titlebar`, which are the user's window frame and
+  not furniture inside it — `titlebar = false` from a cloned repo would take away
+  the close button. All four refusals live in `strip_untrusted`, a pure function
+  over the local table, so a new denied key is a test rather than a code path only
+  `config_check` reaches. `ui.titlebar` is the one preference whose *default* is
+  per-platform (`TITLEBAR_DEFAULT`, true only on macOS, where the bar is an
+  overlay); that is a value rather than a `cfg` arm precisely so `apply_chrome`
+  stays one code path on both. `ui.tree_width` is *clamped* on deserialize (140–600) rather than
   validated — a drag persists without a round trip through a validator, and a stale
   number costs a nearest-usable tree, not the rest of the file.
 - `theme` — the palette registry: `BUNDLED` (`include_str!`'d), user palettes in
@@ -347,7 +352,15 @@ the upgrade procedure.
   Linux gets File/Edit/Help instead. Only custom items register a real GTK
   accelerator, which is why Open Folder is `Ctrl+Shift+O` there — `CmdOrCtrl+O`
   would be consumed before the webview saw it and `keymap.toggle_stack` would
-  simply stop working.
+  simply stop working. Whether the bar exists at all is `ui.menubar`, and
+  `main.rs`'s `apply_chrome` owns the mechanism: **attached and detached, never
+  shown and hidden.** tao turns `Window::show` into `gtk_widget_show_all`, which
+  re-shows a hidden menubar, and `show` is queued through tao's request channel
+  while `hide_menu` runs inline — so no ordering inside `.setup()` wins. Hence
+  `menubar_at_launch` deciding whether `.menu()` is called at all, and
+  `set_menu`/`remove_menu` for the live toggle. Detaching takes the accel group
+  with it; that is the honest cost and the root field is the way to open a
+  folder without the bar.
 - `webkit` — one env var, set at the very top of `main` before any thread
   exists. WebKitGTK's DMA-BUF renderer allocates through GBM, which fails on the
   NVIDIA proprietary driver; on Wayland the malformed `wl_buffer` is a *protocol*

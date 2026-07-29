@@ -231,6 +231,44 @@ fn main() {
         config::set_global_key("ui.tree_width", (-40).into()).is_err(),
     );
 
+    // --- window chrome write-back ------------------------------------------
+    //
+    // The settings panel's two toggles, through the same path they take: a
+    // write to the global file and a reload. `strip_untrusted` is unit-tested;
+    // what only a real file can show is that the pair survives a round trip
+    // and that a repo-local file next to it changes nothing.
+    write_global("");
+    write_local(&repo, None);
+    checks.eq(
+        "the menubar ships off",
+        Config::load(&repo).ui.menubar,
+        false,
+    );
+    checks.eq(
+        "the titlebar ships at the platform default",
+        Config::load(&repo).ui.titlebar,
+        config::TITLEBAR_DEFAULT,
+    );
+    config::set_global_key("ui.menubar", true.into()).expect("show the menubar");
+    config::set_global_key("ui.titlebar", true.into()).expect("show the titlebar");
+    let cfg = Config::load(&repo);
+    checks.ok("a shown menubar reloads", cfg.ui.menubar);
+    checks.ok("a shown titlebar reloads", cfg.ui.titlebar);
+    write_local(&repo, Some("[ui]\nmenubar = false\ntitlebar = false\n"));
+    let cfg = Config::load(&repo);
+    checks.ok("a repo cannot hide the menubar", cfg.ui.menubar);
+    checks.ok("a repo cannot hide the titlebar", cfg.ui.titlebar);
+    // And the harmless sibling in the same section still lands, so the refusal
+    // is per-key rather than a dropped `[ui]` table.
+    write_local(&repo, Some("[ui]\ntree_width = 300\ntitlebar = false\n"));
+    let cfg = Config::load(&repo);
+    checks.eq(
+        "the same [ui] table still resizes the tree",
+        cfg.ui.tree_width,
+        300u32,
+    );
+    checks.ok("while its titlebar key is dropped", cfg.ui.titlebar);
+
     // --- the hidden tmux keybind -------------------------------------------
     write_global("");
     write_local(&repo, None);

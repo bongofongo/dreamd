@@ -1,5 +1,104 @@
 # Session log
 
+## 2026-07-29 — two bars fewer, on toggles
+
+Linux stacked two rows of chrome above the reader: the GTK File/Edit/Help
+menubar and, on top of it, the window's close/minimize/maximize bar. Both are
+gone by default and both are now settings, under a new Settings → Window tab.
+
+### What happened
+
+1. **`config::Ui` gains `menubar` and `titlebar`**, both `bool`. `menubar`
+   defaults to `false` everywhere; `titlebar` reads `TITLEBAR_DEFAULT`, which is
+   `true` only on macOS. That is a per-platform *value*, deliberately not a
+   `cfg` arm around the code that applies it, so `apply_chrome` stays one path
+   on both platforms and a macOS user who hand-sets `titlebar = false` gets a
+   frameless window rather than a key that silently does nothing. The asymmetry
+   is real: `titleBarStyle: "Overlay"` puts the traffic lights *inside* the
+   reading pane, so there is no second bar on macOS to reclaim.
+
+2. **Both keys are denied to a repo-local `.dreamd.toml`.** They join
+   `theme_css` and `agent.permission_mode` in `strip_untrusted`. The line drawn:
+   `ui.tree_width` moves furniture *inside* the window and stays allowed, while
+   `titlebar = false` takes the close button off a window a cloned repo has no
+   business touching — and unlike a theme, moving to another repo does not undo
+   it, because the reader has to find the settings panel to get the frame back.
+   A test pins that the refusal is per-key rather than a dropped `[ui]` table.
+
+3. **`main.rs` grew `apply_chrome` and `menubar_at_launch`**, next to
+   `pin_native_theme`. The menubar is **attached and detached, never shown and
+   hidden** — see the mistake below for why. `menubar_at_launch` decides whether
+   the builder calls `.menu()` at all (`|| cfg!(target_os = "macos")`, because
+   the macOS bar is app-wide and carries dreamd's only File → Open), and
+   `set_menu`/`remove_menu` handle the live toggle. The builder chain had to be
+   split across a `let` to make `.menu()` conditional. `apply_chrome` runs from
+   `.setup()`, from `set_config` — which is what makes the toggles instant
+   rather than restart-only — and from `adopt_root`, which re-reads config.
+
+4. **Detaching the bar takes its accelerators with it**, because
+   `remove_for_gtk_window` drops the window's accel group. Accepted rather than
+   worked around: a menu that is not there should not own `Ctrl+Shift+O`. Nothing
+   is stranded — the sidebar header's root field opens a folder with tab
+   completion — and the row's sub-label and the README both say so.
+
+5. **A fourth settings tab, Window**, rather than a section inside Themes: the
+   Themes pane has live-preview-undone-on-close semantics, and this pane is the
+   only route back once both bars are gone. `renderWindow` builds the rows from
+   `WINDOW_TOGGLES` so the menubar row can be omitted on macOS, where
+   `hide_menu` is a documented no-op and the toggle would be wired to nothing.
+
+6. **Harnesses.** `config_check` gained a window-chrome write-back section (57
+   checks). `ui-check.mjs`'s mocked `get_settings` now carries a `ui` table,
+   which is what Rust actually sends, plus four checks that the tab lists both
+   rows, starts from the payload, and writes `ui.titlebar` on click (226).
+
+### Mistakes & deviations
+
+- **The first implementation did not work, and only launching the app showed
+  it.** `hide_menu()` from `.setup()` before `win.show()`, reasoning that
+  `run_on_main_thread` resolves inline on the main thread so the hide would land
+  first. It did land first — and the bar was still on screen. tao turns
+  `Window::show` into `gtk_widget_show_all`, which recursively re-shows every
+  child, and `show` is queued through tao's *window-request channel* while the
+  hide runs inline, so `show_all` is always last and no ordering inside
+  `.setup()` can win. Caught by running the debug binary under XWayland and
+  reading `_MOTIF_WM_HINTS` plus a cropped screenshot: decorations were gone,
+  File/Edit/Help was not. Rewritten to attach/detach, which leaves no widget for
+  `show_all` to find.
+
+- **Two doc comments then asserted the opposite of the truth** — that muda's
+  `hide_for_gtk_window` keeps the accel group attached, which is correct about
+  `hide_menu` and irrelevant once the code uses `remove_menu`. Both the
+  `config::Ui` doc and the settings row's sub-label were corrected in the same
+  pass, along with a pane note claiming "everything in the menubar has a
+  keybind" — Open Folder does not.
+
+- **The first verification ran on the wrong stack.** `GDK_BACKEND=x11` was used
+  to make the window scriptable, but the machine is Hyprland: the bar the user
+  actually sees is GTK's *client-side* decoration, not a WM frame. Noticed
+  before drawing any conclusion about the titlebar from `_NET_FRAME_EXTENTS`
+  being absent, which under XWayland means nothing. `gtk_window_set_decorated`
+  governs both, so the mechanism was right regardless. The user hand-verified
+  both toggles on the real desktop, which is where this stopped.
+
+### State
+
+`cargo build` clean; `cargo test --all-features` 278 passed; clippy clean with
+`-D warnings`; `config_check` 57, `mcp_check` 49, `marks_check` 75,
+`theme_check` 10 families, `node --test ui/paths.test.mjs` 10,
+`ui-check.mjs` 226 — all green. The real binary was launched on both XWayland
+and Wayland during the session; the user hand-verified both toggles round-trip.
+
+**No perf tier was run, deliberately.** The baseline is macOS-only and `run.sh`
+enforces it off Darwin — a `pass` here would write `perf/results/` with nothing
+to compare against. The change adds one `set_decorations` call at startup, a
+conditional `.menu()`, and panel JS that runs only when the panel opens; nothing
+touches the render, locate or search paths. Worth a `perf-pass` on the Mac
+before a release if the startup path is in question.
+
+Left open: with the titlebar off, resizing an undecorated window is the
+compositor's business and varies by WM — not addressed, and no report of it.
+
 ## 2026-07-29 — the pane earns its header
 
 Seven asks about the agent pane, all from using it: the send icon was a

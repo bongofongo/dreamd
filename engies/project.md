@@ -123,8 +123,9 @@ What exists: the file tree, the fuzzy palette, the reading view, highlight mode,
 the annotation modal, the stack panel with cherry-picking, the stale-highlight
 margin rail, live reload that preserves your scroll position, an nvim-style CLI
 (`dreamd file.md`), a per-file `⋯` menu (copy path / delete to Trash),
-vim-flavored keybinds throughout, and a settings panel for changing those keybinds
-and the colour scheme without leaving the app.
+vim-flavored keybinds throughout, and a settings panel for changing those keybinds,
+the colour scheme, and which bars your desktop draws around the window — all
+without leaving the app.
 
 Known limits, all deliberate for v1:
 
@@ -242,6 +243,28 @@ causes were wrong.
   that is where its users look.
 
 ## Recent updates
+
+- **2026-07-29** — **Two bars of clutter removed from the Linux window, both on
+  a switch.** Opening dreamd on Linux used to cost you two rows of furniture
+  before the first line of prose: a File / Edit / Help menu bar, and directly
+  above it the window's own bar with the close, minimize and maximize buttons.
+  Both are now gone by default, so the window starts at dreamd's own toolbar and
+  the document gets the space.
+
+  Neither is a decision made for you. A new **Window** tab in Settings has a
+  switch for each, and flipping one takes effect straight away — no restart. If
+  you liked the menu bar, turn it back on and it comes back. One thing to know:
+  the menu bar's two "open a folder" shortcuts belong to the bar, so they go away
+  with it. Nothing is lost — click the folder name above the file tree and type a
+  path, and it will complete as you go.
+
+  macOS is untouched. Its menu bar belongs to the application rather than to the
+  window, and its title bar is already drawn *inside* the reading area, so there
+  was never a second bar there to reclaim.
+
+  One deliberate limit: a project you have cloned cannot set either of these,
+  even though it can still set your theme or the width of the file tree. A repo
+  you have not read yet does not get to take the close button off your window.
 
 - **2026-07-29** — **The send got instant, and the pane grew a header worth
   reading.** Sending your stack of questions to Claude used to wait five seconds

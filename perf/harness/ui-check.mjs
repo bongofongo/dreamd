@@ -63,6 +63,10 @@ await page.addInitScript(({ base, palettes }) => {
     config: {
       theme: "dreamd", mode: "system",
       tmux_autodetect: true, extra_ignores: [], keymap: { ...KEYMAP },
+      // `config::Ui` is a plain struct, so Rust always sends all three —
+      // spelling them out here is what keeps the Window tab's checks below
+      // asserting on the payload the real backend produces.
+      ui: { tree_width: 260, menubar: false, titlebar: false },
     },
     // What `mode: "system"` resolves to. The page is opened with
     // `colorScheme: "dark"`, so this is what Rust would have answered.
@@ -212,6 +216,26 @@ await firstCombo.click();
 await page.keyboard.press("Escape");
 await page.waitForTimeout(80);
 check("Esc cancels recording, panel stays open", await page.locator("#settings-overlay.open").isVisible());
+
+// --- window tab ---
+// Chromium is not WebKitGTK and there is no window here at all, so what this
+// can assert is exactly the frontend's half: the rows exist, they start from
+// the payload, and a click writes the key Rust reads. Whether the bar actually
+// disappears is `apply_chrome`'s, and a hand-check.
+await page.locator('.st-tab[data-pane="window"]').click();
+await page.waitForTimeout(120);
+const chromeRows = await page.locator("#st-window .st-row").count();
+check("both chrome toggles listed off macOS", chromeRows === 2, `got ${chromeRows}`);
+const titlebarBox = page.locator("#st-window .st-row", { hasText: "Native titlebar" })
+  .locator('input[type="checkbox"]');
+check("titlebar starts from the config payload", !(await titlebarBox.isChecked()));
+await titlebarBox.click();
+await page.waitForTimeout(200);
+check(
+  "toggling writes ui.titlebar",
+  (await page.evaluate(() => window.__STATE__.config.ui.titlebar)) === true,
+);
+check("and the box stays checked", await titlebarBox.isChecked());
 
 // --- themes tab ---
 await page.locator('.st-tab[data-pane="themes"]').click();

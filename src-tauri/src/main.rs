@@ -15,8 +15,8 @@ use dreamd::flow::Flow;
 use dreamd::fs_walk::FileNode;
 use dreamd::send::SendResult;
 use dreamd::{
-    cli, config, flow, guard, home_relative, markdown, marks_file, mcp, notify, perf, prompt, pty,
-    read_source, rootfield, send, theme, watcher,
+    cli, config, flow, guard, home_relative, markdown, marks_file, mcp, menu, notify, perf, prompt,
+    pty, read_source, rootfield, send, theme, watcher,
 };
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -748,6 +748,7 @@ fn set_config(
     state.set_scheme(scheme);
     if let Some(win) = app.get_webview_window("main") {
         pin_native_theme(&win, native_pin(mode, scheme, system));
+        apply_chrome(&win, &state.config.lock().unwrap().ui);
     }
     Ok(get_settings(state))
 }
@@ -772,6 +773,68 @@ fn native_pin(
     system: theme::Scheme,
 ) -> Option<theme::Scheme> {
     (mode != config::Mode::System || scheme != system).then_some(scheme)
+}
+
+/// Whether the menubar is attached to the window at all, which is the question
+/// the builder asks *before* there is a window to hide anything on. See
+/// [`apply_chrome`] for why attaching is the only workable answer.
+///
+/// `cfg!` rather than `#[cfg]`: on macOS the menubar is the application's and
+/// carries dreamd's File -> Open, so it is attached whatever the config says —
+/// and skipping `.menu()` there would leave Tauri's own default bar, which has
+/// no Open item at all. One code path, both platforms, no untaken arm.
+fn menubar_at_launch(ui: &config::Ui) -> bool {
+    ui.menubar || cfg!(target_os = "macos")
+}
+
+/// Apply the two window-chrome preferences to the live window: the native
+/// menubar and the window manager's titlebar.
+///
+/// Called from `.setup()`, from `set_config` so the settings toggles are
+/// instant rather than restart-only, and from `adopt_root` with the config it
+/// just re-read. Idempotent — the menu half compares against what is actually
+/// attached, so the `.setup()` call is a no-op agreeing with
+/// [`menubar_at_launch`].
+///
+/// **The menubar is attached and detached, not shown and hidden**, and that is
+/// not a preference. tao turns `Window::show` into `gtk_widget_show_all` on the
+/// GTK window, which recursively re-shows every child — including a menubar
+/// hidden a moment earlier. Worse, `show` is queued through tao's window-request
+/// channel while `hide_menu` runs inline on the main thread, so *no* ordering
+/// inside `.setup()` wins: `show_all` is always last. Measured, not reasoned —
+/// `hide_menu` before `show` left the bar on screen. `remove_menu` removes the
+/// widget, so there is nothing left for `show_all` to find.
+///
+/// The cost is that `remove_for_gtk_window` also detaches the window's accel
+/// group, so `Ctrl+Shift+O` / `Ctrl+Alt+O` go with the bar. That is the honest
+/// behaviour for a menu that is not there, and nothing is stranded: the sidebar
+/// header's root field opens a folder with tab completion, and every reader
+/// action has a keybind in `[keymap]`.
+///
+/// `set_decorations` needs none of this — it is supported on every platform and
+/// applies immediately, which is why the platform difference lives in
+/// `config::TITLEBAR_DEFAULT` and not here.
+fn apply_chrome(win: &tauri::WebviewWindow, ui: &config::Ui) {
+    let _ = win.set_decorations(ui.titlebar);
+
+    // macOS's bar belongs to the application, not to this window:
+    // `set_menu`/`remove_menu` are documented Unsupported there, and
+    // `remove_menu` would still clear Tauri's bookkeeping while leaving the
+    // NSMenu on screen. Nothing to do — the settings panel hides the row.
+    if cfg!(target_os = "macos") {
+        return;
+    }
+    match (ui.menubar, win.menu().is_some()) {
+        (true, false) => {
+            if let Ok(menu) = menu::build(win.app_handle()) {
+                let _ = win.set_menu(menu);
+            }
+        }
+        (false, true) => {
+            let _ = win.remove_menu();
+        }
+        _ => {}
+    }
 }
 
 fn pin_native_theme(win: &tauri::WebviewWindow, pinned: Option<theme::Scheme>) {
@@ -1040,6 +1103,12 @@ fn adopt_root(app: &tauri::AppHandle, path: PathBuf) {
         catalog.rebuild(&root, &ignores);
         let _ = handle.emit("repo-changed", initial);
         if let Some(win) = handle.get_webview_window("main") {
+            // The config was re-read above, so the chrome is re-applied for the
+            // same reason the theme is: a hand-edited global file is the only
+            // thing that can have moved either (a repo-local one may not set
+            // them at all — see `strip_untrusted`), and this is the one path
+            // that adopts such an edit without a restart.
+            apply_chrome(&win, &handle.state::<AppState>().config.lock().unwrap().ui);
             let _ = win.show();
             let _ = win.set_focus();
         }
@@ -1405,6 +1474,7 @@ fn main() {
     let mcp_cancel = has_repo.then(|| Arc::new(AtomicBool::new(false)));
     let store = Arc::new(Mutex::new(store));
     let dirty = Arc::new(AtomicBool::new(false));
+    let menubar_pref = cfg.ui.clone();
     let state = AppState {
         repo_root: RwLock::new(repo_root.clone()),
         has_repo: AtomicBool::new(has_repo),
@@ -1431,7 +1501,12 @@ fn main() {
         flow: Mutex::new(Flow::default()),
     };
 
-    tauri::Builder::default()
+    // Read before `cfg` moves into the state, and answered here rather than in
+    // `.setup()` because a menubar that exists cannot be reliably hidden before
+    // the window is shown — `apply_chrome` has the measurement.
+    let menubar = menubar_at_launch(&menubar_pref);
+
+    let builder = tauri::Builder::default()
         .manage(state)
         .invoke_handler(tauri::generate_handler![
             list_markdown_files,
@@ -1504,6 +1579,7 @@ fn main() {
                 };
                 state.set_scheme(scheme);
                 pin_native_theme(&win, native_pin(mode, scheme, system));
+                apply_chrome(&win, &state.config.lock().unwrap().ui);
 
                 // Paint the window with the theme's own `--bg` before the
                 // frontend has injected theme.css; without this the reading
@@ -1568,12 +1644,23 @@ fn main() {
             });
             Ok(())
         })
-        .menu(dreamd::menu::build)
         .on_menu_event(|app, event| match event.id().as_ref() {
-            dreamd::menu::OPEN_FOLDER => open_target(app, false),
-            dreamd::menu::OPEN_FILE => open_target(app, true),
+            menu::OPEN_FOLDER => open_target(app, false),
+            menu::OPEN_FILE => open_target(app, true),
             _ => {}
-        })
+        });
+
+    // Not `.menu(…)` with a hide afterwards: skipping it is what makes
+    // `ui.menubar = false` mean *no menubar widget*, which is the only state
+    // `gtk_widget_show_all` cannot undo. The settings toggle attaches one later
+    // through `apply_chrome`.
+    let builder = if menubar {
+        builder.menu(menu::build)
+    } else {
+        builder
+    };
+
+    builder
         // `build` + `run` rather than `run` alone, for the one thing the short
         // form cannot do: a last flush on the way out. Quitting inside the
         // debounce window would otherwise lose the annotation the user typed

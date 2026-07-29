@@ -137,6 +137,25 @@ pub struct Ui {
     /// with it.
     #[serde(deserialize_with = "de_tree_width")]
     pub tree_width: u32,
+
+    /// Whether the window draws the native menubar — File / Edit / Help on
+    /// Linux, and nothing at all on macOS, where the bar belongs to the
+    /// application rather than to the window and cannot be hidden per-window.
+    ///
+    /// Off by default: on Linux it is a full row of chrome above a reader whose
+    /// whole point is the document. Its two accelerators go with it — the bar is
+    /// detached, not hidden, for reasons `apply_chrome` in `main.rs` measured —
+    /// so the sidebar header's root field is the way to open a folder without
+    /// one.
+    pub menubar: bool,
+
+    /// Whether the window keeps its native titlebar: the bar the window manager
+    /// draws above the window, carrying close / minimize / maximize.
+    ///
+    /// See [`TITLEBAR_DEFAULT`] for why the default is not the same on every
+    /// platform. `ui/index.html`'s `#drag-strip` is what keeps a window with no
+    /// titlebar movable, and it predates this setting — it exists for view mode.
+    pub titlebar: bool,
 }
 
 /// The sidebar's original fixed width, and the range the drag handle may leave
@@ -146,10 +165,31 @@ pub const TREE_WIDTH_DEFAULT: u32 = 260;
 pub const TREE_WIDTH_MIN: u32 = 140;
 pub const TREE_WIDTH_MAX: u32 = 600;
 
+/// macOS keeps its titlebar; nothing else does.
+///
+/// This is the one platform difference in the window-chrome settings, and it is
+/// a *value* rather than a `cfg` arm around the code that applies it — so both
+/// platforms compile and run the same `apply_chrome`, and a macOS user who sets
+/// `titlebar = false` by hand gets a frameless window rather than a key that
+/// silently does nothing.
+///
+/// The asymmetry is real, not taste: `tauri.conf.json` asks for
+/// `titleBarStyle: "Overlay"` with `hiddenTitle`, so on macOS the traffic
+/// lights sit *inside* the reading pane and cost no vertical space. There is no
+/// second bar there to reclaim. On Linux the WM stacks a real title bar above
+/// the window, directly on top of the menubar — two rows of furniture before
+/// the first line of prose.
+#[cfg(target_os = "macos")]
+pub const TITLEBAR_DEFAULT: bool = true;
+#[cfg(not(target_os = "macos"))]
+pub const TITLEBAR_DEFAULT: bool = false;
+
 impl Default for Ui {
     fn default() -> Self {
         Self {
             tree_width: TREE_WIDTH_DEFAULT,
+            menubar: false,
+            titlebar: TITLEBAR_DEFAULT,
         }
     }
 }
@@ -385,7 +425,7 @@ impl Config {
 /// came from.
 ///
 /// `.dreamd.toml` is repo content, and repo content is untrusted (tenet 4) —
-/// you get it by cloning. Two keys are more than a preference:
+/// you get it by cloning. Four keys are more than a preference:
 ///
 /// - `theme_css` reads an arbitrary file and injects it into the webview as a
 ///   stylesheet, where a `background-image: url(https://…)` would turn that
@@ -394,9 +434,15 @@ impl Config {
 /// - `agent.permission_mode` chooses how much the agent may do without asking.
 ///   A cloned repo that could set `bypass-permissions` would be deciding that
 ///   on your behalf, before you had read a line of it.
+/// - `ui.menubar` and `ui.titlebar` are the window's own frame. `titlebar =
+///   false` takes away the close button, which is a thing a cloned repo should
+///   not be able to do to a window — and unlike the keys below, no amount of it
+///   is undone by moving to another repo, because the reader has to find the
+///   settings panel to get the frame back. The pair travels together: one key
+///   deciding your chrome is the shape of the problem, not the direction.
 ///
-/// `agent.position` and `ui.tree_width` are left alone: they move furniture and
-/// read nothing.
+/// `agent.position` and `ui.tree_width` are left alone: they move furniture
+/// *inside* the window and read nothing.
 fn strip_untrusted(local: &mut Table) -> Vec<(&'static str, &'static str)> {
     let mut warnings = Vec::new();
     if local.remove("theme_css").is_some() {
@@ -408,6 +454,15 @@ fn strip_untrusted(local: &mut Table) -> Vec<(&'static str, &'static str)> {
                 "agent.permission_mode",
                 "a repo does not choose what your agent may do unasked",
             ));
+        }
+    }
+    if let Some(Value::Table(ui)) = local.get_mut("ui") {
+        const WHY: &str = "a repo does not choose what your window frame looks like";
+        if ui.remove("menubar").is_some() {
+            warnings.push(("ui.menubar", WHY));
+        }
+        if ui.remove("titlebar").is_some() {
+            warnings.push(("ui.titlebar", WHY));
         }
     }
     warnings
@@ -798,6 +853,50 @@ mod tests {
         assert_eq!(warnings.len(), 1);
         assert_eq!(warnings[0].0, "theme_css");
         assert!(local.is_empty());
+    }
+
+    #[test]
+    fn a_repo_may_resize_the_tree_but_not_take_away_the_close_button() {
+        let mut local = table("[ui]\ntree_width = 200\nmenubar = true\ntitlebar = false\n");
+        let warnings = strip_untrusted(&mut local);
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+        assert_eq!(warnings[0].0, "ui.menubar");
+        assert_eq!(warnings[1].0, "ui.titlebar");
+
+        let cfg = Config::deserialize(Value::Table(local)).expect("stripped config");
+        assert!(!cfg.ui.menubar, "a repo turned the menubar on");
+        assert_eq!(
+            cfg.ui.titlebar, TITLEBAR_DEFAULT,
+            "a repo chose the window frame"
+        );
+        assert_eq!(cfg.ui.tree_width, 200, "tree_width is still harmless");
+    }
+
+    #[test]
+    fn the_window_chrome_defaults_are_off_except_the_mac_titlebar() {
+        // The pair the settings panel toggles, pinned so a change to either
+        // default is a deliberate edit here. `menubar` is unconditional
+        // because `hide_menu` is a documented no-op on macOS — the bar there
+        // belongs to the app, not the window, and this key never touches it.
+        let ui = Ui::default();
+        assert!(!ui.menubar);
+        assert_eq!(ui.titlebar, cfg!(target_os = "macos"));
+    }
+
+    #[test]
+    fn a_chrome_toggle_from_the_panel_arrives_as_a_bool() {
+        // `renderWindow`'s exact path, for the same reason
+        // `a_width_from_the_drag_handle_arrives_as_an_integer` exists: a JS
+        // boolean has to survive the JSON -> TOML hop, or the toggle would be
+        // rejected by `patch_global` and silently snap back.
+        let patch: Table =
+            Table::deserialize(serde_json::json!({"ui": {"menubar": true, "titlebar": true}}))
+                .expect("json patch");
+        let mut table = Table::new();
+        deep_merge(&mut table, patch);
+        let cfg = Config::deserialize(Value::Table(table)).expect("deserialize");
+        assert!(cfg.ui.menubar);
+        assert!(cfg.ui.titlebar);
     }
 
     #[test]
