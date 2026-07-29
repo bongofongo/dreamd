@@ -715,6 +715,44 @@ check("and a second search still paints", (await litCount()) === 3, `${await lit
 await nav.keyboard.press("Escape");
 await beat(150);
 
+// --- the file ⋯ menu stays inside the window ------------------------------
+// It is `position: fixed`, so nothing clips it — it was simply laid out past the
+// bottom edge, and for a tree that fills the sidebar that was every file in the
+// lower half. Driven through `openFileMenu` against a synthetic anchor rather
+// than a real tree row, because what changed is the arithmetic and a fixture
+// tall enough to reach the foot of the viewport would be testing the fixture.
+const menuAt = (y) =>
+  nav.evaluate((top) => {
+    const el = document.createElement("div");
+    el.style.cssText = `position:fixed;left:100px;top:${top}px;width:20px;height:16px;`;
+    document.body.appendChild(el);
+    openFileMenu(el, { path: "/repo/doc.md" });
+    const r = document.getElementById("file-menu").getBoundingClientRect();
+    closeFileMenu();
+    el.remove();
+    return { top: r.top, bottom: r.bottom, left: r.left, right: r.right, anchor: top };
+  }, y);
+
+const lowMenu = await menuAt(await nav.evaluate(() => window.innerHeight - 30));
+check(
+  "a ⋯ menu near the foot of the window flips above its button",
+  lowMenu.bottom <= lowMenu.anchor && lowMenu.top >= 0,
+  `anchor ${lowMenu.anchor}, menu ${lowMenu.top}–${lowMenu.bottom}`,
+);
+check(
+  "and stays inside the viewport",
+  lowMenu.bottom <= (await nav.evaluate(() => window.innerHeight)) &&
+    lowMenu.right <= (await nav.evaluate(() => window.innerWidth)),
+  `${lowMenu.top}–${lowMenu.bottom}, right ${lowMenu.right}`,
+);
+// The common case must not have moved: there is room below, so it opens below.
+const highMenu = await menuAt(40);
+check(
+  "and one with room below it still opens downward",
+  highMenu.top >= 40 + 16,
+  `anchor 40, menu top ${highMenu.top}`,
+);
+
 // --- marks-changed: the agent push path ---
 // A fourth page, and the first with a working event bus: every other stub
 // returns a no-op unlisten, which is all they need. This one has to *deliver*,
@@ -735,8 +773,15 @@ await agent.addInitScript(({ base }) => {
   };
   // Distinct paragraphs so each quote lands in its own text node, and enough of
   // them that the run below crosses SCAN_THRESHOLD in both directions.
+  //
+  // The last paragraph is the odd one out and is there for one check: a `<strong>`
+  // run splits it into three text nodes, so a quote across the whole line exists
+  // in the rendered text and in none of its nodes. That is the shape a reader
+  // produces by dragging over a bolded phrase, and it is what neither placer can
+  // wrap.
   const body = "<h1>/repo/doc.md</h1>" +
-    Array.from({ length: 12 }, (_, i) => `<p>alpha bravo charlie ${i} delta echo</p>`).join("");
+    Array.from({ length: 12 }, (_, i) => `<p>alpha bravo charlie ${i} delta echo</p>`).join("") +
+    "<p>foxtrot <strong>golf</strong> hotel</p>";
   // The full `Highlight` shape, not just what `applyHighlights` reads — the
   // stack card renders `file_path` and the line span too.
   const mark = (n) => ({
@@ -758,15 +803,25 @@ await agent.addInitScript(({ base }) => {
   window.__MARK__ = (n) => marks.push(mark(n));
   window.__PAIR__ = (n, annotation) =>
     stack.push({ highlight: mark(n), annotation });
-  // T6: put a mark out with the agent — `sent_at`, which is what raises the
-  // pending glyph. `stale` on top of it is D5's case, where a passage went
-  // stale *while* it was out and both have to be told.
+  // T6: put a mark out with the agent — `sent_at`, which a send stamps. It used
+  // to raise a chip on the rail; the checks below are that it now raises nothing.
+  // `stale` on top of it was D5's two-glyph case and is now the one-glyph case.
   window.__PEND__ = (n, stale) => {
     const m = marks.find((x) => x.id.endsWith(String(n).padStart(2, "0")));
     m.sent_at = 1_700_000_000;
     if (stale) m.state = "stale";
   };
-  window.__RESOLVED__ = [];
+  // An active mark whose quote spans the `<strong>` run: present in the rendered
+  // text, present in no single text node, so both placers fail on it.
+  window.__CROSSNODE__ = () =>
+    marks.push({
+      id: "h00000000000000ff",
+      file_path: "/repo/doc.md",
+      quote: "foxtrot golf hotel",
+      prefix: "", suffix: "",
+      line_start: 13, line_end: 13,
+      state: "active",
+    });
 
   const listeners = new Map();
   window.__EMIT__ = (name, payload) => {
@@ -797,17 +852,16 @@ await agent.addInitScript(({ base }) => {
           // Read live, not captured: this is the agent's mutation arriving.
           case "get_highlights": case "reanchor": return marks.map((m) => ({ ...m }));
           case "get_stack": return stack.map((p) => ({ ...p }));
-          // The resolve-by-hand backstop. `Store::resolve` clears `sent_at` and
-          // drops the stack entry; both halves are here, because the badge is
-          // how the test tells a store change from a DOM one.
-          case "resolve_mark": {
-            const m = marks.find((x) => x.id === args.id);
-            if (!m) return false;
-            m.sent_at = null;
-            window.__RESOLVED__.push(args.id);
+          // Mirrors `Store::remove_from_stack` exactly, both halves: the queue
+          // shrinks *and* the passage becomes prior. The second half is the one
+          // the checks below are about — a pop has to fade the mark, and the
+          // frontend only shows that if it repaints.
+          case "remove_pair": {
             const at = stack.findIndex((p) => p.highlight.id === args.id);
             if (at >= 0) stack.splice(at, 1);
-            return true;
+            const m = marks.find((x) => x.id === args.id);
+            if (m) m.prior = true;
+            return null;
           }
           default: return null;
         }
@@ -826,6 +880,15 @@ await agent.goto(pathToFileURL(join(UI, "index.html")).href);
 await agent.waitForFunction(() => document.getElementById("content").textContent.includes("/repo/doc.md"));
 
 const hlCount = () => agent.evaluate(() => document.querySelectorAll("mark.hl").length);
+// How many distinct highlights are painted, which is not the same number: a quote
+// spanning a bold run or a link is several `<mark>`s sharing one id (see
+// `placeAcrossNodes`). Every assertion about *whether a passage shows* wants this
+// one; `hlCount` is the element tally and only interesting when the split itself
+// is the subject.
+const hlIds = () =>
+  agent.evaluate(
+    () => new Set([...document.querySelectorAll("mark.hl")].map((m) => m.dataset.id)).size,
+  );
 // Emit and wait past the 80ms coalescing window plus the IPC turn behind it.
 const emitMarks = async (payload) => {
   await agent.evaluate((p) => window.__EMIT__("marks-changed", p), payload);
@@ -895,53 +958,139 @@ await agent.evaluate(() => {
 await agent.waitForTimeout(400);
 check("a burst of events settles to one correct overlay", (await hlCount()) === 4, `got ${await hlCount()}`);
 
-// --- T6: the pending glyph, and resolving one by hand ---------------------
-// The other half of the resolution loop. `sent_at` is what a send stamps and
-// what `Store::resolve` clears, so the glyph appearing and disappearing is the
-// whole of what the reader sees of an agent working through the stack.
+// --- what the rail is allowed to say --------------------------------------
+// One chip, one meaning: this passage's own text changed. `sent_at` is still
+// stamped by a send and still cleared by `Store::resolve` — the agent's record of
+// what it closed — but it paints nothing, because a question that has been asked
+// is a question dealt with. Reinstate `addPendingChip` and the first check goes
+// red; reinstate either `addStaleChip` on a placement failure and the last two do.
 const pendChips = () => agent.locator(".pend-chip").count();
 const staleChips = () => agent.locator(".stale-chip").count();
 
 await agent.evaluate(() => window.__PEND__(1));
 await emitMarks({ file_path: "/repo/doc.md", stack: false });
-check("a mark out with the agent raises a pending chip", (await pendChips()) === 1, `${await pendChips()}`);
+check(
+  "a mark out with the agent raises nothing beside the document",
+  (await pendChips()) === 0 && (await staleChips()) === 0,
+  `${await pendChips()} pending, ${await staleChips()} stale`,
+);
 check("and the passage itself still paints", (await hlCount()) === 4, `got ${await hlCount()}`);
 
-// D5's case, and the reason `sent_at` sits beside `state` instead of inside
-// it: a passage can go stale *while* it is out with the agent, and a single
-// enum would have to pick one of the two and would pick wrong.
+// What was D5's two-glyph case. A passage can still go stale *while* it is out
+// with the agent — that is why `sent_at` sits beside `state` rather than inside
+// it — but the rail has one tenant now, so it is told once.
 await agent.evaluate(() => window.__PEND__(2, true));
 await emitMarks({ file_path: "/repo/doc.md", stack: false });
 check(
-  "a passage that went stale while it was out shows both glyphs",
-  (await pendChips()) === 2 && (await staleChips()) === 1,
-  `${await pendChips()} pending, ${await staleChips()} stale`,
+  "a passage that went stale while it was out shows the stale chip alone",
+  (await staleChips()) === 1 && (await pendChips()) === 0,
+  `${await staleChips()} stale, ${await pendChips()} pending`,
 );
 
-// The backstop for an agent that answered and never called the tool (4.7).
-const badgeBeforeResolve = await badge();
-// Guarded, like the send bar's buttons and the mode control's: a chip that
-// stopped being rendered should report as the checks it broke rather than as a
-// click timeout that takes the run down before anything is printed.
-const answered = agent.locator('.pend-chip[data-id="h0000000000000001"] button');
-if (await answered.count()) await answered.click();
-await agent.waitForTimeout(400);
-check("resolving by hand clears that chip", (await pendChips()) === 1, `${await pendChips()}`);
-// The distinction that matters: it went through the store, not just the DOM.
-// A handler that removed the chip and stopped would pass a count assertion and
-// leave the mark pending on the next repaint.
-check(
-  "and it went through the store",
-  (await agent.evaluate(() => window.__RESOLVED__)).join() === "h0000000000000001",
-  (await agent.evaluate(() => window.__RESOLVED__)).join(),
-);
-check(
-  "and took the stack entry with it",
-  badgeBeforeResolve === "2" && (await badge()) === "1",
-  `${badgeBeforeResolve} -> ${await badge()}`,
-);
+// --- a quote that spans an element boundary still paints -------------------
+// The bug the reader actually hit, and the reason `placeAcrossNodes` exists. The
+// frontend stores what `getSelection().toString()` returns, so dragging across a
+// bolded phrase stores a quote that spans three text nodes. `wrapRange` on the
+// live selection paints it once at creation; every later paint went through
+// `wrapByWalk`/`locateInNodes`, which only looked *inside* one node, found
+// nothing and drew nothing. The mark stayed in the store and on the stack — the
+// badge counted it — so a highlight survived being annotated and then vanished
+// the next time anything repainted. Reproduced in a real window with four marks
+// on the stack and one visible.
+//
+// It must also stay silent. A placement failure was never a claim about the
+// source, which is `Store::reanchor_file`'s alone to make, so the stale count is
+// asserted alongside every paint count here.
+//
+// Both placers, in turn: `applyHighlights` walks node by node at or below
+// SCAN_THRESHOLD active marks and flattens the document above it.
+await agent.evaluate(() => window.__CROSSNODE__());
 await emitMarks({ file_path: "/repo/doc.md", stack: false });
-check("and it stays cleared through a repaint", (await pendChips()) === 1, `${await pendChips()}`);
+check(
+  "a quote spanning an element boundary paints (walk path)",
+  (await hlIds()) === 4 && (await staleChips()) === 1 && (await pendChips()) === 0,
+  `${await hlIds()} passages, ${await staleChips()} stale`,
+);
+// Three `<mark>`s for that one quote — `foxtrot `, `golf` inside the `<strong>`,
+// and ` hotel` — because one `<mark>` around the whole range would have to
+// re-parent the `<strong>`'s contents to exist. Three of the four painted
+// passages are single-node, so 3 + 3 = 6 elements for 4 ids.
+check(
+  "as several marks sharing one id, not one mark around the range",
+  (await hlCount()) === 6,
+  `${await hlCount()} elements for ${await hlIds()} ids`,
+);
+// The seam: `mark.hl` carries `padding: 0 1px` and `border-radius: 2px`, so three
+// abutting slices drew three rounded pills and one phrase read as three marks.
+// `data-run` squares the interior edges. Nothing sets it on a quote that fits.
+check(
+  "and the run's interior edges are marked so the fill is continuous",
+  await agent.evaluate(() => {
+    const run = [...document.querySelectorAll('mark.hl[data-id="h00000000000000ff"]')];
+    const fits = [...document.querySelectorAll("mark.hl:not([data-run])")];
+    return (
+      run.map((m) => m.dataset.run).join(",") === "start,mid,end" &&
+      fits.length === 3 // the single-node passages, untouched by these rules
+    );
+  }),
+  await agent.evaluate(() =>
+    [...document.querySelectorAll('mark.hl[data-id="h00000000000000ff"]')]
+      .map((m) => m.dataset.run || "-").join(","),
+  ),
+);
+// The strong is still a strong: the slice is wrapped *in place*, so the rendered
+// document is the one pulldown-cmark built and the phrase is bold and highlighted.
+check(
+  "the element it spans is left intact",
+  await agent.evaluate(() => {
+    const m = document.querySelector('mark.hl[data-run="mid"]');
+    return !!m && m.parentElement.tagName === "STRONG" && m.textContent === "golf";
+  }),
+);
+await agent.evaluate(() => { window.__MARK__(5); window.__MARK__(6); });
+await emitMarks({ file_path: "/repo/doc.md", stack: false });
+check(
+  "and it paints past SCAN_THRESHOLD too (scan path)",
+  (await hlIds()) === 6 && (await staleChips()) === 1,
+  `${await hlIds()} passages, ${await staleChips()} stale`,
+);
+
+// --- the fade tracks the stack --------------------------------------------
+// `prior` used to mean "read off disk" and nothing else. It now means "done
+// with", which a sent question and a popped one both are, so `Store::mark_sent`
+// and `Store::remove_from_stack` set it. That is the Rust half, pinned by
+// `the_fade_tracks_the_stack_in_both_directions`. This is the half it cannot
+// reach: the reader has to *see* it without waiting for a restart, and a pop went
+// through `refreshStack` alone — which redraws the panel and never touches the
+// overlay — so the mark kept full strength until something unrelated repainted.
+const priorAttr = (id) =>
+  agent.evaluate(
+    (i) => document.querySelector(`mark.hl[data-id="${i}"]`)?.hasAttribute("data-prior") ?? null,
+    id,
+  );
+const STACKED = "h0000000000000001";
+
+check("a passage still on the stack is at full strength", (await priorAttr(STACKED)) === false);
+
+// The panel is opened first so the click is the one a reader makes, animation
+// path included, rather than a handler called past the visibility it needs.
+await agent.evaluate(() => document.getElementById("stack-panel").classList.add("open"));
+await agent.locator(`#stack-list .pair[data-id="${STACKED}"] .rm`).click();
+await agent.waitForTimeout(400);
+check(
+  "popping it off the stack fades it immediately",
+  (await priorAttr(STACKED)) === true,
+  `data-prior: ${await priorAttr(STACKED)}`,
+);
+check(
+  "and the card goes with it",
+  (await agent.locator(`#stack-list .pair[data-id="${STACKED}"]`).count()) === 0,
+  `${await agent.locator("#stack-list .pair").count()} cards left`,
+);
+// The passage is still painted — a pop is not a delete. This is the assertion
+// that would catch a `repaintHighlights` that dropped the mark instead of
+// re-drawing it faded.
+check("but the passage is still painted", (await priorAttr(STACKED)) !== null);
 
 // --- the embedded Claude Code pane ----------------------------------------
 // A fifth page, because everything here is about a surface that does not exist
@@ -1129,6 +1278,50 @@ check(
 const spawns = await called("pty_spawn");
 check("and starts one process, sized", spawns.length === 1 && spawns[0].args.rows > 0 && spawns[0].args.cols > 0,
   JSON.stringify(spawns));
+
+// The pane's padding belongs on `.xterm`, and this is the only place that can
+// hold that line.
+//
+// The bug: WebKitGTK answers `getComputedStyle(#pty-term).height` with the
+// **border** box, while `FitAddon.proposeDimensions` divides that by the cell
+// height and subtracts only `terminal.element`'s padding. With the padding on the
+// dock instead of on `.xterm` the addon counted it as usable rows and `#pty-pane`'s
+// `overflow: hidden` took the difference off the bottom — the last row, which is
+// exactly where Claude Code draws its composer. Measured in a real window at 9.4px
+// with the MCP strip up, and two columns of the same error horizontally.
+//
+// **Chromium cannot reproduce it**, which is the whole reason it went unnoticed:
+// it resolves that height as the *content* box, per spec, so the arithmetic comes
+// out right here whichever element carries the padding. Verified by reverting —
+// the geometry assertion below stayed green. So the assertion that bites is the
+// structural one: the padding is on `.xterm` and `#pty-term` has none. Move it
+// back and this goes red; the geometry check beside it is the belt, and would
+// catch someone giving the grid an explicit height instead.
+const grid = await pane.evaluate(() => {
+  const box = document.getElementById("pty-term");
+  const xt = box.querySelector(".xterm");
+  const pad = (el) => {
+    const s = getComputedStyle(el);
+    return [s.paddingTop, s.paddingBottom, s.paddingLeft, s.paddingRight].map(parseFloat);
+  };
+  return {
+    dock: pad(box),
+    term: pad(xt),
+    fits: xt.offsetHeight <= box.clientHeight,
+    xterm: xt.offsetHeight,
+    box: box.clientHeight,
+  };
+});
+check(
+  "the terminal's padding is on .xterm, where FitAddon subtracts it",
+  grid.term.some((n) => n > 0) && grid.dock.every((n) => n === 0),
+  `dock ${grid.dock.join("/")}, .xterm ${grid.term.join("/")}`,
+);
+check(
+  "and the grid fits the box it was measured against",
+  grid.fits,
+  `.xterm ${grid.xterm}px in ${grid.box}px`,
+);
 
 // The hazard the plan names: bare-letter bindings must not fire while the
 // terminal has focus. `/` is `find`, and a find bar opening under a terminal

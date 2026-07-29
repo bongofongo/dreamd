@@ -1,5 +1,190 @@
 # Session log
 
+## 2026-07-29 — the bottom of the window, and what a mark is allowed to say
+
+Four complaints, all from reading with the thing: content at the foot of the
+window unreachable, "? still pertinent" on files nobody had edited, a rail
+crowded with cards asking to be clicked for nothing, and highlights that
+vanished on the next repaint. Every one turned out to be a different bug and all
+four are fixed.
+
+### What happened
+
+1. **The file-tree `⋯` menu had no vertical clamp.** `openFileMenu` clamped
+   `left` against `window.innerWidth` and set `top` to `r.bottom + 4`
+   unconditionally, so for a tree that fills the sidebar every file in the lower
+   half opened its menu below the viewport. `#file-menu` is `position: fixed`, so
+   nothing was clipping it — it was laid out where nobody could see it. Now
+   `.open` goes on *first* (the element is `display: none` until then and measures
+   zero), then it flips above the anchor when it will not fit below, both axes
+   clamped to a 6px inset. The harness pins it against a synthetic anchor rather
+   than a tree row: what changed is the arithmetic, and a fixture tall enough to
+   reach the foot of a 900px viewport would be testing the fixture. The old code
+   measured **890–970 in a 900px viewport**.
+
+2. **The agent pane's last row was genuinely chopped, and static reading could
+   not find it.** `FitAddon.proposeDimensions` divides
+   `getComputedStyle(parentElement).height` by the cell height and subtracts only
+   `terminal.element`'s padding. Two readings of the spec say that resolved height
+   is the content box — Chromium agrees — but **WebKitGTK answers with the border
+   box**: a probe in the real window had `#pty-term` at 349.59px with 18px of
+   vertical padding reporting `349.59375px`, not the 331.59px it had to give. So
+   the addon counted the dock's own padding as usable rows and proposed 20 × 17px
+   into a box with room for 19; `#pty-pane`'s `overflow: hidden` took the
+   difference off the bottom, which is exactly where Claude Code draws its
+   composer. 9.4px with the MCP strip up, and two columns of the same error
+   horizontally. The padding moved to `#pty-term .xterm`, where the addon looks
+   for it — rows 20→19, cols 86→83, `.xterm` bottom 1036.41→1018.41 against a pane
+   ending at 1027.00.
+
+   Found with a temporary `perf.at()` probe encoding the geometry into the phase
+   string, which is what `--features perf`'s NDJSON-on-stderr is for. Removed
+   before the commit.
+
+3. **`Stale` now means the text was edited, and only that.** Two guaranteed
+   false-positive paths, neither involving an agent. `markdown::locate` searches
+   raw source for rendered DOM text, so a quote spanning `**bold**` matches no
+   tier — tier 3 strips whitespace, not syntax. `add_anchored` deliberately keeps
+   such a mark at `(0, 0)`, and `reanchor_file` then flipped exactly those to
+   `Stale` on the first re-anchor — which, since every file with marks read off
+   disk is re-anchored on first sight, meant a red chip on an untouched file every
+   session. Guarded on `line_start > 0`. That makes the implication *exact* rather
+   than heuristic: `locate_near` is deterministic in its inputs, so a quote that
+   resolved against these bytes resolves again, and past the guard `Stale` ⇔ the
+   source changed. Separately the frontend turned a DOM *placement* failure into
+   the same chip; both `addStaleChip` calls on that path are gone.
+
+4. **The pending chip and its "Answered" button are retired.** D3 put one card per
+   sent mark on the rail with a button whose only effect was to record "dealt
+   with" — which the send had already implied, five times over for a
+   five-question send. `addPendingChip`, the `.pend-chip` CSS and the
+   `resolve_mark` command are all deleted. `sent_at`, `Store::resolve` and the MCP
+   `resolve_highlight` stay: they are the agent's record of what it closed and
+   `list_highlights` filters on it. The rail's one remaining tenant is genuine
+   staleness, which is now rare enough that it is almost always empty.
+
+5. **Placement is a third thing, separate from anchoring, and it spans nodes.**
+   The bug behind "highlights aren't re-rendered": `wrapByWalk` and
+   `locateInNodes` both look inside a *single* text node, so a cross-markdown
+   quote painted once at creation — `wrapRange` on the live selection, which
+   crosses elements happily — and then vanished on every later repaint. A mark
+   still in the store, still counted by the badge, invisible. Reproduced at stack
+   badge 4 with one highlight showing. `placeAcrossNodes` is the fallback both
+   placers hand their misses to, and it wraps **one `<mark>` per text-node slice
+   sharing the id**, not one around the range: `surroundContents` throws across an
+   element boundary and `extractContents` would re-parent the `<strong>`'s
+   contents to draw on them. `data-run` (`start`/`mid`/`end`) squares the interior
+   edges, because `mark.hl`'s radius and 1px padding drew three abutting slices as
+   three rounded pills — one phrase reading as three marks, a different and wrong
+   statement about the document. `deleteHighlight` moved to `querySelectorAll`;
+   it was the one consumer assuming one element per id.
+
+6. **`prior` means "done with", not "read off disk".** `mark_sent` and
+   `remove_from_stack` both set it now, `set_annotation` alone clears it, so the
+   fade tracks the stack in both directions. The field's doc comment asserted the
+   old contract in as many words and was rewritten, along with `set_annotation`'s
+   and two test comments that repeated it. The pop handler called `refreshStack()`
+   alone — panel redrawn, overlay untouched — so the fade arrived minutes later
+   attached to whatever the reader did next; it and `saveAnnot` now repaint.
+   `doc_from` still strips the flag on the way to disk, deliberately: `admit`
+   makes everything prior on the way back in, so writing it would only let a
+   hand-edited file assert a fade the reader's history does not support.
+
+### Mistakes & deviations
+
+- **Two wrong theories about the pane before the probe.** First that FitAddon
+  double-counted the padding because `getComputedStyle` returns the content box —
+  reasoned from the spec, and the arithmetic came out fitting, so the theory was
+  discarded as *disproving* the bug. Then that the window was taller than the
+  screen; `hyprctl` said 44 + 1027 ≤ 1080 and killed it. The lesson is the one the
+  repo keeps relearning: this was a question about a real window and no amount of
+  reading answered it. Three exploration subagents had also died on 529s, which is
+  what pushed the work inline.
+
+- **The first pane fix appeared to do nothing.** `ui/` is embedded into the binary
+  by `tauri-build`, so an edit to `index.html` needs `cargo build` before it is
+  live — the identical probe numbers across a relaunch were the tell. Cost one
+  full debug cycle. Now a memory.
+
+- **A harness check that could not fail.** The first version of the pane
+  assertion compared `.xterm`'s height against `#pty-term`'s and was green both
+  before and after the fix, because Chromium resolves that height per spec and the
+  bug is WebKitGTK-only. Caught by reverting the CSS and watching it stay green —
+  which is the whole reason each guard was mutation-tested rather than assumed.
+  Replaced with a *structural* assertion: the padding is on `.xterm` and
+  `#pty-term` has none. That one goes red.
+
+- **A fixture that tested the wrong thing.** Verifying `placeAcrossNodes` in a
+  real window, the first hand-written marks file gave the cross-markdown quotes
+  nonzero `line_start`s, which the new guard correctly reads as "was anchored, now
+  is not" — three "? still pertinent" chips and nothing painted. Not a
+  regression: that is a mark whose text really did change, e.g. bold added around
+  it in Neovim afterwards. `add_anchored` stores `(0, 0)` for the reachable case;
+  with that, all four painted and the rail stayed empty.
+
+- **An accidental screenshot of the wrong window.** `grim -g` against dreamd's
+  coordinates captured the browser instead, because dreamd was on workspace 1
+  while workspace 2 was active. Deleted, disclosed, and `hyprctl activeworkspace`
+  is now checked first.
+
+- One deviation from the plan, deliberately: the plan proposed leaving
+  cross-node painting as a non-goal. The follow-up report made it the actual bug,
+  so it was built.
+
+### State
+
+`cargo build`, `cargo fmt --check` and clippy `-D warnings` all clean.
+**284** unit tests (was 278 at the start of the day, +6), `config_check` 57,
+`mcp_check` 49, `marks_check` 75, `theme_check` 10 families, `locate_check` exit 0
+over 611 fixtures, `node --test ui/paths.test.mjs` 10, `ui-check.mjs` **236** (was
+222). `packaging/smoke.sh` in `paint` mode passes against the live Wayland session
+— `SMOKE_XVFB=0`, because there is no Xvfb on this box.
+
+**Every guard was proved to bite by mutation, not assumed.** Dropping the
+`line_start` guard → 1 red; reinstating either `addStaleChip` on a placement
+failure → 2 red; reinstating the pending chip → 2 red; reverting the menu
+positioning → 2 red; moving the terminal padding back to `#pty-term` → 1 red;
+dropping `prior` from `mark_sent` → 2 red, from `remove_from_stack` → 3 red;
+disabling `placeAcrossNodes` → 5 red; wrapping the whole range instead of per
+slice → **8** red, which is the check that the per-slice design is load-bearing
+rather than merely sufficient.
+
+Hand-verified in a real window on Hyprland: the composer's full bottom border
+with air below it, and all four cross-markdown highlights painting as continuous
+runs with bold weight and link colour intact.
+
+**No perf number was obtained, and the attempt found out why.** `./perf/run.sh
+quick` was run — the corpus was current, both Chromium scenarios and all three
+criterion benches executed — and then produced nothing: **`jq` is not installed on
+this box**, and `run.sh` collects every measurement through it (lines 179–181,
+254), so all thirteen collection steps failed. Its `CRITERION_HOME` is inside a
+`mktemp -d` that goes with the process, so the raw estimates are gone too. On top
+of that the baseline is macOS-only and `run.sh` refuses a comparison off Darwin, so
+even a successful collection would have had nothing to compare against. Installing
+`jq` is the user's call; until then no tier is usable locally and an A/B of two
+trees on the same machine is the only route to a regression signal here.
+
+The one perf question this session actually raises is answered structurally
+instead: `applyHighlights` now calls `scanTextNodes` a second time, but only
+`if (crossNode.length)`, so a document whose marks all place inside one text node —
+which is every corpus fixture — pays exactly nothing. The re-scan cannot be avoided
+when it does fire: the wraps from the first pass have split the very text nodes the
+first `doc` was built from.
+
+Left open, and stated rather than glossed:
+
+- **The send and pop fades end-to-end.** Both halves are covered — Rust unit
+  tests, and a Chromium mock mirroring `remove_from_stack` — but a pop needs a
+  click on the card's ✕ and there is no `wtype`/`ydotool` on this box, and a send
+  needs a live Claude Code session.
+- **Creating a cross-markdown highlight with the mouse.** Placement was driven
+  from a marks file, which exercises the same `applyHighlights` path but not
+  `triggerHighlight` → `add_highlight` → annotate.
+- **A highlight over inline code reads warm-grey** rather than fully washed:
+  `<code>`'s own background sits under a semi-transparent `<mark>`. The run is
+  continuous and the mark is there. Left alone, because fixing it means styling
+  `code mark.hl` and the standing line is that code's own colouring stays code's.
+
 ## 2026-07-29 — two bars fewer, on toggles
 
 Linux stacked two rows of chrome above the reader: the GTK File/Edit/Help

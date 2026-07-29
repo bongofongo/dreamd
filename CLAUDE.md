@@ -245,7 +245,15 @@ the upgrade procedure.
 - `markdown` — pulldown-cmark → HTML, syntect for fenced code. Raw source HTML is
   re-emitted as `Event::Text` (escaped); only syntect's own markup is trusted.
 - `annotations::Store` — `Highlight { quote, prefix, suffix, line_start/end, state }` plus an
-  ordered `stack` of ids. `set_annotation` is what enqueues a pair.
+  ordered `stack` of ids. `set_annotation` is what enqueues a pair. `mark_sent`
+  stamps `sent_at`, sets `prior`, and takes the ids off the stack; the `prior` is
+  the fade, and it is the *only* thing the reader sees of a send — the pending
+  stamp itself paints nothing. The chip that used to sit on the rail
+  per sent mark, and the `resolve_mark` command behind its "Answered" button, are
+  both gone — a question that has been asked is assumed dealt with, and five cards
+  asking to confirm that was five cards over the paragraph they were about.
+  `sent_at`, `Store::resolve` and the MCP `resolve_highlight` stay: they are the
+  agent's record of what it closed, and `list_highlights` filters on it.
 - `config` — layered TOML: global `~/.config/dreamd/config.toml` under a repo-local
   `.dreamd.toml`. Merging happens on raw `toml::Table`s, *not* on deserialized structs:
   with `#[serde(default)]` an absent key is indistinguishable from a defaulted one, which
@@ -389,8 +397,44 @@ affected system has, not a `cfg` arm nobody else compiles.
 whitespace-stripped match. The frontend sends what `getSelection().toString()` returns —
 **rendered DOM text**, never raw source — so the whitespace-normalized path is the hot one
 and the only realistic thing to benchmark. `reanchor_file` re-runs this on save; failure
-marks the highlight `Stale` rather than dropping it. Marks read off disk are
-re-anchored **lazily, once per file, in `get_highlights`** — never all of them at
+marks the highlight `Stale` rather than dropping it — **but only if it ever
+anchored.** A quote spanning inline markdown (`**bold**`, a link) is DOM text
+`locate` cannot find in the source at any tier, so `add_anchored` keeps it at
+`(0, 0)`; those marks used to go `Stale` on the first re-anchor of an *untouched*
+file, which since marks read off disk are all re-anchored on first sight meant a
+red "? still pertinent" every session. Hence the `line_start > 0` guard, which
+makes `Stale` exact rather than approximate: past it, `locate_near` is
+deterministic in its inputs, so a quote that resolved against these bytes
+resolves again. The frontend twin of the same rule: a placement failure
+**claims nothing** — `reanchor_file` is the only thing entitled to say a mark is
+stale, and the rail has no other tenant.
+
+**Placement is a third thing, separate from anchoring, and it spans nodes.**
+`wrapByWalk` and `locateInNodes` both look inside a *single* text node, so the
+same cross-markdown quote they cannot anchor they also could not draw: it painted
+once at creation (`wrapRange` on the live selection, which spans elements
+happily) and then vanished on the next repaint — a mark still in the store, still
+counted by the stack badge, invisible. `placeAcrossNodes` is the fallback both
+placers hand their misses to, and it wraps **one `<mark>` per text-node slice,
+sharing the id**, rather than one `<mark>` around the range: `surroundContents`
+throws across an element boundary and `extractContents` would re-parent the
+`<strong>`'s contents to draw on them. `data-run` (`start`/`mid`/`end`) squares
+the interior edges so `mark.hl`'s radius and padding do not make one phrase read
+as three. Anything consuming a mark must therefore tolerate several per id —
+`clearHighlights` and `deleteHighlight` both use `querySelectorAll`.
+
+**`prior` means "done with", not "read off disk".** `marks_file::admit`,
+`Store::mark_sent` and `Store::remove_from_stack` all set it; `set_annotation`
+alone clears it. So the fade tracks the stack — bright on it, faded off it — and
+annotating a faded mark brightens it and re-enqueues the pair in one step. The
+frontend has to repaint for the reader to see either direction, which is why the
+pop handler and `saveAnnot` call `repaintHighlights` beside `refreshStack`.
+`doc_from` still strips the flag on the way to disk: `admit` makes everything
+prior on the way back in, so writing it would only let a hand-edited file assert
+a fade the reader's history does not support.
+
+Marks read off disk are re-anchored
+**lazily, once per file, in `get_highlights`** — never all of them at
 startup, which would land straight on the cold-start number. `AppState`'s
 `pending_reanchor` is what makes the steady state free: a mark created this
 session was anchored against the bytes on screen and is never in it.

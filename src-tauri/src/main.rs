@@ -606,21 +606,12 @@ fn take_send(state: State<AppState>) -> Result<Option<Submitted>, String> {
     }))
 }
 
-/// Close a question by hand: the backstop for an agent that answered and never
-/// called `resolve_highlight`.
-///
-/// The note is `None` rather than a sentence of dreamd's, because there is no
-/// answer to record — the reader is saying "dealt with", not reporting what was
-/// found. `Store::resolve` clears `sent_at`, which is what takes the pending
-/// glyph out of the margin.
-#[tauri::command]
-fn resolve_mark(state: State<AppState>, id: String) -> bool {
-    let resolved = state.store.lock().unwrap().resolve(&id, None);
-    if resolved {
-        state.touch();
-    }
-    resolved
-}
+// `resolve_mark` used to sit here: close a question by hand, the backstop for an
+// agent that answered and never called `resolve_highlight`. Its only caller was
+// the "Answered" button on the pending chip, and both are gone — a question that
+// has been sent is assumed dealt with, so there is nothing left to confirm and
+// nowhere to click. `Store::resolve` stays; `mcp::tools::resolve_highlight` is
+// its real caller and the agent's own record of what it closed.
 
 #[tauri::command]
 fn get_keymap(state: State<AppState>) -> Keymap {
@@ -1531,7 +1522,6 @@ fn main() {
             arm_send,
             cancel_send,
             take_send,
-            resolve_mark,
             get_keymap,
             stack_query_text,
             get_theme,

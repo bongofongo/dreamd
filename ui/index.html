@@ -202,26 +202,18 @@
          is not worth taking. Worth re-testing in WKWebView, where the numbers
          may differ. */
 
-      /* stale-highlight margin rail */
+      /* The stale-highlight margin rail, and it now holds nothing else.
+         D3's `.pend-chip` — one muted card per mark that was out with the agent,
+         with an "Answered" button — lived here too and is gone: a question that
+         has been asked is a question dealt with, so a five-question send used to
+         put five cards beside the paragraph asking to be clicked for nothing.
+         The rail's whole remaining job is the rare mark whose own text was
+         edited out from under it, which means it is almost always empty. Keep it
+         that way; see `addStaleChip` in app.js. */
       #stale-rail { position: absolute; top: 8px; right: 8px; width: 210px; display: flex; flex-direction: column; gap: 6px; z-index: 5; }
       .stale-chip { background: var(--stale-bg, #3a1a22); border: 1px solid var(--stale, #ef6a7d); border-radius: 6px; padding: 6px 8px; font-size: 12px; }
       .stale-chip .q { opacity: 0.8; display: block; margin: 4px 0; max-height: 3em; overflow: hidden; }
       .stale-chip .row { display: flex; gap: 6px; }
-
-      /* The pending glyph (D3), in the same rail and deliberately quieter than
-         the stale one: stale is a question about whether the mark still points
-         at anything, pending is only "out with the agent". A mark can carry
-         both at once — D5 keeps `sent_at` beside `state` precisely so a passage
-         that went stale while it was out shows both rather than picking one —
-         so these are two chips, never a merged third state.
-
-         Muted rather than accented on purpose: at four or five pending marks
-         this rail is most of what is beside the text, and it must not compete
-         with the document. */
-      .pend-chip { background: var(--btn-bg, #1f1c2b); border: 1px solid var(--border, #2e2940); border-radius: 6px; padding: 6px 8px; font-size: 12px; opacity: 0.85; }
-      .pend-chip b { font-weight: 500; opacity: 0.9; }
-      .pend-chip .q { opacity: 0.65; display: block; margin: 4px 0; max-height: 3em; overflow: hidden; }
-      .pend-chip .row { display: flex; gap: 6px; }
 
       /* A mark is a *background*, so the text on it cannot be `--text`: on any
          dark theme that put light grey on pale yellow. `--hl-text` defaults to
@@ -230,6 +222,20 @@
       mark.hl { background: var(--hl, #f2d16b); color: var(--hl-text, #1a1a1a); border-radius: 2px; padding: 0 1px; cursor: pointer; }
       mark.hl:hover { outline: 1px solid var(--hl, #f2d16b); outline-offset: 1px; }
       mark.hl.stale { background: var(--stale, #ef6a7d); color: var(--stale-text, #1a1a1a); }
+
+      /* A quote that spans a bold run, a link or inline code is several `<mark>`s
+         sharing one id — `placeAcrossNodes` cannot use one, because a `<mark>`
+         around the whole range would have to re-parent the `<strong>`'s contents.
+         The rule above would then draw each slice as its own rounded pill with a
+         1px gap either side, so one highlighted phrase read as three highlights.
+         `data-run` says which end of the run a slice is, and the interior edges
+         are squared and unpadded so the fill is continuous. Only the run's outer
+         edges keep the radius, which is what makes the whole phrase read as one
+         mark again. Nothing sets `data-run` on a quote that fits in one node, so
+         the common case never touches these rules. */
+      mark.hl[data-run] { border-radius: 0; padding: 0; }
+      mark.hl[data-run="start"] { border-top-left-radius: 2px; border-bottom-left-radius: 2px; padding-left: 1px; }
+      mark.hl[data-run="end"] { border-top-right-radius: 2px; border-bottom-right-radius: 2px; padding-right: 1px; }
 
       /* copy button on a fenced code block — injected by `decorateCodeBlocks`
          after every render.
@@ -473,8 +479,29 @@
          The padding is the single largest visual payoff per line here: xterm
          paints its grid flush to the element's edges, and a terminal whose
          first column touches a border is the thing that reads as "embedded
-         console" no matter what the header does. */
-      #pty-term { flex: 1; min-height: 0; min-width: 0; padding: 10px 6px 8px 14px; }
+         console" no matter what the header does.
+
+         **It is on `.xterm`, not on `#pty-term`, and that is load-bearing.**
+         `FitAddon.proposeDimensions` divides `getComputedStyle(parentElement)
+         .height` by the cell height and subtracts the padding of
+         `terminal.element` — the `.xterm` div — from it. WebKitGTK reports that
+         parent height as the **border** box: measured here, `#pty-term` at
+         349.59px with `padding: 10px … 8px` answered `349.59375px`, not the
+         331.59px it actually had to give. With the padding one level up the
+         addon subtracted nothing, so it proposed 20 rows of 17px into a box with
+         room for 19, and `#pty-pane`'s `overflow: hidden` took the difference off
+         the bottom — 9.4px of the last row with the MCP strip up, which is where
+         Claude Code draws its composer. Both axes: the 20px of left+right was
+         two columns of the same error.
+
+         So the padding lives where the addon looks for it and the arithmetic is
+         right without depending on which box a resolved height reports. It reads
+         identically — `.xterm-viewport` is `inset: 0` on the padding box and
+         paints `--sidebar-bg`, the same colour `#pty-pane` has, and
+         `.xterm-screen` is in flow and so is inset by the padding exactly as the
+         grid was before. */
+      #pty-term { flex: 1; min-height: 0; min-width: 0; }
+      #pty-term .xterm { padding: 10px 6px 8px 14px; }
       /* xterm's scroller is a plain overflowing div, so it gets the platform
          scrollbar unless told otherwise — a light-grey macOS bar over a dark
          palette is the most conspicuous un-themed pixel in the pane. */

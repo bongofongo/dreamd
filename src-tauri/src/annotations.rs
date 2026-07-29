@@ -139,11 +139,29 @@ pub struct Highlight {
     /// `#[serde(default)]` that lets a marks file written before this field
     /// existed load unchanged.
     pub sent_at: Option<u64>,
-    /// Was this mark made in an earlier session? Not a property of the mark but
-    /// of *when it was read*: [`crate::marks_file::admit`] sets it on everything
-    /// it admits, and nothing else ever does. That is the entire implementation
-    /// of "highlighted in a previous session" — no clock, no session id, no
-    /// schema field.
+    /// Is this mark **done with**? The frontend fades it if so.
+    ///
+    /// It used to mean strictly "was read off disk", and the fade was therefore
+    /// "highlighted in a previous session" and nothing else. That was too narrow
+    /// to describe what a reader is actually looking at. A question you have
+    /// handed to an agent, or taken off the stack by hand, is finished business
+    /// in exactly the way a mark from last week is: still worth keeping, no
+    /// longer the thing you are working on. So three things set it now, and the
+    /// meaning is the union of them:
+    ///
+    /// - [`crate::marks_file::admit`], on everything it reads — a previous
+    ///   session is over by definition.
+    /// - [`Store::mark_sent`], on a send. The question has gone.
+    /// - [`Store::remove_from_stack`], on a pop. The question was withdrawn.
+    ///
+    /// [`Store::set_annotation`] is the one thing that clears it, and it is the
+    /// other half of the same idea: annotating is picking the passage back up, so
+    /// it returns to full strength and — because annotating also re-enqueues the
+    /// pair — the fade tracks the stack rather than drifting from it. Annotate a
+    /// faded mark and it brightens; send it and it fades again.
+    ///
+    /// Still no clock, no session id and no schema field: it is derived from what
+    /// has happened to the mark, computed in the three places above.
     ///
     /// The serde attributes are not `skip`, and the difference matters, because
     /// **one derive serves two boundaries**: the marks file and the IPC reply the
@@ -152,15 +170,18 @@ pub struct Highlight {
     /// read. So instead:
     ///
     /// `skip_deserializing` — a marks file, hand-edited or copied, can never
-    /// assert that a mark is prior; only having been admitted decides that.
+    /// assert that a mark is prior; only this session's own reasoning decides it.
     ///
     /// `skip_serializing_if` — `false` is the overwhelming majority and stays
     /// off the wire entirely, which is also why the frontend must treat an
     /// absent key as false rather than testing for its presence.
     ///
     /// Off disk it is kept by [`crate::marks_file::doc_from`], which clears the
-    /// flag on the copy it writes; the writer has no business carrying a flag
-    /// about the reader.
+    /// flag on the copy it writes. That stays right under the wider meaning, and
+    /// deliberately: `admit` makes *everything* prior on the way back in, so a
+    /// sent mark is faded in the next session regardless, and writing the flag
+    /// would only let a hand-edited file assert a fade the reader's own history
+    /// does not support.
     #[serde(skip_deserializing, skip_serializing_if = "is_false")]
     pub prior: bool,
 }
@@ -290,9 +311,11 @@ impl Store {
     ///
     /// Two rules ride along, and both are about what annotating *means*:
     ///
-    /// It clears `prior`. The fade a prior mark carries reads as "untouched this
-    /// sitting", and annotating is touching, so the mark returns to full
-    /// saturation.
+    /// It clears `prior`. The fade reads as "done with", and annotating is
+    /// picking the passage back up, so the mark returns to full saturation. This
+    /// is the exact inverse of what [`mark_sent`](Store::mark_sent) and
+    /// [`remove_from_stack`](Store::remove_from_stack) do, and between the three
+    /// of them the fade tracks the stack: on it is bright, off it is faded.
     ///
     /// It does **not** clear `sent_at`. Re-annotating a mark that is out with an
     /// agent does not retract the question already asked — it stacks a second
@@ -310,12 +333,18 @@ impl Store {
         true
     }
 
-    /// Record that `ids` have gone to an agent: stamp `sent_at` and take exactly
-    /// those ids off the stack.
+    /// Record that `ids` have gone to an agent: stamp `sent_at`, fade them, and
+    /// take exactly those ids off the stack.
     ///
     /// Exactly those — not the whole stack. `Send selected` sends a subset, and
     /// clearing everything would silently drop questions that were never asked.
     /// The highlights themselves all survive; only the queue shrinks.
+    ///
+    /// It sets `prior`, which is the fade. A sent question is done with from the
+    /// reader's side — it is the agent's turn — and the passage should stop
+    /// competing with the paragraph it sits in the moment the send happens rather
+    /// than at the next restart. `releaseSend` in `app.js` already calls
+    /// `repaintHighlights` after a send, so this is what the reader sees change.
     pub fn mark_sent(&mut self, ids: &[Id]) {
         let at = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -323,6 +352,7 @@ impl Store {
         for h in self.highlights.iter_mut() {
             if ids.iter().any(|id| id == &h.id) {
                 h.sent_at = Some(at);
+                h.prior = true;
             }
         }
         self.stack.retain(|x| !ids.iter().any(|id| id == x));
@@ -333,8 +363,21 @@ impl Store {
         self.stack.retain(|x| x != id);
     }
 
+    /// Take a pair off the stack, keeping the highlight — and fade it.
+    ///
+    /// The fade is the same statement `mark_sent` makes: this passage is no
+    /// longer a question waiting to be asked. Withdrawing it by hand and handing
+    /// it to an agent differ in what happened, not in what is left, so they read
+    /// the same. Annotating it again brightens it and puts it back on the stack,
+    /// which is [`set_annotation`](Store::set_annotation)'s half of the rule.
+    ///
+    /// [`resolve`](Store::resolve) reaches this too, and should: an agent closing
+    /// a question is the strongest form of "done with" there is.
     pub fn remove_from_stack(&mut self, id: &str) {
         self.stack.retain(|x| x != id);
+        if let Some(h) = self.highlights.iter_mut().find(|h| h.id == id) {
+            h.prior = true;
+        }
     }
 
     /// Close a question: record the answer and drop the stack entry. Returns
@@ -404,7 +447,25 @@ impl Store {
     /// Re-anchor every highlight in `file_path` against fresh source. Returns
     /// the updated highlights for that file. Highlights whose quote still
     /// resolves are re-anchored (and stay Active even if lines shifted);
-    /// those whose quote no longer resolves become Stale.
+    /// those whose quote no longer resolves become Stale — **but only if they
+    /// resolved once**, which is what makes Stale mean what it says.
+    ///
+    /// A mark at `(0, 0)` was never located: see [`Store::add_anchored`], which
+    /// keeps an unlocatable selection rather than losing it. The realistic way to
+    /// get one is a quote spanning inline markdown — the frontend sends rendered
+    /// DOM text, and `**bold**text` contains `boldtext` at no tier of
+    /// [`markdown::locate`], not even the whitespace-stripped one. Those marks
+    /// used to flip to Stale the *first* time this ran, and since every file with
+    /// marks read off disk is re-anchored on first sight (`ensure_reanchored`),
+    /// that was a red "? still pertinent" on an untouched file every session.
+    /// Failing to find a quote that was never found says nothing new about
+    /// whether anyone edited it, so the state is left alone.
+    ///
+    /// Past that guard the implication is exact rather than approximate:
+    /// `locate_near` is deterministic in `(source, prefix, quote, suffix, hint)`,
+    /// so a quote that resolved against these bytes resolves again. Stale
+    /// therefore happens if and only if the source changed such that the quote is
+    /// gone — which is the only claim the margin chip is entitled to make.
     pub fn reanchor_file(&mut self, file_path: &str, source: &str) -> Vec<Highlight> {
         self.reanchored.insert(file_path.to_string());
         // One index for the whole file, not one per highlight — see
@@ -424,9 +485,13 @@ impl Store {
                     h.line_end = loc.line_end;
                     h.state = HighlightState::Active;
                 }
-                None => {
+                // Only a mark that was anchored can have come unanchored. See
+                // the doc comment: `line_start == 0` is "never located", and
+                // demoting it here accused a file nobody had touched.
+                None if h.line_start > 0 => {
                     h.state = HighlightState::Stale;
                 }
+                None => {}
             }
         }
         self.for_file(file_path)
@@ -802,9 +867,9 @@ mod tests {
 
     #[test]
     fn a_mark_made_this_session_is_neither_prior_nor_pending() {
-        // The baseline the rest of this section is measured against. `prior` is
-        // set by `marks_file::admit` and by nothing else, so a mark that never
-        // touched disk carries neither flag.
+        // The baseline the rest of this section is measured against. `prior` means
+        // "done with", and a mark that was just annotated onto the stack is the
+        // opposite of that — it is the thing the reader is working on.
         let (mut store, ids) = store_with("alpha\n", &["alpha"]);
         store.set_annotation(&ids[0], "why?".into());
         let h = store.get(&ids[0]).expect("present");
@@ -887,9 +952,93 @@ mod tests {
     }
 
     #[test]
+    fn mark_sent_fades_what_it_sent_and_only_that() {
+        // A sent question is done with from the reader's side, so the passage
+        // stops competing with the paragraph immediately rather than at the next
+        // restart. `Send selected` sends a subset, so the fade has to be as
+        // selective as the stamp beside it.
+        let (mut store, ids) = store_with("alpha\nbeta\ngamma\n", &["alpha", "beta", "gamma"]);
+        for (i, text) in ["a", "b", "c"].iter().enumerate() {
+            store.set_annotation(&ids[i], (*text).to_string());
+        }
+
+        store.mark_sent(&[ids[1].clone()]);
+
+        assert!(
+            store.get(&ids[1]).expect("present").prior,
+            "the sent mark reads as done with"
+        );
+        for i in [0, 2] {
+            assert!(
+                !store.get(&ids[i]).expect("present").prior,
+                "a question still waiting to be asked stays at full strength"
+            );
+        }
+    }
+
+    #[test]
+    fn a_pop_fades_the_passage_it_takes_off_the_stack() {
+        // Withdrawing a question by hand and handing it to an agent differ in
+        // what happened, not in what is left behind, so they read the same.
+        let (mut store, ids) = store_with("alpha\nbeta\n", &["alpha", "beta"]);
+        store.set_annotation(&ids[0], "why?".into());
+        store.set_annotation(&ids[1], "and this?".into());
+
+        store.remove_from_stack(&ids[0]);
+
+        assert!(store.get(&ids[0]).expect("present").prior);
+        assert!(
+            !store.get(&ids[1]).expect("present").prior,
+            "the pair still queued is untouched"
+        );
+        assert_eq!(store.stack_pairs().len(), 1);
+    }
+
+    #[test]
+    fn resolving_fades_the_mark_as_well() {
+        // `resolve` goes through `remove_from_stack`, and an agent closing a
+        // question is the strongest form of "done with" there is. Asserted rather
+        // than left to the call graph, because routing `resolve` around
+        // `remove_from_stack` would silently drop the fade.
+        let (mut store, ids) = store_with("alpha\n", &["alpha"]);
+        store.set_annotation(&ids[0], "why?".into());
+        assert!(store.resolve(&ids[0], Some("because".into())));
+        assert!(store.get(&ids[0]).expect("present").prior);
+    }
+
+    #[test]
+    fn the_fade_tracks_the_stack_in_both_directions() {
+        // The whole rule in one pass, because the three writers only make sense
+        // against each other: bright on the stack, faded off it, and annotating
+        // is what puts a passage back on.
+        let (mut store, ids) = store_with("alpha\n", &["alpha"]);
+        store.set_annotation(&ids[0], "why?".into());
+        assert!(
+            !store.get(&ids[0]).expect("present").prior,
+            "queued: bright"
+        );
+
+        store.mark_sent(&ids);
+        assert!(store.get(&ids[0]).expect("present").prior, "sent: faded");
+
+        store.set_annotation(&ids[0], "and also why?".into());
+        let h = store.get(&ids[0]).expect("present");
+        assert!(!h.prior, "re-annotated: bright again");
+        assert_eq!(store.stack_pairs().len(), 1, "and back on the stack");
+        assert!(
+            h.sent_at.is_some(),
+            "re-annotating does not retract the question already asked — the \
+             fade and the pending stamp answer different questions"
+        );
+
+        store.remove_from_stack(&ids[0]);
+        assert!(store.get(&ids[0]).expect("present").prior, "popped: faded");
+    }
+
+    #[test]
     fn re_annotating_revives_a_prior_mark() {
-        // D13. The fade means "untouched this sitting", so annotating — which
-        // is touching — returns the mark to full saturation.
+        // D13, widened. The fade means "done with", so annotating — which is
+        // picking the passage back up — returns it to full saturation.
         let (mut store, ids) = store_with("alpha\n", &["alpha"]);
         store.highlights.iter_mut().for_each(|h| h.prior = true);
         store.set_annotation(&ids[0], "why?".into());
@@ -949,6 +1098,58 @@ mod tests {
         let revived = store.reanchor_file(FILE, "alpha\nbeta\n");
         assert_eq!(revived[0].state, HighlightState::Active);
         assert_eq!(revived[0].id, ids[0]);
+    }
+
+    /// The quote here is what `getSelection().toString()` returns over
+    /// `the **bold** word`: no asterisks, because the DOM has thrown them away.
+    /// No tier of `locate` can find it — tier 3 strips whitespace, not syntax —
+    /// so the mark is stored at `(0, 0)`, and re-anchoring against the *same*
+    /// bytes must not read that as an edit.
+    #[test]
+    fn a_mark_that_never_anchored_does_not_go_stale_on_an_untouched_file() {
+        const SOURCE: &str = "the **bold** word\n";
+        let mut store = Store::default();
+        let id = store.add_anchored(
+            FILE.to_string(),
+            SOURCE,
+            "bold word".to_string(),
+            String::new(),
+            String::new(),
+            Origin::Human,
+        );
+        assert_eq!(
+            store.get(&id).expect("present").line_start,
+            0,
+            "the fixture is only interesting if the quote really is unlocatable"
+        );
+
+        let after = store.reanchor_file(FILE, SOURCE);
+        assert_eq!(after.len(), 1);
+        assert_eq!(
+            after[0].state,
+            HighlightState::Active,
+            "nothing was edited, so nothing went stale"
+        );
+    }
+
+    /// The other side of that guard: it keys on `line_start`, not on which
+    /// constructor made the mark. An `add_anchored` highlight that *did* locate
+    /// still goes stale when its text is taken away.
+    #[test]
+    fn a_mark_that_anchored_still_goes_stale_when_its_text_goes() {
+        let mut store = Store::default();
+        let id = store.add_anchored(
+            FILE.to_string(),
+            "alpha\nbeta\n",
+            "beta".to_string(),
+            String::new(),
+            String::new(),
+            Origin::Human,
+        );
+        assert_eq!(store.get(&id).expect("present").line_start, 2);
+
+        let after = store.reanchor_file(FILE, "alpha\nBETA IS GONE\n");
+        assert_eq!(after[0].state, HighlightState::Stale);
     }
 
     #[test]

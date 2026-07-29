@@ -903,26 +903,30 @@ function applyHighlights(list) {
   const active = list.reduce((n, h) => n + (h.state === "stale" ? 0 : 1), 0);
   // Building a fresh TreeWalker per highlight and re-walking from the top of a
   // 105k-node document is where `apply_highlights` spent its ~350ms at 100
-  // highlights.
+  // highlights. Below the threshold the per-highlight walk wins because it stops
+  // at the first hit, where the flatten always reads the whole document.
   const doc = active > SCAN_THRESHOLD ? scanTextNodes(contentEl) : null;
   const placements = [];
+  // Quotes the cheap walk could not hold in one text node. They are not failures
+  // — see `placeAcrossNodes` — but they need the flattened view, and building it
+  // here would be building it before the walk's own wraps have mutated the DOM.
+  // So they wait.
+  const crossNode = [];
 
   for (const h of list) {
-    // Before the stale branch, and not inside it: a passage can go stale *while*
-    // it is out with the agent, and D5 keeps `sent_at` beside `state` precisely
-    // so both are told honestly rather than one of them picked. Two chips, then.
-    if (h.sent_at) addPendingChip(h);
+    // The rail's one remaining tenant. `sent_at` is not read here and no longer
+    // paints anything — see `addStaleChip` for what the rail is now for.
     if (h.state === "stale") { addStaleChip(h); continue; }
     const quote = h.quote.trim();
     if (!doc) {
       // Few enough to place as we go; wrapping can only disturb text nodes we
       // have already passed.
-      if (!wrapByWalk(contentEl, quote, h.id, h.prior)) addStaleChip(h);
+      if (!wrapByWalk(contentEl, quote, h.id, h.prior)) crossNode.push(h);
       continue;
     }
     const p = locateInNodes(doc, quote);
     if (p) placements.push({ ...p, id: h.id, prior: h.prior });
-    else addStaleChip(h); // active but unlocatable in the DOM
+    else crossNode.push(h);
   }
 
   // Wrapping splits a text node, which invalidates every offset computed after
@@ -934,10 +938,93 @@ function applyHighlights(list) {
     range.setEnd(p.node, p.offset + p.length);
     wrapRange(range, p.id, false, p.prior);
   }
+
+  // The rest, against a view of the DOM as it now stands. `doc` is deliberately
+  // not reused: every wrap above split a text node it was built from.
+  if (crossNode.length) placeAcrossNodes(scanTextNodes(contentEl), crossNode);
+}
+
+/// Paint the quotes that do not fit inside one text node.
+///
+/// This is the placement that used to be missing, and its absence was a
+/// disappearing highlight rather than a cosmetic gap. The frontend sends
+/// `getSelection().toString()`, so a reader who drags across a bolded phrase
+/// stores the quote `lima mike november oscar` for the source `Kilo lima
+/// **mike november** oscar` — three text nodes on screen. `wrapRange` on the live
+/// selection paints it once, at creation, because a `Range` spans elements
+/// happily; every *later* paint went through `wrapByWalk`/`locateInNodes`, which
+/// only ever looked inside a single node, found nothing, and drew nothing. The
+/// mark was still in the store and still on the stack — the badge counted it —
+/// so what the reader saw was a highlight that survived being annotated and then
+/// vanished the next time anything repainted: reopening the file, a save, a send.
+/// Reproduced with four marks on the stack and one visible.
+///
+/// One `<mark>` per text-node slice, all sharing the id, rather than one `<mark>`
+/// around the whole range. `Range.surroundContents` throws on a range that
+/// crosses an element boundary and `wrapRange`'s `extractContents` fallback would
+/// re-parent the `<strong>`'s contents into the mark — restructuring the rendered
+/// document to draw on it, which `unwrap` could not then undo symmetrically.
+/// Wrapping each slice in place leaves the tree exactly as pulldown-cmark built
+/// it, and `<strong><mark>golf</mark></strong>` paints bold *and* highlighted.
+///
+/// Everything that consumes a mark already tolerates several per id:
+/// `clearHighlights` unwraps every `mark.hl` it finds, and the click handler goes
+/// through `closest`. `deleteHighlight` is the one that did not, and now uses
+/// `querySelectorAll`.
+function placeAcrossNodes(doc, highlights) {
+  const segments = [];
+  for (const h of highlights) {
+    const quote = h.quote.trim();
+    if (!quote) continue;
+    const at = doc.text.indexOf(quote);
+    if (at < 0) continue; // genuinely not on screen; the store keeps it
+    const slices = segmentsIn(doc, at, quote.length);
+    slices.forEach((s, i) => {
+      // Which end of the run this slice is, so the seams between them can be
+      // closed in CSS. `mark.hl` carries `padding: 0 1px` and `border-radius:
+      // 2px`, which on three adjacent slices drew three rounded pills with gaps
+      // between — one phrase reading as three separate marks, which is a
+      // different and wrong statement about the document.
+      const run = slices.length === 1 ? null : i === 0 ? "start" : i === slices.length - 1 ? "end" : "mid";
+      segments.push({ ...s, id: h.id, prior: h.prior, run });
+    });
+  }
+  // Back to front across the whole set, not per highlight: two quotes can share
+  // a text node, and wrapping the earlier one first would move the later one.
+  segments.sort((a, b) => b.at - a.at);
+  for (const s of segments) {
+    const range = document.createRange();
+    range.setStart(s.node, s.offset);
+    range.setEnd(s.node, s.offset + s.length);
+    const m = wrapRange(range, s.id, false, s.prior);
+    if (s.run) m.dataset.run = s.run;
+  }
+}
+
+/// The text-node slices covered by `[at, at + length)` of the flattened text.
+///
+/// One entry per node touched, so a quote inside a single node yields exactly the
+/// one slice `locateInNodes` would have returned — this is a generalisation of
+/// that, not a second code path beside it.
+function segmentsIn(doc, at, length) {
+  const end = at + length;
+  const out = [];
+  for (let i = nodeIndexAt(doc.starts, at); i < doc.nodes.length; i++) {
+    const nodeStart = doc.starts[i];
+    if (nodeStart >= end) break;
+    const node = doc.nodes[i];
+    const from = Math.max(at, nodeStart);
+    const to = Math.min(end, nodeStart + node.nodeValue.length);
+    // A zero-width slice happens when the range ends exactly on a node boundary;
+    // wrapping it would insert an empty `<mark>` that `normalize` cannot remove.
+    if (to > from) out.push({ node, offset: from - nodeStart, length: to - from, at: from });
+  }
+  return out;
 }
 
 // Wrap the first occurrence of `quote` that lies within a single text node,
-// stopping the walk as soon as it is found. Returns true if it was placed.
+// stopping the walk as soon as it is found. Returns true if it was placed;
+// false hands the quote to `placeAcrossNodes`, which does not need it to fit.
 function wrapByWalk(container, quote, id, prior) {
   if (!quote) return false;
   const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
@@ -996,6 +1083,15 @@ function nodeIndexAt(starts, at) {
   return lo;
 }
 
+/// The rail's only chip, and the only thing the rail is for.
+///
+/// It says one thing and it is now the only thing said there: this passage's own
+/// text changed in the source and the anchor no longer finds it. Everything else
+/// that used to queue up beside the document is gone — a passage that is out with
+/// the agent raises nothing, because a question that has been asked is a question
+/// dealt with, and a passage the renderer cannot draw raises nothing either,
+/// because that is not a fact about the source. The rail is deliberately almost
+/// always empty.
 function addStaleChip(h) {
   const chip = document.createElement("div");
   chip.className = "stale-chip";
@@ -1014,43 +1110,18 @@ function addStaleChip(h) {
   staleRail.appendChild(chip);
 }
 
-/// The pending glyph (D3): this passage is out with the agent and unanswered.
+/// D3's pending chip and its "Answered" button used to live here.
 ///
-/// It clears on its own when the agent calls `resolve_highlight` — `Store::resolve`
-/// drops `sent_at`, the MCP layer emits `marks-changed`, and `onMarksChanged`
-/// repaints. That is the whole resolution loop and none of it is new here.
+/// Both are gone. A send stamps `sent_at` and takes the pair off the stack, and
+/// that is now the end of it as far as the reader is concerned: a question handed
+/// to the agent is assumed dealt with. The chip was one card per sent mark on the
+/// rail, so a five-question send put five of them beside the paragraph they were
+/// about, each asking to be clicked — and the click only ever recorded "dealt
+/// with", which the send had already implied.
 ///
-/// "Answered" is the backstop for when it does not, and 4.7 names the failure
-/// it backs up: dreamd sees a terminal, not an answer, so a turn that dealt
-/// with the question perfectly well but forgot the tool call leaves the mark
-/// pending forever. One click says so. It resolves with no note, because the
-/// reader is recording "dealt with" rather than reporting what was found.
-function addPendingChip(h) {
-  const chip = document.createElement("div");
-  chip.className = "pend-chip";
-  chip.dataset.id = h.id;
-  chip.innerHTML =
-    `<b>⋯ with the agent</b><span class="q">${escapeHtml(h.quote.slice(0, 120))}</span>`;
-  const row = document.createElement("div");
-  row.className = "row";
-  const done = document.createElement("button");
-  done.textContent = "Answered";
-  done.onclick = async () => {
-    try {
-      await invoke("resolve_mark", { id: h.id });
-    } catch (e) {
-      toast(String(e));
-      return;
-    }
-    // The chip is rebuilt from the store rather than removed by hand: resolving
-    // also takes the pair off the stack, so both surfaces move together.
-    await repaintHighlights();
-    refreshStack();
-  };
-  row.appendChild(done);
-  chip.appendChild(row);
-  staleRail.appendChild(chip);
-}
+/// The store still keeps `sent_at`, and `Store::resolve` still clears it when the
+/// agent calls `resolve_highlight` — the agent's record of what it has closed is
+/// worth keeping and `list_highlights` filters on it. It simply no longer paints.
 
 // How much rendered text either side of a selection is sent as context. The
 // backend only compares the first/last 64 bytes of it; the rest is slack for
@@ -1179,6 +1250,17 @@ async function saveAnnot() {
   if (annotCtx.mode === "create") pending = null;
   closeAnnot();
   refreshStack();
+  // The other half of the fade rule. `set_annotation` clears `prior`, so
+  // re-annotating a faded mark is what brightens it — and without a repaint the
+  // mark kept the wash it had while the panel below it showed the question back
+  // on the stack, which is the two surfaces disagreeing about the same fact.
+  //
+  // It is also what puts a *new* mark on the store's terms rather than the
+  // selection's: `triggerHighlight` wraps the live `Range`, which spans elements
+  // happily, so a quote across a bold run painted once and then had to survive
+  // `placeAcrossNodes` finding it again. Doing that here means a highlight that
+  // cannot be re-placed is visibly wrong immediately, not on the next save.
+  repaintHighlights();
 }
 
 async function cancelAnnot() {
@@ -1195,8 +1277,11 @@ async function deleteHighlight() {
   if (!annotCtx || annotCtx.mode !== "edit") return;
   const id = annotCtx.id;
   await invoke("remove_highlight", { id });
-  const m = contentEl.querySelector(`mark.hl[data-id="${id}"]`);
-  if (m) unwrap(m);
+  // `querySelectorAll`, not `querySelector`: a quote spanning a bold run or a
+  // link is several `<mark>`s sharing one id (see `placeAcrossNodes`), and
+  // unwrapping only the first left the rest of the passage painted for a mark
+  // that no longer exists.
+  for (const m of contentEl.querySelectorAll(`mark.hl[data-id="${id}"]`)) unwrap(m);
   closeAnnot();
   refreshStack();
 }
@@ -1347,7 +1432,13 @@ function buildPair(p) {
   rm.dataset.tip = "Remove from stack"; // `wireTooltips()` delegates on [data-tip]
   rm.onclick = async () => {
     await invoke("remove_pair", { id: p.highlight.id });
+    // Two surfaces, because a pop changes two things. The panel loses the card,
+    // and the passage itself fades: `Store::remove_from_stack` sets `prior`, and
+    // without this repaint the mark stayed at full strength until something else
+    // happened to redraw it — a save, a send, reopening the file — so the fade
+    // arrived minutes later, attached to whatever the reader did next.
     refreshStack();
+    repaintHighlights();
   };
   top.append(cb, loc, rm);
 
@@ -2411,13 +2502,33 @@ function movePalette(d) {
 let fileMenuNode = null;
 let pendingDeletePath = null;
 
+// How close to an edge the ⋯ menu may sit when it has to be clamped there.
+const MENU_INSET = 6;
+
+/// Place the ⋯ menu against its button, and inside the window.
+///
+/// It is `position: fixed`, so nothing clips it — it was simply laid out past the
+/// bottom edge. Below the button when there is room, flipped above it when there
+/// is not, which for a tree that fills the sidebar is most files rather than a
+/// corner case: every one in the lower half opened somewhere nobody can see.
+///
+/// `.open` goes on *first*. The menu is `display: none` until then, and an
+/// undisplayed element measures zero — the flip needs its real height, and the
+/// width it is clamped against is now the box's own rather than a hardcoded
+/// guess at it.
 function openFileMenu(anchorEl, node) {
   fileMenuNode = node;
   const m = $("file-menu");
-  const r = anchorEl.getBoundingClientRect();
-  m.style.left = Math.min(r.left, window.innerWidth - 170) + "px";
-  m.style.top = r.bottom + 4 + "px";
   m.classList.add("open");
+  const r = anchorEl.getBoundingClientRect();
+  const below = r.bottom + 4;
+  const above = r.top - 4 - m.offsetHeight;
+  m.style.left =
+    Math.max(MENU_INSET, Math.min(r.left, window.innerWidth - m.offsetWidth - MENU_INSET)) + "px";
+  m.style.top =
+    (below + m.offsetHeight <= window.innerHeight - MENU_INSET
+      ? below
+      : Math.max(MENU_INSET, above)) + "px";
 }
 function closeFileMenu() { $("file-menu").classList.remove("open"); fileMenuNode = null; }
 
@@ -2815,6 +2926,11 @@ async function startPaneProcess() {
 /// Re-measure and tell the child. Guarded on a visible box: a `ResizeObserver`
 /// fires when the pane is hidden too, and `fit()` on a zero-height element
 /// computes a nonsense geometry that the child would then be told about.
+///
+/// What `fit()` divides is `getComputedStyle(#pty-term).height` — the *border*
+/// box in WebKitGTK — minus the padding of the `.xterm` div, which is why the
+/// terminal's padding is declared there and not on `#pty-term`. See the
+/// `#pty-term` block in index.html; this call is only correct because of it.
 function fitPane() {
   const box = $("pty-term");
   if (!pty.fit || !box.clientHeight || !box.clientWidth) return;

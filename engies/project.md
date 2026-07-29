@@ -244,6 +244,39 @@ causes were wrong.
 
 ## Recent updates
 
+- **2026-07-29** — **Four things that got in the way of reading, fixed.** All four
+  came from using dreamd rather than from testing it.
+
+  The **bottom of the window** was swallowing things. A file's `⋯` menu opened
+  downwards with no check that there was room, so for any file in the lower half of
+  the tree the menu appeared below the edge of the screen — invisible, though it
+  was open. It now flips above the button when it has to. Separately, the Claude
+  Code pane was losing its last row, which is where Claude's input box is drawn:
+  the terminal was being told it had more room than it did, and the pane quietly
+  cut off the difference. Both are exact now.
+
+  A highlight no longer says **"? still pertinent"** unless its text really
+  changed. It used to raise that on files nobody had touched — dreamd looks for the
+  highlighted words in the file, and if you had highlighted across something bold
+  or a link it could never find them, so it assumed the worst every time you
+  reopened the file. It now only asks the question about a passage it once found
+  and can no longer find. That margin strip is meant to be empty almost always,
+  and now it is.
+
+  **Sending a question is the end of it.** Every passage you sent used to put a
+  card in that margin strip saying "with the agent", with an "Answered" button
+  whose only job was to agree that yes, it was dealt with. Five questions meant
+  five cards over the paragraph they were about. The cards are gone; a question you
+  have asked is assumed handled.
+
+  And **highlights that span bold text, links or code now stay highlighted.** They
+  used to appear when you made them and then disappear the next time the page
+  redrew — still counted, still in your stack, just invisible. The highlight is
+  drawn in pieces now, so a phrase with a bold word in the middle gets one
+  continuous wash and keeps its bold. Passages you have sent or taken off the stack
+  also fade to the "done with" shade straight away, rather than waiting for the
+  next time you open dreamd.
+
 - **2026-07-29** — **Two bars of clutter removed from the Linux window, both on
   a switch.** Opening dreamd on Linux used to cost you two rows of furniture
   before the first line of prose: a File / Edit / Help menu bar, and directly
