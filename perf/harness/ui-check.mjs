@@ -734,6 +734,15 @@ await agent.addInitScript(({ base }) => {
   window.__MARK__ = (n) => marks.push(mark(n));
   window.__PAIR__ = (n, annotation) =>
     stack.push({ highlight: mark(n), annotation });
+  // T6: put a mark out with the agent — `sent_at`, which is what raises the
+  // pending glyph. `stale` on top of it is D5's case, where a passage went
+  // stale *while* it was out and both have to be told.
+  window.__PEND__ = (n, stale) => {
+    const m = marks.find((x) => x.id.endsWith(String(n).padStart(2, "0")));
+    m.sent_at = 1_700_000_000;
+    if (stale) m.state = "stale";
+  };
+  window.__RESOLVED__ = [];
 
   const listeners = new Map();
   window.__EMIT__ = (name, payload) => {
@@ -742,7 +751,7 @@ await agent.addInitScript(({ base }) => {
 
   window.__TAURI__ = {
     core: {
-      async invoke(cmd) {
+      async invoke(cmd, args) {
         switch (cmd) {
           case "perf_enabled": return false;
           case "repo_info": return { root: "/repo", name: "repo", display: "~/repo" };
@@ -764,6 +773,18 @@ await agent.addInitScript(({ base }) => {
           // Read live, not captured: this is the agent's mutation arriving.
           case "get_highlights": case "reanchor": return marks.map((m) => ({ ...m }));
           case "get_stack": return stack.map((p) => ({ ...p }));
+          // The resolve-by-hand backstop. `Store::resolve` clears `sent_at` and
+          // drops the stack entry; both halves are here, because the badge is
+          // how the test tells a store change from a DOM one.
+          case "resolve_mark": {
+            const m = marks.find((x) => x.id === args.id);
+            if (!m) return false;
+            m.sent_at = null;
+            window.__RESOLVED__.push(args.id);
+            const at = stack.findIndex((p) => p.highlight.id === args.id);
+            if (at >= 0) stack.splice(at, 1);
+            return true;
+          }
           default: return null;
         }
       },
@@ -850,6 +871,54 @@ await agent.evaluate(() => {
 await agent.waitForTimeout(400);
 check("a burst of events settles to one correct overlay", (await hlCount()) === 4, `got ${await hlCount()}`);
 
+// --- T6: the pending glyph, and resolving one by hand ---------------------
+// The other half of the resolution loop. `sent_at` is what a send stamps and
+// what `Store::resolve` clears, so the glyph appearing and disappearing is the
+// whole of what the reader sees of an agent working through the stack.
+const pendChips = () => agent.locator(".pend-chip").count();
+const staleChips = () => agent.locator(".stale-chip").count();
+
+await agent.evaluate(() => window.__PEND__(1));
+await emitMarks({ file_path: "/repo/doc.md", stack: false });
+check("a mark out with the agent raises a pending chip", (await pendChips()) === 1, `${await pendChips()}`);
+check("and the passage itself still paints", (await hlCount()) === 4, `got ${await hlCount()}`);
+
+// D5's case, and the reason `sent_at` sits beside `state` instead of inside
+// it: a passage can go stale *while* it is out with the agent, and a single
+// enum would have to pick one of the two and would pick wrong.
+await agent.evaluate(() => window.__PEND__(2, true));
+await emitMarks({ file_path: "/repo/doc.md", stack: false });
+check(
+  "a passage that went stale while it was out shows both glyphs",
+  (await pendChips()) === 2 && (await staleChips()) === 1,
+  `${await pendChips()} pending, ${await staleChips()} stale`,
+);
+
+// The backstop for an agent that answered and never called the tool (4.7).
+const badgeBeforeResolve = await badge();
+// Guarded, like the send bar's buttons and the mode control's: a chip that
+// stopped being rendered should report as the checks it broke rather than as a
+// click timeout that takes the run down before anything is printed.
+const answered = agent.locator('.pend-chip[data-id="h0000000000000001"] button');
+if (await answered.count()) await answered.click();
+await agent.waitForTimeout(400);
+check("resolving by hand clears that chip", (await pendChips()) === 1, `${await pendChips()}`);
+// The distinction that matters: it went through the store, not just the DOM.
+// A handler that removed the chip and stopped would pass a count assertion and
+// leave the mark pending on the next repaint.
+check(
+  "and it went through the store",
+  (await agent.evaluate(() => window.__RESOLVED__)).join() === "h0000000000000001",
+  (await agent.evaluate(() => window.__RESOLVED__)).join(),
+);
+check(
+  "and took the stack entry with it",
+  badgeBeforeResolve === "2" && (await badge()) === "1",
+  `${badgeBeforeResolve} -> ${await badge()}`,
+);
+await emitMarks({ file_path: "/repo/doc.md", stack: false });
+check("and it stays cleared through a repaint", (await pendChips()) === 1, `${await pendChips()}`);
+
 // --- the embedded Claude Code pane ----------------------------------------
 // A fifth page, because everything here is about a surface that does not exist
 // until a key is pressed, and the pages above assert on a boot that must never
@@ -867,6 +936,16 @@ check("a burst of events settles to one correct overlay", (await hlCount()) === 
 const paneStub = ({ base, position }) => {
   const calls = [];
   window.__CALLS__ = calls;
+  // T6's send stack and the queue behind it, mirroring `src-tauri/src/flow.rs`
+  // closely enough to drive the frontend: an id cannot be in two live
+  // submissions, arming is one-way, and `take_send` hands back the oldest armed
+  // entry exactly once. It starts *empty*, which is what makes the D10 check
+  // below — Ctrl+Enter on an empty stack — a real one.
+  const stack = [];
+  window.__STACK__ = stack;
+  window.__QUEUE__ = [];
+  window.__SENT__ = [];
+  let nextToken = 0;
   // What `agent_prefs` answers, and what `set_config` writes into — the two
   // halves of the mode control's round trip.
   window.__AGENT__ = { position, permission_mode: "accept-edits" };
@@ -885,6 +964,7 @@ const paneStub = ({ base, position }) => {
             palette: "Ctrl+F", highlight: "Ctrl+H", toggle_stack: "Ctrl+O",
             toggle_outline: "Ctrl+I", toggle_tree: "Ctrl+B", toggle_view: "Ctrl+M",
             toggle_pane: "Ctrl+T", find: "/", settings: "Ctrl+,",
+            send_stack: "Ctrl+Enter",
             quick_highlight: true,
           };
           case "get_theme": return { css: base, mode: "system", scheme: "dark", syntax_theme: null };
@@ -894,7 +974,43 @@ const paneStub = ({ base, position }) => {
             name: "repo", is_dir: true, path: "/repo", rel: "",
             children: [{ name: "doc.md", is_dir: false, path: "/repo/doc.md", rel: "doc.md", children: [] }],
           };
-          case "get_highlights": case "reanchor": case "get_stack": return [];
+          case "get_highlights": case "reanchor": return [];
+          case "get_stack": return stack.map((p) => ({ ...p }));
+          case "queue_send": {
+            const wanted = args.ids && args.ids.length
+              ? args.ids : stack.map((p) => p.highlight.id);
+            const ids = wanted.filter((id) =>
+              stack.some((p) => p.highlight.id === id) &&
+              !window.__QUEUE__.some((q) => q.ids.includes(id)));
+            if (!ids.length) return null; // D10: nothing usable to send
+            const p = { token: ++nextToken, ids, phase: "undo" };
+            window.__QUEUE__.push(p);
+            return p;
+          }
+          case "arm_send": {
+            const p = window.__QUEUE__.find((q) => q.token === args.token);
+            if (!p || p.phase !== "undo") return false;
+            p.phase = "armed";
+            return true;
+          }
+          case "cancel_send": {
+            const before = window.__QUEUE__.length;
+            window.__QUEUE__ = window.__QUEUE__.filter((q) => q.token !== args.token);
+            return window.__QUEUE__.length !== before;
+          }
+          case "take_send": {
+            const at = window.__QUEUE__.findIndex((q) => q.phase === "armed");
+            if (at < 0) return null;
+            const [p] = window.__QUEUE__.splice(at, 1);
+            window.__SENT__.push(p);
+            // What the real command does after the pty write lands: `mark_sent`
+            // takes exactly those ids off the stack and leaves the rest.
+            for (const id of p.ids) {
+              const i = stack.findIndex((s) => s.highlight.id === id);
+              if (i >= 0) stack.splice(i, 1);
+            }
+            return { token: p.token, ids: p.ids };
+          }
           case "agent_prefs": return { ...window.__AGENT__ };
           // The real one merges into the global config file and hands back the
           // whole `Settings` payload; the pane only ever reads the write back
@@ -1139,6 +1255,119 @@ check(
   (await called("pty_spawn")).length === spawnsBeforeMode + 1 &&
     (await called("pty_kill")).length === killsBeforeMode + 1,
 );
+
+// --- T6: Ctrl+Enter is one verb -------------------------------------------
+// What this can honestly see: which IPC calls the key makes, what the send bar
+// says, and that nothing throws. What it cannot see is the only thing that
+// really matters — whether Claude Code receives a usable prompt — because there
+// is no Claude Code here and `pty_write` is a stub. That is the hand check.
+
+const queued = () => pane.evaluate(() => window.__QUEUE__.length);
+const sent = () => pane.evaluate(() => window.__SENT__.length);
+const onStack = () => pane.evaluate(() => window.__STACK__.length);
+const barOpenPane = () => pane.locator("#send-bar.open").isVisible();
+/// Push a pair onto the stub's stack without driving the highlight flow, which
+/// is a different feature's path and has its own checks.
+const seedPair = (n) => pane.evaluate((i) => window.__STACK__.push({
+  highlight: {
+    id: "h000000000000000" + i, file_path: "/repo/doc.md", quote: "alpha bravo",
+    prefix: "", suffix: "", line_start: 1, line_end: 1, state: "active",
+  },
+  annotation: "why?",
+}), n);
+/// Expire the undo window and say how long ago the child last spoke, instead of
+/// sleeping through `UNDO_MS` + `IDLE_QUIET_MS`. What is under test is the state
+/// machine and the release path, not `setInterval`.
+const nudgeFlow = (quietMs) => pane.evaluate((q) => {
+  for (const p of flow.pending.values()) p.until = Date.now() - 1;
+  flow.lastData = Date.now() - q;
+}, quietMs);
+/// Ctrl+Enter *from the reader*. The click is not decoration: opening the pane
+/// focuses the terminal, and every key with focus in there belongs to the child
+/// (`inTerminal`), so a press without it would be swallowed and every assertion
+/// below would fail for a reason that is not the one being tested.
+const pressSend = async () => {
+  await pane.locator("#content").click();
+  await pane.keyboard.press("Control+Enter");
+  await pane.waitForTimeout(400);
+};
+/// Click a button on the send bar, if the bar is offering one. Guarded the same
+/// way `clickIfStaged` guards the mode control, and for the same reason: a
+/// regression that stops the bar appearing should report as the one or two
+/// failed checks it is, not as a 30-second click timeout that takes the whole
+/// harness down before it prints anything.
+const clickBar = async (label) => {
+  const btn = pane.locator("#send-bar button", { hasText: label });
+  if (await btn.count()) await btn.first().click();
+  await pane.waitForTimeout(400);
+};
+
+// D10 first, from a *closed* pane, because "it opens the pane" is the whole
+// claim. The stub's stack is empty, so this is the empty-stack case.
+const failsBeforeEmpty = results.filter((r) => r.startsWith("FAIL")).length;
+await pane.evaluate(() => closePane());
+await pane.waitForTimeout(200);
+await pane.keyboard.press("Control+Enter");
+await pane.waitForTimeout(700);
+check("Ctrl+Enter on an empty stack opens the pane", await pane.locator("#pty-pane.open").isVisible());
+check("and queues nothing", (await queued()) === 0, `${await queued()}`);
+check("and offers no undo for a send that never happened", !(await barOpenPane()));
+check(
+  "and throws nothing",
+  results.filter((r) => r.startsWith("FAIL")).length === failsBeforeEmpty,
+);
+
+// With a stack, the same key queues — and still sends nothing yet. The undo
+// window is a *delay*, not a retraction (D16), so there is never a moment where
+// the pairs have left the stack and can be put back.
+await seedPair(1);
+const writesBeforeQueue = (await called("pty_write")).length;
+await pressSend();
+check("Ctrl+Enter with a stack queues a send", (await queued()) === 1, `${await queued()}`);
+check("and shows the undo", await barOpenPane());
+check("and has sent nothing", (await sent()) === 0);
+check("and written nothing to the child", (await called("pty_write")).length === writesBeforeQueue);
+check("and the pair is still on the stack", (await onStack()) === 1, `${await onStack()}`);
+check(
+  "and the card says so rather than leaving",
+  (await pane.locator("#stack-list .pair.pending").count()) === 1,
+  `${await pane.locator("#stack-list .pair.pending").count()}`,
+);
+
+// One gesture takes it back, and the state is exactly what it was.
+await clickBar("Undo");
+check("Undo cancels it", (await queued()) === 0 && !(await barOpenPane()));
+check("the pair is untouched", (await onStack()) === 1, `${await onStack()}`);
+check(
+  "and its card is a plain one again",
+  (await pane.locator("#stack-list .pair.pending").count()) === 0,
+);
+check("and nothing ever reached the child", (await called("pty_write")).length === writesBeforeQueue);
+
+// The queue heuristic, in the only form this harness can see it. Armed is not
+// sent: while the child is still producing output the submission waits, which
+// is the failure mode the plan says to bias towards.
+await pressSend();
+await nudgeFlow(0); // the child spoke just now
+await pane.waitForTimeout(800);
+check("an armed send waits while the agent is still talking", (await sent()) === 0, `${await sent()}`);
+check("and says it is waiting", await barOpenPane());
+
+// The plan's stated fallback, built alongside the heuristic rather than held in
+// reserve: if the quiet never comes, this is how the stack still goes.
+await clickBar("Send now");
+check("Send now submits regardless of the heuristic", (await sent()) === 1, `${await sent()}`);
+check("and the pair leaves the stack", (await onStack()) === 0, `${await onStack()}`);
+check("and the bar clears", !(await barOpenPane()));
+
+// And the heuristic's own path: past the undo window, with the child quiet, it
+// goes on its own.
+await seedPair(2);
+await pressSend();
+await nudgeFlow(60_000);
+await pane.waitForTimeout(900);
+check("a quiet agent takes the queued send", (await sent()) === 2, `${await sent()}`);
+check("exactly once", (await queued()) === 0 && (await onStack()) === 0);
 
 // --- docked right (`agent.position`) --------------------------------------
 // A second page, because position is read once on the pane's first open — the

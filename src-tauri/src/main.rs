@@ -11,11 +11,12 @@ use clap::Parser;
 use dreamd::annotations::{Highlight, Id, Origin, Pair, Store};
 use dreamd::catalog::Catalog;
 use dreamd::config::{Config, Keymap};
+use dreamd::flow::Flow;
 use dreamd::fs_walk::FileNode;
 use dreamd::send::SendResult;
 use dreamd::{
-    cli, config, guard, home_relative, markdown, marks_file, mcp, notify, perf, pty, read_source,
-    rootfield, send, theme, watcher,
+    cli, config, flow, guard, home_relative, markdown, marks_file, mcp, notify, perf, prompt, pty,
+    read_source, rootfield, send, theme, watcher,
 };
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -104,6 +105,11 @@ struct AppState {
     /// an `Option` created on first open rather than at boot. One per window:
     /// the pane is a single dock, not a tab strip.
     pty: Mutex<Option<pty::Pty>>,
+    /// Submissions between Ctrl+Enter and the pty: the undo window and the
+    /// mid-turn queue. Empty in the steady state, and it dies with the process
+    /// on purpose — a send nobody released before quitting was never sent, and
+    /// its pairs are still on the stack in the marks file.
+    flow: Mutex<Flow>,
 }
 
 impl AppState {
@@ -481,6 +487,132 @@ fn send_stack(state: State<AppState>, ids: Vec<Id>) -> Result<SendResult, String
     state.store.lock().unwrap().mark_sent(&sent);
     state.touch();
     Ok(result)
+}
+
+// ---- the flow: Ctrl+Enter through to the pane ----------------------------
+// `send_stack` above is the *other* path — the tmux one, reached only from
+// `keymap.send_stack_tmux` (D6). Everything below is the product's send: it
+// ends at the pane's pty, and its whole shape is "delay, then submit" rather
+// than "submit, then retract" (D16).
+
+/// Put the stack — or an explicit selection — in the undo window.
+///
+/// `None` means there was nothing usable to send, which the frontend reads as
+/// D10: Ctrl+Enter on an empty stack opens the pane and does nothing else.
+/// "Usable" is `selected_pairs`' definition, so an id naming nothing and a mark
+/// with no annotation are dropped here rather than surviving as far as a prompt
+/// with a blank question in it.
+///
+/// Nothing is stamped and nothing leaves the stack: until [`take_send`] writes
+/// to the pty, a cancel restores exactly the state that was here before, with
+/// no rollback to get wrong.
+#[tauri::command]
+fn queue_send(state: State<AppState>, ids: Vec<Id>) -> Option<flow::Pending> {
+    let pairs = {
+        let store = state.store.lock().unwrap();
+        if ids.is_empty() {
+            store.stack_pairs()
+        } else {
+            store.selected_pairs(&ids)
+        }
+    };
+    let ids: Vec<Id> = pairs.iter().map(|p| p.highlight.id.clone()).collect();
+    state.flow.lock().unwrap().queue(ids)
+}
+
+/// The undo window elapsed. The submission is now eligible to go, and still
+/// cancellable — the pane may sit on it while a turn runs.
+#[tauri::command]
+fn arm_send(state: State<AppState>, token: u64) -> bool {
+    state.flow.lock().unwrap().arm(token)
+}
+
+/// Take it back. False once it has gone, which is the frontend's cue to stop
+/// offering an undo that would do nothing.
+#[tauri::command]
+fn cancel_send(state: State<AppState>, token: u64) -> bool {
+    state.flow.lock().unwrap().cancel(token)
+}
+
+/// What [`take_send`] did, for the toast and for the frontend's own bookkeeping.
+#[derive(serde::Serialize)]
+struct Submitted {
+    token: u64,
+    /// The ids that went, so the caller can drop them from its pending set
+    /// without assuming which submission was taken.
+    ids: Vec<Id>,
+}
+
+/// Submit the oldest armed submission, if the pane can take it.
+///
+/// Called by the frontend when it believes the agent is idle (D11). Returning
+/// `None` is the normal, frequent answer — nothing armed, or no live child —
+/// and it deliberately consumes nothing: a queue that never fires is recovered
+/// by pressing the key again, and one that fires into the middle of a turn is
+/// not, so every ambiguous case here resolves to "not yet".
+///
+/// The order of the last three steps is the recoverable one. The ticket is
+/// consumed first, so no second caller can take it; the pty write is next; and
+/// `mark_sent` only runs if that write succeeded — so a child that has died
+/// between the check and the write costs an error toast and leaves the
+/// questions on the stack, rather than clearing them for a turn that never
+/// happened.
+#[tauri::command]
+fn take_send(state: State<AppState>) -> Result<Option<Submitted>, String> {
+    // Checked before anything is consumed: a pane that was never opened, or one
+    // whose child exited, leaves the submission armed for the next tick.
+    if state.pty.lock().unwrap().is_none() {
+        return Ok(None);
+    }
+    let Some(pending) = state.flow.lock().unwrap().take_ready() else {
+        return Ok(None);
+    };
+    let pairs = state.store.lock().unwrap().selected_pairs(&pending.ids);
+    if pairs.is_empty() {
+        // Every pair was removed while it waited. There is nothing to ask, and
+        // the ticket is already spent, so this is simply over.
+        return Ok(None);
+    }
+
+    let content = prompt::assemble(&state.root(), &pairs);
+    let path = send::write_query_file(&content).map_err(|e| format!("temp file: {e}"))?;
+    // Fixed but for a path dreamd minted. See `prompt::read_line` — the far end
+    // of this write is Claude Code's composer *or* a login shell, and the line
+    // has to be safe under either reading (tenet 3).
+    let line = prompt::read_line(&path);
+    {
+        let mut slot = state.pty.lock().unwrap();
+        let child = slot.as_mut().ok_or("the pane is not running")?;
+        child.write(line.as_bytes())?;
+        // Separately, the way the tmux path sends its Enter separately: a TUI
+        // reading a line and its submit key out of one read is a bet on the
+        // child's input handling that nothing here can check.
+        child.write(b"\r")?;
+    }
+
+    let sent: Vec<Id> = pairs.iter().map(|p| p.highlight.id.clone()).collect();
+    state.store.lock().unwrap().mark_sent(&sent);
+    state.touch();
+    Ok(Some(Submitted {
+        token: pending.token,
+        ids: sent,
+    }))
+}
+
+/// Close a question by hand: the backstop for an agent that answered and never
+/// called `resolve_highlight`.
+///
+/// The note is `None` rather than a sentence of dreamd's, because there is no
+/// answer to record — the reader is saying "dealt with", not reporting what was
+/// found. `Store::resolve` clears `sent_at`, which is what takes the pending
+/// glyph out of the margin.
+#[tauri::command]
+fn resolve_mark(state: State<AppState>, id: String) -> bool {
+    let resolved = state.store.lock().unwrap().resolve(&id, None);
+    if resolved {
+        state.touch();
+    }
+    resolved
 }
 
 #[tauri::command]
@@ -1231,6 +1363,7 @@ fn main() {
         dirty: dirty.clone(),
         pending_reanchor: Mutex::new(pending_reanchor),
         pty: Mutex::new(None),
+        flow: Mutex::new(Flow::default()),
     };
 
     tauri::Builder::default()
@@ -1254,6 +1387,11 @@ fn main() {
             reanchor,
             get_stack,
             send_stack,
+            queue_send,
+            arm_send,
+            cancel_send,
+            take_send,
+            resolve_mark,
             get_keymap,
             stack_query_text,
             get_theme,
