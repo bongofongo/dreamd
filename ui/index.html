@@ -402,6 +402,49 @@
       }
       #pty-mode:hover, #pty-mode:focus-visible { opacity: 1; border-color: var(--accent, #a48cf5); }
 
+      /* Three chips reading as one control: a shared border, hairlines between,
+         and no gap — a row of separate buttons would read as three unrelated
+         actions rather than one either/or. */
+      #pty-models {
+        flex: 0 0 auto; display: flex;
+        border: 1px solid var(--border, #2e2940); border-radius: 5px;
+        overflow: hidden;
+      }
+      button.pty-model {
+        font: inherit; font-size: 11px; line-height: 1;
+        padding: 3px 8px; border: none; cursor: pointer;
+        background: var(--btn-bg, #1f1c2b); color: inherit;
+        opacity: 0.7;
+      }
+      button.pty-model + button.pty-model { border-left: 1px solid var(--border, #2e2940); }
+      button.pty-model:hover, button.pty-model:focus-visible { opacity: 1; }
+      /* Set only once a chip has been pressed in this session — see the markup
+         for why none of them starts lit. */
+      button.pty-model.sel { opacity: 1; background: var(--hover, #292435); color: var(--accent, #a48cf5); }
+      /* A dead child has nothing to type into. The chips stay visible rather
+         than disappearing, so the row does not reflow when the process exits. */
+      #pty-pane.dead button.pty-model { opacity: 0.35; pointer-events: none; }
+
+      /* The MCP status strip. `display: none` until `paintMcpStatus` finds
+         something to say, which in a healthy session is never — so the strip
+         costs no layout in the common case, the way `#pty-confirm` does. */
+      #pty-mcp {
+        display: none; align-items: center; gap: 8px;
+        flex: 0 0 auto; padding: 6px 8px 6px 12px;
+        font-size: 11px; line-height: 1.45;
+        border-bottom: 1px solid var(--border, #2e2940);
+        background: color-mix(in srgb, var(--accent, #a48cf5) 10%, transparent);
+      }
+      #pty-pane.mcp-warn #pty-mcp { display: flex; }
+      #pty-mcp code {
+        font-family: var(--font-mono, ui-monospace, Menlo, monospace);
+        font-size: 10px; padding: 1px 4px; border-radius: 4px;
+        background: var(--btn-bg, #1f1c2b);
+        /* The command is the only part worth selecting, and it is the one thing
+           in the pane chrome that is meant to be copied out. */
+        user-select: text; -webkit-user-select: text;
+      }
+
       /* The mode-change confirmation strip. Hidden until a change is staged;
          `display: none` rather than a height transition, so a pane that never
          changes mode never lays it out. */
@@ -1003,8 +1046,17 @@
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l9 5-9 5-9-5 9-5z"/><path d="M3 12l9 5 9-5"/><path d="M3 17l9 5 9-5"/></svg>
           <span class="badge" id="stack-badge">0</span>
         </button>
-        <button id="btn-send" class="icon primary" data-tip="Send stack to agent" data-tip-key="send_stack">
+        <!-- The clipboard icon means the clipboard. It used to be the send
+             button, which is why the two sit next to each other in this order:
+             the gesture that was here is now one slot to the right. -->
+        <button id="btn-copy" class="icon" data-tip="Copy stack to clipboard" data-tip-key="copy_stack">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/></svg>
+        </button>
+        <!-- The rightmost slot, and the primary one: Ctrl+Enter's whole verb —
+             open the pane, cold-start if needed, send the stack. A paper plane
+             rather than a clipboard, because what happens now is a send. -->
+        <button id="btn-send" class="icon primary" data-tip="Send stack to Claude" data-tip-key="send_stack">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.5 2.5L11 13"/><path d="M21.5 2.5l-6.5 19-4-8.5-8.5-4z"/></svg>
         </button>
       </div>
     </div>
@@ -1062,6 +1114,18 @@
                  read without reading. -->
             <span id="pty-dot" aria-hidden="true"></span>
             <span id="pty-title">Claude Code</span>
+            <!-- Model, switched live. Unlike the permission mode beside it this
+                 is a slash command typed into the running session, so there is
+                 nothing to stage and nothing to lose — see `pty::model_line`.
+                 No chip starts selected: dreamd does not pass `--model`, so
+                 until one is pressed the session is on whatever Claude Code
+                 itself chose, and lighting one up would be a claim dreamd
+                 cannot make. -->
+            <div id="pty-models" role="group" aria-label="Model">
+              <button class="pty-model" data-model="opus">opus</button>
+              <button class="pty-model" data-model="sonnet">sonnet</button>
+              <button class="pty-model" data-model="haiku">haiku</button>
+            </div>
             <!-- The permission mode Claude Code launches in. Changing it is a
                  restart, because the mode is a launch flag — so the change is
                  staged into `#pty-confirm` below rather than applied, and the
@@ -1076,6 +1140,14 @@
             <button id="pty-restart" class="icon" data-tip="Restart the pane's process">⟳</button>
             <button id="pty-close" class="icon" data-tip="Hide pane (the process keeps running)" data-tip-key="toggle_pane">✕</button>
           </div>
+          <!-- The agent half of dreamd, which is otherwise invisible from the
+               reading side: an agent that cannot reach this window's socket
+               still answers questions, it just cannot resolve a single mark,
+               and nothing on screen would say why. Hidden entirely while MCP is
+               healthy — a working pane says nothing, the way `#pty-status`
+               does. Above `#pty-confirm` so a staged restart is still the
+               bottom-most strip and reads as the newest thing. -->
+          <div id="pty-mcp" role="status" aria-live="polite"></div>
           <!-- Shown only while a mode change is staged. It exists so that
                "restarting loses the conversation" is a sentence the reader is
                shown before it happens, rather than something they infer from an

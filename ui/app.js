@@ -2073,33 +2073,47 @@ function checkedIds() {
 // What this file adds is the two events that state machine cannot observe —
 // the undo window elapsing, and the agent looking idle.
 
-// D16's "few seconds". Long enough to be a real second thought on a send you
-// regretted the moment you pressed it, short enough that waiting for it is not
-// how the loop feels.
-const UNDO_MS = 5000;
-// How long the child must produce nothing before dreamd will type into it.
-const IDLE_QUIET_MS = 1500;
-// One timer for everything: the countdown, the arming and the idle poll. It
-// only runs while something is pending, and the steady state is nothing.
+// **There is no undo window any more.** D16 delayed every send by five seconds
+// so a regretted one could be taken back; that was measured against the wrong
+// cost. The regretted send is rare and cheap — Escape interrupts the turn — and
+// the five seconds were paid on every single send, which is what the loop
+// actually feels. A submission is now armed the moment it is queued and goes as
+// soon as the pane can take it. `#send-bar` still offers Cancel, but only for
+// the seconds a submission genuinely spends waiting on a cold start.
+//
+// What survives from that design is `flow.rs`: the dedupe, and one submission
+// taken at a time in the order they were pressed. Two Ctrl+Enters are still two
+// turns — Claude Code's own composer queues a line typed mid-turn, which is why
+// dreamd no longer needs to.
+
+// How long the child must produce nothing before dreamd believes it has
+// finished *starting*. Not an idle check any more: see `paneReady`.
+const BOOT_QUIET_MS = 1500;
+// One timer for everything: the arming, the boot watch and the release. It only
+// runs while something is pending, and the steady state is nothing.
 const FLOW_TICK_MS = 350;
 
 const flow = {
-  // token -> { ids, until, armed }. The mirror of `flow.rs`'s queue, held here
-  // only so the bar can paint without an IPC round trip per tick.
+  // token -> { ids, armed }. The mirror of `flow.rs`'s queue, held here only so
+  // the bar can paint without an IPC round trip per tick.
   pending: new Map(),
   timer: null,
   busy: false,
   // `Date.now()` of the last byte the child produced, and 0 until it has
-  // produced any. See `agentLooksIdle`.
+  // produced any. See `paneReady`.
   lastData: 0,
 };
 
 /// Ctrl+Enter. One verb.
 ///
-/// The queue call goes first and the pane opens underneath it, so the undo
-/// window starts at the keypress rather than after a cold start — pressing the
-/// key and then watching four seconds of vendor loading before the countdown
-/// begins would make the undo feel like it arrived late.
+/// The queue call goes first and the pane opens underneath it, so a submission
+/// exists before the vendor bundle is parsed — which is what lets the send bar
+/// say what is about to happen during a cold start instead of after it.
+///
+/// The explicit `flowTick` at the end is the whole of "no delay": on a warm
+/// pane `openPane` resolves in a frame or two, the tick arms and releases in
+/// the same turn, and the interval below never gets a chance to run. It exists
+/// for the cold start, where the answer is genuinely "not yet".
 async function runStack(ids) {
   let queued = null;
   try {
@@ -2112,16 +2126,13 @@ async function runStack(ids) {
   // it is the other thing this key does.
   const opening = openPane();
   if (queued) {
-    flow.pending.set(queued.token, {
-      ids: queued.ids,
-      until: Date.now() + UNDO_MS,
-      armed: false,
-    });
+    flow.pending.set(queued.token, { ids: queued.ids, armed: false });
     paintSendBar();
     refreshStack();
     startFlowTimer();
   }
   await opening;
+  if (queued) await flowTick();
 }
 
 function startFlowTimer() {
@@ -2132,7 +2143,10 @@ function stopFlowTimer() {
   if (flow.timer) { clearInterval(flow.timer); flow.timer = null; }
 }
 
-/// Arm what is ripe, submit what is ready, repaint the countdown.
+/// Arm everything, submit everything the pane will take, repaint.
+///
+/// Called on the interval *and* directly by `runStack`, which is why it is
+/// re-entrant-safe rather than merely scheduled.
 ///
 /// `flow.busy` because a tick is asynchronous and the interval is not: two
 /// overlapping ticks could both call `take_send`. The Rust side would hand the
@@ -2143,16 +2157,21 @@ async function flowTick() {
   if (flow.busy) return;
   flow.busy = true;
   try {
-    const now = Date.now();
+    noteBootQuiet();
     for (const [token, p] of flow.pending) {
-      if (p.armed || now < p.until) continue;
+      if (p.armed) continue;
       p.armed = await invoke("arm_send", { token });
       // False means the token is gone underneath us — cancelled from another
       // path — so stop painting a send that no longer exists.
       if (!p.armed) flow.pending.delete(token);
     }
-    const armed = [...flow.pending.values()].some((p) => p.armed);
-    if (armed && agentLooksIdle()) await releaseSend();
+    // Everything, not one: `take_send` hands back the oldest each call, and two
+    // submissions pressed a second apart are two lines typed a moment apart.
+    // Claude Code queues the second itself if the first is still running, which
+    // is the behaviour the old idle wait was approximating from outside.
+    while (flow.pending.size && paneReady()) {
+      if (!(await releaseSend())) break;
+    }
   } catch (e) {
     console.error(e);
   } finally {
@@ -2161,37 +2180,35 @@ async function flowTick() {
   }
 }
 
-/// Does the agent look ready for a new turn?
+/// Has the child finished *starting*?
 ///
-/// **This is the least durable thing in the feature and it is deliberately
-/// dumb.** D11 asks dreamd to watch the output stream for the shape of an idle
-/// prompt; Claude Code's idle prompt is a TUI redraw rather than a marker, so
-/// matching its shape would be matching a moving target, and the plan is
-/// explicit that a queue which fires mid-turn is unrecoverable while one that
-/// never fires is a second keypress. So the only signal read here is
-/// *quiescence*: a working Claude Code redraws its spinner continuously, and a
-/// second and a half of complete silence is not the middle of a turn.
+/// The one thing left of the old idle heuristic, and it answers a much narrower
+/// question than that one did. A cold-started Claude Code emits its first bytes
+/// within milliseconds and then spends a second or two drawing itself; typing
+/// into that window loses the line entirely. A second and a half of complete
+/// silence is the end of it — a working TUI redraws continuously, so quiet
+/// means the first frame is done.
 ///
-/// The three guards are all "not yet" answers:
-///
-/// `pty.running` — no child, nothing to type into.
-///
-/// `flow.lastData` still 0 — the child has never produced a byte, so it has not
-/// finished drawing its first frame. This is the cold-start case, and it is why
-/// there is no separate wait for one.
-///
-/// What it gets wrong, knowingly: a permission prompt is quiet, and typing into
-/// one answers a question that was not this. That is the hand check, and the
-/// bar's "Send now" is what a reader uses when this never fires.
-function agentLooksIdle() {
-  if (!pty.running || !flow.lastData) return false;
-  return Date.now() - flow.lastData >= IDLE_QUIET_MS;
+/// Latching, and that is the point: once a pane has been quiet once, it is
+/// **permanently** ready, mid-turn included. dreamd no longer waits for the
+/// agent to look idle before typing, because the composer accepts a line during
+/// a turn and queues it. Reset by `startPaneProcess`, so a restart earns the
+/// wait again.
+function noteBootQuiet() {
+  if (pty.settled || !pty.running || !flow.lastData) return;
+  if (Date.now() - flow.lastData >= BOOT_QUIET_MS) pty.settled = true;
+}
+
+/// Can the pane take a line right now?
+function paneReady() {
+  return !!(pty.running && pty.settled);
 }
 
 /// Hand the oldest armed submission to the pane, if Rust agrees there is one.
+/// False when it handed back nothing, which is the caller's cue to stop asking.
 async function releaseSend() {
   const res = await invoke("take_send");
-  if (!res) return; // nothing armed, or the pane is not up. Not an error.
+  if (!res) return false; // nothing armed, or the pane is not up. Not an error.
   flow.pending.delete(res.token);
   const n = res.ids.length;
   toast(`Sent ${n} ${n === 1 ? "question" : "questions"} to the agent`);
@@ -2199,10 +2216,13 @@ async function releaseSend() {
   // both surfaces are stale by exactly one event.
   await refreshStack();
   await repaintHighlights();
+  return true;
 }
 
 /// Take it back. Nothing was sent, so there is nothing to reverse — the pairs
-/// never left the stack and `sent_at` was never stamped (D16).
+/// never left the stack and `sent_at` was never stamped. With the undo window
+/// gone this is reachable only while a submission is genuinely waiting on the
+/// pane: a cold start, or a child that has exited.
 async function cancelSend(token) {
   let ok = false;
   try {
@@ -2216,9 +2236,9 @@ async function cancelSend(token) {
   if (!ok) toast("That one has already gone");
 }
 
-/// The plan's stated fallback for the heuristic, built at the same time as the
-/// heuristic rather than held in reserve: if the quiet never comes, this is the
-/// way the stack still gets sent. It bypasses the idle check and nothing else.
+/// The fallback for the boot watch: if the quiet never comes — a child stuck
+/// mid-draw, a login shell that never exec'd `claude` — this is the way the
+/// stack still gets sent. It bypasses `paneReady` and nothing else.
 async function sendNow(token) {
   try {
     await invoke("arm_send", { token });
@@ -2247,7 +2267,15 @@ function paintSendBar() {
   document.body.classList.toggle("sending", rows.length > 0);
   if (!rows.length) return;
 
-  const now = Date.now();
+  // With the undo window gone, a row on screen at all means the pane could not
+  // take the line — it is starting, or its child has exited. So the bar says
+  // which, rather than counting down at something that is about to happen
+  // anyway. On a warm pane it flashes for one frame or never paints at all.
+  const why = pty.opening
+    ? "starting Claude Code"
+    : !pty.running
+      ? "the pane is not running"
+      : "waiting for Claude Code to finish starting";
   for (const [token, p] of rows) {
     const row = document.createElement("div");
     row.className = "send-row";
@@ -2257,22 +2285,17 @@ function paintSendBar() {
     const noun = n === 1 ? "question" : "questions";
     // `textContent` throughout — none of this is user text, but the stack panel
     // next door renders quotes the same way and the rule is worth keeping whole.
-    what.textContent = p.armed
-      ? `${n} ${noun} queued — waiting for the agent`
-      : `Sending ${n} ${noun} in ${Math.max(1, Math.ceil((p.until - now) / 1000))}s`;
+    what.textContent = `${n} ${noun} queued — ${why}`;
     row.appendChild(what);
-    if (p.armed) {
-      const go = document.createElement("button");
-      go.textContent = "Send now";
-      go.className = "primary";
-      go.onclick = () => sendNow(token);
-      row.appendChild(go);
-    }
-    // Present in both phases. The undo window is not the last moment to change
-    // your mind — an armed send can sit through a whole turn waiting for quiet,
-    // and it has still not been sent.
+    const go = document.createElement("button");
+    go.textContent = "Send now";
+    go.className = "primary";
+    go.onclick = () => sendNow(token);
+    row.appendChild(go);
+    // Still the last moment to change your mind, and now the only one: a
+    // submission that is visible here has not been written to the pty.
     const stop = document.createElement("button");
-    stop.textContent = p.armed ? "Cancel" : "Undo";
+    stop.textContent = "Cancel";
     stop.onclick = () => cancelSend(token);
     row.appendChild(stop);
     bar.appendChild(row);
@@ -2489,6 +2512,19 @@ const pty = {
   listening: false,  // whether the pty-data / pty-exit listeners are attached
   prefs: null,       // the last `agent_prefs` payload, once the pane has opened
   staged: null,      // a permission mode chosen but not yet restarted into
+  // Whether the child has finished drawing its first frame. Latching; see
+  // `noteBootQuiet`, which is the only thing that sets it.
+  settled: false,
+  // The model chip pressed in this session, or null while the session is on
+  // whatever Claude Code itself chose. dreamd passes no `--model`, so null is
+  // "unknown", not "default".
+  model: null,
+  mcpTimer: null,    // the status poll, running only while the pane is open
+  // True across the whole of `openPane` — the vendor load and the spawn, not
+  // just the spawn. Only the send bar reads it, and only so that a cold start
+  // says "starting" rather than "not running", which is the same fact worded as
+  // a failure.
+  opening: false,
 };
 
 /// How each `agent.permission_mode` reads in the header, and in the sentence
@@ -2594,6 +2630,7 @@ async function openPane() {
   // The grid that docks the pane right is declared on `#main-wrap`, which
   // cannot see its child's class — see the `agent-right` block in index.html.
   document.body.classList.add("pane-open");
+  pty.opening = true;
   try {
     // Ahead of the vendor load, because it decides the pane's geometry and a
     // terminal built into the wrong box would `fit()` to it. One round trip on
@@ -2607,7 +2644,14 @@ async function openPane() {
   } catch (e) {
     console.error(e);
     setPaneStatus(String(e.message || e));
+  } finally {
+    pty.opening = false;
+    paintSendBar();
   }
+  // After the try, and outside it: a pane that failed to start is exactly the
+  // pane whose MCP status is worth reading, and this must not be skipped by the
+  // thing it explains.
+  startMcpWatch();
 }
 
 /// Hide it. Deliberately *not* a kill: the scrollback and the conversation
@@ -2617,6 +2661,9 @@ async function openPane() {
 function closePane() {
   $("pty-pane").classList.remove("open");
   document.body.classList.remove("pane-open");
+  // Nothing to paint into, so nothing to poll for. The child keeps running;
+  // this is chrome, not state.
+  stopMcpWatch();
   contentEl.focus({ preventScroll: true });
 }
 
@@ -2722,19 +2769,23 @@ function buildTerminal() {
   if (!pty.listening) {
     pty.listening = true;
     listen("pty-data", (e) => {
-      // The whole of the queue heuristic's input (D11). Stamped before the
-      // write rather than after, so a slow `Terminal.write` cannot make the
-      // child look quieter than it was — the direction that would fire a queued
-      // send into the middle of a turn. See `agentLooksIdle`.
+      // The whole of the boot watch's input. Stamped before the write rather
+      // than after, so a slow `Terminal.write` cannot make the child look
+      // quieter than it was — the direction that would type into a TUI still
+      // drawing its first frame. See `noteBootQuiet`.
       flow.lastData = Date.now();
       if (pty.term) pty.term.write(fromB64(e.payload));
     });
     listen("pty-exit", (e) => {
       pty.running = false;
+      pty.settled = false;
       $("pty-pane").classList.add("dead");
       const code = e.payload;
       setPaneStatus(code === null || code === undefined ? "exited" : `exited (${code})`);
       if (pty.term) pty.term.write("\r\n\x1b[2m[process exited — ⟳ to restart]\x1b[0m\r\n");
+      // A submission waiting on this pane has just changed its reason for
+      // waiting, and the bar is the only place that says what it is.
+      paintSendBar();
     });
   }
 }
@@ -2746,6 +2797,13 @@ async function startPaneProcess() {
   // new child to finish drawing rather than reading the *old* one's last byte
   // as evidence that this one is idle.
   flow.lastData = 0;
+  // A new child has to earn the boot wait again — the old one's quiet says
+  // nothing about this one's first frame.
+  pty.settled = false;
+  // And it comes up on whatever Claude Code chooses, not on the chip that was
+  // lit: `/model` was typed into a process that no longer exists.
+  pty.model = null;
+  paintModelChips();
   const { rows, cols } = pty.term;
   // No mode on the wire. `pty_spawn` reads `agent.permission_mode` from the
   // config it already holds, which is why `commitModeChange` writes the config
@@ -2783,6 +2841,115 @@ async function restartPane() {
     pty.term.focus();
   } catch (e) {
     setPaneStatus(String(e.message || e));
+  }
+}
+
+// ---- model ----------------------------------------------------------------
+// Three chips in the header, and unlike the permission mode beside them this
+// costs nothing: the model is a slash command Claude Code reads mid-session, so
+// switching is a line typed into the running child and the conversation above
+// it survives. Nothing is written to config — a model is a per-question choice
+// ("ask haiku this one"), not a preference, and persisting it would mean every
+// later session inheriting a decision made about one paragraph.
+//
+// dreamd never claims to know which model is live. It has not passed `--model`,
+// the reader may have typed `/model` themselves, and Claude Code's own default
+// moves. So no chip is lit until one is pressed, and a restart clears it again.
+
+/// Switch the running session's model. The word crosses to Rust as a closed
+/// enum and comes back out as one of three compiled-in lines (tenet 3) — see
+/// `pty::model_line`.
+async function setModel(model) {
+  if (!pty.running) { setPaneStatus("the pane is not running"); return; }
+  try {
+    await invoke("pty_model", { model });
+    pty.model = model;
+    paintModelChips();
+    // Focus follows the send: the reader's next act is almost always to type at
+    // the agent, and a click on a chip would otherwise leave the caret in the
+    // header.
+    if (pty.term) pty.term.focus();
+  } catch (e) {
+    setPaneStatus(String(e.message || e));
+  }
+}
+
+function paintModelChips() {
+  for (const b of document.querySelectorAll("#pty-models .pty-model")) {
+    b.classList.toggle("sel", b.dataset.model === pty.model);
+  }
+}
+
+// ---- the MCP status line --------------------------------------------------
+// The agent half of dreamd is invisible from the reading side. A reader who
+// never ran `claude mcp add dreamd`, or whose window is the *second* one on a
+// repo, gets an agent that answers questions perfectly well and cannot resolve
+// a single mark — so the margin fills with pending glyphs for questions that
+// were in fact answered, and nothing anywhere says why. This is the strip that
+// says why.
+//
+// Polled rather than pushed, and only while the pane is open: the state changes
+// at most twice in a session (the bind, and the first agent to connect), so an
+// event for it would be a channel that fires twice and a listener that lives
+// forever. Five seconds is well inside the time it takes to read the failure.
+const MCP_POLL_MS = 5000;
+
+function startMcpWatch() {
+  if (pty.mcpTimer) return;
+  refreshMcpStatus();
+  pty.mcpTimer = setInterval(refreshMcpStatus, MCP_POLL_MS);
+}
+
+function stopMcpWatch() {
+  if (pty.mcpTimer) { clearInterval(pty.mcpTimer); pty.mcpTimer = null; }
+}
+
+async function refreshMcpStatus() {
+  let s = null;
+  try {
+    s = await invoke("mcp_status");
+  } catch (e) {
+    console.error(e);
+    return;
+  }
+  // No answer is not the same as a bad one. An IPC that resolved to nothing
+  // leaves whatever the strip already says, rather than accusing a healthy
+  // socket of being unreachable on the strength of a missing reply.
+  if (!s) return;
+  paintMcpStatus(s);
+  // Nothing left to watch for: a socket that is serving and has been reached
+  // cannot go back to either, short of a File → Open, which re-opens the pane's
+  // watch through `openPane` anyway.
+  if (s.serving && s.clients > 0) stopMcpWatch();
+}
+
+/// Three failures, three sentences, and silence when there is nothing wrong.
+///
+/// The distinction between them is worth the extra branches, because the fix
+/// for each is completely different: no repo is "open one", not serving is
+/// "this is the second window", and no client is "register the server".
+function paintMcpStatus(s) {
+  const el = $("pty-mcp");
+  el.textContent = "";
+  let text = null;
+  let command = null;
+  if (!s.armed) {
+    text = "No repository open, so dreamd is not serving MCP — this agent cannot see your stack.";
+  } else if (!s.serving) {
+    text = "Another dreamd window owns this repository's MCP socket. This agent will reach that window's stack, not this one's.";
+  } else if (s.clients === 0) {
+    text = "MCP not connected — no agent has reached dreamd yet. If marks stay pending after an answer, register the server:";
+    command = "claude mcp add dreamd -- dreamd mcp";
+  }
+  $("pty-pane").classList.toggle("mcp-warn", !!text);
+  if (!text) return;
+  const span = document.createElement("span");
+  span.textContent = text;
+  el.appendChild(span);
+  if (command) {
+    const code = document.createElement("code");
+    code.textContent = command;
+    el.appendChild(code);
   }
 }
 
@@ -2952,6 +3119,9 @@ function wireUi() {
   $("btn-pane").onclick = () => togglePane();
   $("pty-close").onclick = () => closePane();
   $("pty-restart").onclick = () => restartPane();
+  for (const b of document.querySelectorAll("#pty-models .pty-model")) {
+    b.onclick = () => setModel(b.dataset.model);
+  }
   $("pty-mode").onchange = () => stageModeChange();
   $("pty-mode-go").onclick = () => commitModeChange();
   $("pty-mode-cancel").onclick = () => cancelModeChange();
@@ -2972,7 +3142,11 @@ function wireUi() {
   $("outline-close").onclick = closeOutline;
   $("btn-stack").onclick = toggleStack;
   $("stack-close").onclick = () => $("stack-panel").classList.remove("open");
+  // Rightmost in the titlebar, and the primary action: the same verb Ctrl+Enter
+  // is. Its neighbour `#btn-copy` is the clipboard, which is what a clipboard
+  // icon should always have meant.
   $("btn-send").onclick = () => runStack([]);
+  $("btn-copy").onclick = () => copyStack();
   $("btn-send-all").onclick = () => runStack([]);
   $("btn-send-selected").onclick = () => runStack(checkedIds());
   $("annot-save").onclick = saveAnnot;

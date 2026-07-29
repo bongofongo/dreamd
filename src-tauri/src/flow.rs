@@ -1,23 +1,32 @@
 //! What happens between Ctrl+Enter and the prompt reaching the agent.
 //!
-//! D16 asks for an undo window, and the shape it takes here is the one the
-//! workshop settled on: rather than sending and then taking it back, the
-//! submission is **delayed** by the window's length, so there is never anything
-//! to retract. A cancel inside the window leaves the store exactly as it was —
-//! the pairs never left the stack, `sent_at` was never stamped, and nothing was
-//! written to the pty.
+//! Two phases, and a submission that has not gone yet is one that can still be
+//! taken back for free: the pairs never left the stack, `sent_at` was never
+//! stamped, and nothing was written to the pty. That is the property this
+//! module exists for, and it is unchanged.
 //!
-//! D11 asks for a mid-turn send to queue rather than interleave, and for two
-//! queued sends to be two turns. That is [`Flow::take_ready`]: it hands back the
-//! *oldest armed* entry and one at a time, so a second Ctrl+Enter is a second
-//! submission and never a merged one.
+//! **What changed is who waits.** D16 asked for an undo window and got one: a
+//! five-second delay on every send, so a regretted one could be retracted
+//! without ever having existed. That was the wrong trade — the regret is rare
+//! and Escape already interrupts a turn, while the five seconds were paid on
+//! every send and were most of what the loop felt like. The frontend now arms a
+//! submission the moment it queues it, so [`Phase::Undo`] is a state a
+//! submission passes through rather than sits in, and the only thing that
+//! genuinely waits is a cold-starting pane (`noteBootQuiet` in `ui/app.js`).
 //!
-//! **There is no clock in here, on purpose.** Two things decide when a
-//! submission may go — the undo window elapsing and the agent looking idle — and
-//! both are timers the frontend already owns (a `setInterval` beside the
-//! `pty-data` listener that watches for quiet). Putting a deadline in this
-//! module would mean either injecting a clock into every test or testing a
-//! state machine by sleeping. So the frontend supplies the *events*
+//! D11 asked for a mid-turn send to queue rather than interleave, and for two
+//! queued sends to be two turns. The second half is still [`Flow::take_ready`]:
+//! it hands back the *oldest armed* entry and one at a time, so a second
+//! Ctrl+Enter is a second submission and never a merged one. The first half now
+//! belongs to Claude Code, whose composer queues a line typed during a turn —
+//! dreamd guessing at idleness from outside was approximating a thing the TUI
+//! already does correctly.
+//!
+//! **There is no clock in here, on purpose.** What decides when a submission may
+//! go is a timer the frontend already owns (a `setInterval` beside the
+//! `pty-data` listener). Putting a deadline in this module would mean either
+//! injecting a clock into every test or testing a state machine by sleeping. So
+//! the frontend supplies the *events*
 //! ([`arm`](Flow::arm), [`cancel`](Flow::cancel), [`take_ready`](Flow::take_ready))
 //! and this decides what they are allowed to mean.
 //!
@@ -36,12 +45,14 @@ pub type Token = u64;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Phase {
-    /// Inside the undo window. Cancellable, and not yet eligible to go.
+    /// Queued but not yet eligible. The frontend arms immediately, so nothing
+    /// stays here for more than one turn of the event loop — the variant
+    /// survives because "queued" and "eligible" being the same instant is the
+    /// *frontend's* current policy, not a fact about this state machine.
     Undo,
-    /// The window has elapsed. Eligible, and still cancellable right up until
-    /// it is taken — the pane may sit on it for a whole turn while the agent is
-    /// busy, and a reader who changes their mind in that time has not sent
-    /// anything either.
+    /// Eligible, and still cancellable right up until it is taken — a
+    /// cold-starting pane may sit on one for a second or two, and a reader who
+    /// changes their mind in that time has not sent anything either.
     Armed,
 }
 
@@ -68,12 +79,14 @@ pub struct Flow {
 }
 
 impl Flow {
-    /// Queue `ids` for submission, in the undo window.
+    /// Queue `ids` for submission.
     ///
     /// Ids already spoken for by a live submission are dropped, so no pair can
-    /// be in two of these at once — without that, a second Ctrl+Enter during
-    /// the undo window would ask the same questions twice, because the stack
-    /// does not shrink until something is actually sent.
+    /// be in two of these at once — without that, a second Ctrl+Enter before
+    /// the first has gone would ask the same questions twice, because the stack
+    /// does not shrink until something is actually sent. That window is short
+    /// now, but a cold-starting pane still holds it open for a second or two,
+    /// which is exactly long enough for a reader to press the key again.
     ///
     /// `None` when nothing usable is left, which is also D10's empty stack: the
     /// caller opens the pane and does nothing else.
@@ -95,8 +108,8 @@ impl Flow {
         Some(pending)
     }
 
-    /// The undo window for `token` has elapsed. False if it names nothing, or
-    /// is already armed.
+    /// `token` is now eligible to go. False if it names nothing, or is already
+    /// armed.
     pub fn arm(&mut self, token: Token) -> bool {
         match self.find(token) {
             Some(p) if p.phase == Phase::Undo => {
@@ -117,7 +130,7 @@ impl Flow {
     }
 
     /// The oldest armed submission, removed. `None` while every entry is still
-    /// inside its undo window, and `None` once taken.
+    /// unarmed, and `None` once taken.
     ///
     /// One at a time on purpose (D11): two queued sends are two turns, so the
     /// caller comes back for the second after the agent has dealt with the
@@ -239,10 +252,9 @@ mod tests {
 
     #[test]
     fn an_armed_send_does_not_jump_the_queue() {
-        // Order is the reader's asking order, and an older submission still
-        // inside its undo window must not be overtaken by a newer one that
-        // happens to arm first — that would put the questions to the agent in
-        // an order nobody chose.
+        // Order is the reader's asking order, and an older unarmed submission
+        // must not be overtaken by a newer one that happens to arm first —
+        // that would put the questions to the agent in an order nobody chose.
         let mut flow = Flow::default();
         let first = flow.queue(ids(&["a"])).expect("queued").token;
         let second = flow.queue(ids(&["b"])).expect("queued").token;

@@ -185,7 +185,9 @@ to the crate version, verified.
    a fixed `read @<file>` prompt. Highlighted text never enters a command line.
    The pane's `$SHELL -l -c "exec claude"` is the second shell dreamd spawns and
    obeys the same rule: `PANE_COMMAND` is a `const`, not a template, and a test
-   pins it. What the user then *types* into that terminal is theirs — they are
+   pins it. `concat!` of two literals in the same file is still a `const`; the
+   `--allowed-tools` grant and the `/model` lines are both written that way.
+   What the user then *types* into that terminal is theirs — they are
    at a prompt, not having content interpolated on their behalf.
 4. **Escape, don't execute.** Raw HTML in markdown is escaped. External links are
    restricted to `http`/`https`/`mailto`; relative images must resolve inside the repo
@@ -205,7 +207,7 @@ to the crate version, verified.
 
 ## Architecture
 
-`src-tauri/src/main.rs` is a thin shell — CLI (clap), `AppState`, the ~27 `#[tauri::command]`
+`src-tauri/src/main.rs` is a thin shell — CLI (clap), `AppState`, the ~48 `#[tauri::command]`
 handlers, the builder. All logic lives in the `dreamd` **library** crate (`src/lib.rs` +
 modules) *because a `[[bin]]` target cannot be imported*: the split is what makes
 `src-tauri/benches/` possible. New logic goes in a module, not in `main.rs`.
@@ -291,7 +293,14 @@ the upgrade procedure.
   `AddrInUse` that *connects* means a live owner and this process runs as a
   secondary; one that refuses is a crash leftover, unlinked and rebound.
   `adopt_root` retires and re-binds it, next to the watcher, because the socket
-  is named after the root.
+  is named after the root. `server::Status` is what the pane's status strip
+  reads: `serving` (this process won the bind) and `clients` (connections
+  accepted since it). Each `spawn` gets its own, so a retiring server on the
+  previous root cannot write `serving = false` over its replacement. `clients`
+  is **not** liveness — the shim connects per call — so the only honest question
+  it answers is "has an agent ever reached this window", which is exactly the
+  failure worth naming: without it, an unregistered MCP server looks like an
+  agent that simply forgets to resolve marks.
 - `notify` — `marks-changed`, the only *store* change dreamd pushes unprompted.
   Emitted **only** from the MCP layer, never from a command: a command's return
   value is already the frontend's truth for its own mutation, and a second
@@ -313,6 +322,15 @@ the upgrade procedure.
   shape and for the same reason as `notify`'s. **A pty needs no entitlement**
   under dreamd's hardened runtime — measured against a signed bundle before the
   module was written; don't add an entitlements file for it.
+  Every launch carries `--allowed-tools Read` plus dreamd's five MCP tools and
+  **nothing that writes** — highlighting a passage and attaching a question to
+  it is already the consent, and a permission prompt for the stack lands in a
+  terminal nobody is looking at. The list is spelled out rather than
+  wildcarded, and a test pins it at exactly six; a sixth MCP tool is a
+  deliberate line, not a silent grant. `Model` is the second closed enum here:
+  three chips in the pane header become one of three fixed `/model` lines typed
+  into the *running* child, so switching model costs no restart (the permission
+  mode still does — that one is a launch flag).
 - `watcher` — `notify` thread emitting `file-changed` / `file-added` / `file-removed` /
   `theme-reloaded`; the frontend responds by re-rendering and calling `reanchor`. It
   watches the repo, the user themes directory, and an explicit `theme_css` path — changing

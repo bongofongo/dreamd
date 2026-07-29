@@ -1,5 +1,118 @@
 # Session log
 
+## 2026-07-29 — the pane earns its header
+
+Seven asks about the agent pane, all from using it: the send icon was a
+clipboard, the send took five seconds, the model could not be changed, and an
+unregistered MCP server was indistinguishable from an agent that forgets to
+resolve marks. Five changes built, two answered as already-there.
+
+### What happened
+
+1. **The clipboard icon means the clipboard.** `#btn-send` kept its markup but
+   became `#btn-copy` → `copy_stack` (Ctrl+C); a new paper-plane `#btn-send`
+   takes the rightmost, primary slot and runs Ctrl+Enter's verb. They were one
+   button, which is why they now sit adjacent in that order.
+
+2. **The five-second undo window is gone**, and so is the idle-quiet wait. D16
+   traded wrongly: the regretted send is rare and Escape already interrupts a
+   turn, while the delay was paid on every send and was most of what the loop
+   felt like. `runStack` now calls `flowTick()` directly after `openPane`
+   resolves, so on a warm pane the whole thing — queue, arm, release — happens
+   inside the keypress and the 350ms interval never runs. D11's mid-turn queue
+   went with it: Claude Code's composer queues a line typed during a turn, so
+   dreamd guessing at idleness from outside was approximating something the TUI
+   already does correctly.
+
+   **`flow.rs` is unchanged.** The dedupe and the ask-order still hold, and
+   `Phase::Undo` survives as a state a submission passes *through* — the
+   frontend arming immediately is a frontend policy, not a fact about the state
+   machine. Only the prose was corrected, in `flow.rs`, `main.rs`'s flow
+   section, and `AppState::flow`'s doc.
+
+   **One wait survives and it is not the old one.** A TUI still drawing its
+   first frame drops the line entirely, so `noteBootQuiet` holds a submission
+   until the child has been silent for 1.5s *once*, then latches ready forever —
+   mid-turn included. `paintSendBar` lost its countdown and now names which of
+   the three reasons it is waiting for (`pty.opening` exists only so a cold
+   start reads "starting" rather than "not running", which is the same fact
+   worded as a failure).
+
+3. **Model chips in the pane header** — opus / sonnet / haiku. A live `/model`
+   line typed into the running child, not a `--model` restart: the conversation
+   in the scrollback is the thing the reader is mid-way through, and the
+   permission-mode select pays that cost only because its flag genuinely cannot
+   be changed any other way. `pty::Model` is the second closed enum in that
+   file, so all three strings are compiled in and pinned by a test (tenet 3 —
+   the far end may be a login shell, where `/model` is a path that does not
+   exist). Aliases rather than dated ids, so a chip does not rot when a model is
+   renamed. **No chip starts lit**: dreamd passes no `--model` and cannot honestly
+   claim to know what is live; a restart clears it again.
+
+4. **An MCP status strip at the top of the pane**, silent when healthy. New
+   `mcp::server::Status` (serving + accepted-connection count), one per `spawn`
+   so a retiring server on the previous root cannot write `serving = false` over
+   its replacement — `adopt_root` swaps the whole `Arc`. Three distinct
+   failures, because the fix for each differs: no repo, another dreamd owns the
+   socket, or no agent has ever connected (that one names
+   `claude mcp add dreamd -- dreamd mcp`). `clients` is deliberately **not**
+   liveness — the shim connects per call — so the only honest question it
+   answers is "has this ever worked", which is exactly the failure worth naming.
+   Polled every 5s while the pane is open, and the poll stops itself once
+   healthy.
+
+5. **The stack and the document are granted by default.** Every launch now
+   carries `--allowed-tools Read` plus dreamd's five MCP tools, in all four
+   permission modes. Highlighting a passage and attaching a question to it is
+   already the consent; a prompt for the stack lands in a terminal nobody is
+   looking at, so the send appears to have gone nowhere. Nothing that writes is
+   granted — an edit still asks, in whatever mode was chosen. Spelled out rather
+   than wildcarded so a sixth MCP tool is a deliberate line. Implemented as a
+   `macro_rules!` expanding to a literal, because `concat!` takes literals and a
+   `const` would not do; the four commands are still four whole compile-time
+   strings.
+
+6. **Auto-submit and auto-accept-edits were already there** and were answered
+   rather than built. `take_send` has always written the line then `\r`
+   separately; `accept edits` has been dreamd's default (not Claude Code's)
+   since t5.
+
+### Mistakes & deviations
+
+- The first grant test asserted `!cmd.contains("Edit")` and failed on
+  `--permission-mode acceptEdits`. The test was right to fire — the search was
+  answering the wrong question. Rewritten to split at ` --allowed-tools ` and
+  compare whole words, plus an exact count of six.
+- `refreshMcpStatus` fed a null straight into `paintMcpStatus`, which
+  `ui-check.mjs` caught as three pageerrors before anything else did. A missing
+  reply now leaves the strip alone rather than accusing a healthy socket.
+- The first rewrite of the T6 harness block used "the child spoke 0ms ago" for
+  the cold-start state, which ripens into "quiet for 1.5s" somewhere between two
+  assertions and would have been flaky. Replaced with `coldPane()` —
+  `lastData = 0`, the state `noteBootQuiet` will not leave on its own.
+- perf/quick flagged `chromium.scroll…composite_ms` twice (+28%, then +50%),
+  which looked plausible given the session declared new CSS. A/B'd directly
+  against a HEAD worktree, 3 reps per arm: this tree 4.33–5.52ms, HEAD
+  5.08–6.40ms. **HEAD was the slower arm** — the row is machine noise against a
+  baseline this box no longer matches. The Rust rows did not reproduce at all.
+
+### State
+
+`cargo build`, fmt and clippy clean. 275 unit tests, `mcp_check` 49 (two new
+`Status` assertions), `config_check` 49, `theme_check`, `marks_check` 75,
+`node --test ui/paths.test.mjs` 10, `ui-check.mjs` 222 — all green.
+
+Both new guards were proved to bite rather than assumed to: adding `Edit` to the
+grant list fails the Rust test, and reinstating the idle wait in `paneReady`
+fails "a send during a running turn still goes" first.
+
+`perf-pass` skipped at the user's instruction; the quick-tier A/B above is the
+only performance evidence this session has, and it says nothing moved.
+
+**The GUI itself is unverified by machine, as always.** `ui-check.mjs` asserts
+what the page knows, not what it paints — the chips, the status strip and the
+one-press send want a hand check in a real window.
+
 ## 2026-07-28 — t5-agent-pane
 
 - `agent.permission_mode` reaches the child: four compiled-in commands, a `match`

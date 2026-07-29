@@ -74,10 +74,15 @@ fn main() {
 
     let (notifier, events) = notify::recording();
     let cancel = Arc::new(AtomicBool::new(false));
-    server::spawn(store.clone(), repo.clone(), notifier, cancel.clone());
+    let status = server::spawn(store.clone(), repo.clone(), notifier, cancel.clone());
 
     let path = server::socket_path(&repo);
     checks.ok("the socket appears", wait_for(&path, true));
+    // The pane's status line reads exactly these two, so they are worth
+    // asserting where a real socket is involved: a `Status` that never flips
+    // would make every window report "MCP not connected" forever.
+    checks.ok("the bind is reported as serving", status.serving());
+    checks.ok("no client has connected yet", status.clients() == 0);
     if !path.exists() {
         checks.finish();
         return;
@@ -157,6 +162,9 @@ fn main() {
 
     let stack = call("get_stack", json!({}));
     checks.ok("get_stack succeeds over the shim", !errored(&stack));
+    // The other half of the status line: an agent that has actually spoken is
+    // what turns "MCP not connected" off.
+    checks.ok("a client is now counted", status.clients() > 0);
     let questions = parsed(&stack);
     checks.eq(
         "get_stack returns every annotated mark",

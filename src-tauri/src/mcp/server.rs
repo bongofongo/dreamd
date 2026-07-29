@@ -34,7 +34,7 @@ use std::io::{self, BufRead, BufReader, Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -45,6 +45,44 @@ use std::time::Duration;
 /// `adopt_root` moves the repo root and the old socket must go with it. The
 /// cost is one syscall every 200ms on an idle background thread.
 const ACCEPT_POLL: Duration = Duration::from_millis(200);
+
+/// What the window can say about its own MCP socket, without asking the socket.
+///
+/// The whole of the agent half of dreamd is invisible from the reading side: a
+/// reader whose `claude mcp add dreamd` never ran, or who is looking at a
+/// second window on a repo the first one claimed, sees a pane, sends a stack,
+/// and gets an agent that cannot resolve a single mark. Nothing on screen says
+/// why. These two counters are the smallest thing that can say it.
+///
+/// [`serving`](Status::serving) is this process's answer to "did I get the
+/// lock" — false for a secondary, and false for a bind that failed outright.
+/// [`clients`](Status::clients) counts accepted connections since that bind, so
+/// zero means **no agent has ever spoken to this window**. It is not liveness:
+/// the shim connects per call and disconnects, so a working session's count
+/// only ever goes up. That is deliberate — "has this ever worked" is the
+/// question a status line can answer honestly, and "is it connected right now"
+/// is one a per-call transport cannot.
+///
+/// Each [`spawn`] gets its own, so a retiring thread on the previous root
+/// cannot write `serving = false` over its replacement's `true`.
+#[derive(Default)]
+pub struct Status {
+    serving: AtomicBool,
+    clients: AtomicUsize,
+}
+
+impl Status {
+    /// Whether this process holds this repo's socket.
+    pub fn serving(&self) -> bool {
+        self.serving.load(Ordering::Relaxed)
+    }
+
+    /// Connections accepted since the bind. Zero means no agent has reached
+    /// this window.
+    pub fn clients(&self) -> usize {
+        self.clients.load(Ordering::Relaxed)
+    }
+}
 
 /// `~/.config/dreamd/run`.
 pub fn dir() -> PathBuf {
@@ -106,13 +144,31 @@ pub fn bind(path: &Path) -> io::Result<Bound> {
 /// Shaped like `watcher::spawn`, including the cancel token: `adopt_root`
 /// retires this the same way it retires the watcher, because a server left
 /// listening on the previous root would hand an agent another repo's marks.
-pub fn spawn(store: Arc<Mutex<Store>>, root: PathBuf, notify: Notifier, cancel: Arc<AtomicBool>) {
-    std::thread::spawn(move || serve(&store, &root, &notify, &cancel));
+///
+/// The returned [`Status`] is this thread's, and it is the only way the window
+/// learns whether the bind it just asked for succeeded — `spawn` cannot answer
+/// that itself without blocking on the thread it just started.
+pub fn spawn(
+    store: Arc<Mutex<Store>>,
+    root: PathBuf,
+    notify: Notifier,
+    cancel: Arc<AtomicBool>,
+) -> Arc<Status> {
+    let status = Arc::new(Status::default());
+    let mine = status.clone();
+    std::thread::spawn(move || serve(&store, &root, &notify, &cancel, &mine));
+    status
 }
 
 /// Bind, accept until cancelled, then unlink. Never panics: this is a
 /// background thread and losing MCP must not take the window with it.
-pub fn serve(store: &Arc<Mutex<Store>>, root: &Path, notify: &Notifier, cancel: &Arc<AtomicBool>) {
+pub fn serve(
+    store: &Arc<Mutex<Store>>,
+    root: &Path,
+    notify: &Notifier,
+    cancel: &Arc<AtomicBool>,
+    status: &Status,
+) {
     let path = socket_path(root);
     let listener = match bind(&path) {
         Ok(Bound::Primary(listener)) => listener,
@@ -133,10 +189,16 @@ pub fn serve(store: &Arc<Mutex<Store>>, root: &Path, notify: &Notifier, cancel: 
         let _ = std::fs::remove_file(&path);
         return;
     }
+    // Only here, past every way the bind could have failed. The status line
+    // this feeds says "not serving" for a secondary, a permissions failure and
+    // an unpollable socket alike, which is the right grain: all three mean the
+    // agent in this window's pane is talking to nothing.
+    status.serving.store(true, Ordering::Relaxed);
 
     while !cancel.load(Ordering::Relaxed) {
         match listener.accept() {
             Ok((stream, _)) => {
+                status.clients.fetch_add(1, Ordering::Relaxed);
                 let (store, root, notify, cancel) = (
                     store.clone(),
                     root.to_path_buf(),
@@ -159,6 +221,9 @@ pub fn serve(store: &Arc<Mutex<Store>>, root: &Path, notify: &Notifier, cancel: 
         }
     }
 
+    // Safe to clear unconditionally: this `Status` belongs to this thread
+    // alone, so a retiring server cannot contradict the one that replaced it.
+    status.serving.store(false, Ordering::Relaxed);
     // Unlink on the way out so the next bind — a rebind after `adopt_root`, or
     // the next run — doesn't have to go through the stale-socket probe.
     drop(listener);

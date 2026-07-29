@@ -949,6 +949,10 @@ const paneStub = ({ base, position }) => {
   // What `agent_prefs` answers, and what `set_config` writes into — the two
   // halves of the mode control's round trip.
   window.__AGENT__ = { position, permission_mode: "accept-edits" };
+  // What `mcp_status` answers. Healthy, so the strip is hidden on boot and the
+  // checks that want it have to say what is wrong.
+  window.__MCP__ = { armed: true, serving: true, clients: 1 };
+  window.__MODEL__ = null;
   const listeners = new Map();
   window.__EMIT__ = (name, payload) => {
     for (const fn of listeners.get(name) || []) fn({ payload });
@@ -976,6 +980,7 @@ const paneStub = ({ base, position }) => {
           };
           case "get_highlights": case "reanchor": return [];
           case "get_stack": return stack.map((p) => ({ ...p }));
+          case "stack_query_text": return "stub query";
           case "queue_send": {
             const wanted = args.ids && args.ids.length
               ? args.ids : stack.map((p) => p.highlight.id);
@@ -1022,6 +1027,14 @@ const paneStub = ({ base, position }) => {
           // `src-tauri/src/pty.rs`'s tests own the process half.
           case "pty_spawn": return true;
           case "pty_write": case "pty_resize": case "pty_kill": return null;
+          // The real one types `/model <name>` into the child; here the point
+          // is only that the chip reached IPC carrying a word Rust's closed
+          // enum will accept. `pty.rs` owns what that word becomes.
+          case "pty_model": window.__MODEL__ = args.model; return null;
+          // Healthy by default, so the strip stays hidden unless a check makes
+          // it otherwise — which is also the real answer once an agent has
+          // connected.
+          case "mcp_status": return { ...window.__MCP__ };
           default: return null;
         }
       },
@@ -1275,13 +1288,22 @@ const seedPair = (n) => pane.evaluate((i) => window.__STACK__.push({
   },
   annotation: "why?",
 }), n);
-/// Expire the undo window and say how long ago the child last spoke, instead of
-/// sleeping through `UNDO_MS` + `IDLE_QUIET_MS`. What is under test is the state
-/// machine and the release path, not `setInterval`.
+/// Say how long ago the child last spoke, instead of sleeping through
+/// `BOOT_QUIET_MS`. What is under test is the release path, not `setInterval`.
+///
+/// `pty.settled` is cleared alongside it, because the flag latches: a test that
+/// wants the pane to look mid-boot has to undo an earlier test's quiet as well
+/// as set the timestamp.
 const nudgeFlow = (quietMs) => pane.evaluate((q) => {
-  for (const p of flow.pending.values()) p.until = Date.now() - 1;
   flow.lastData = Date.now() - q;
+  pty.settled = q >= 1500;
 }, quietMs);
+/// A child that has *never* spoken — the cold start, and the one state the boot
+/// watch will not leave on its own however long the harness takes between two
+/// assertions. `noteBootQuiet` returns early on `lastData === 0`, so this is
+/// stable where "spoke 0ms ago" would quietly ripen into "quiet for 1.5s"
+/// somewhere in the middle of a check and make the block flaky.
+const coldPane = () => pane.evaluate(() => { flow.lastData = 0; pty.settled = false; });
 /// Ctrl+Enter *from the reader*. The click is not decoration: opening the pane
 /// focuses the terminal, and every key with focus in there belongs to the child
 /// (`inTerminal`), so a press without it would be swallowed and every assertion
@@ -1317,16 +1339,38 @@ check(
   results.filter((r) => r.startsWith("FAIL")).length === failsBeforeEmpty,
 );
 
-// With a stack, the same key queues — and still sends nothing yet. The undo
-// window is a *delay*, not a retraction (D16), so there is never a moment where
-// the pairs have left the stack and can be put back.
+// **There is no undo window.** The one thing this block is really guarding is
+// that the key does its whole job in one press: on a pane that has finished
+// starting, Ctrl+Enter queues, arms and releases inside the keypress, with no
+// interval tick in between and nothing on screen asking the reader to wait.
 await seedPair(1);
-const writesBeforeQueue = (await called("pty_write")).length;
+await nudgeFlow(60_000); // a settled pane, quiet for a minute
+const writesBeforeSend = (await called("pty_write")).length;
 await pressSend();
-check("Ctrl+Enter with a stack queues a send", (await queued()) === 1, `${await queued()}`);
-check("and shows the undo", await barOpenPane());
-check("and has sent nothing", (await sent()) === 0);
-check("and written nothing to the child", (await called("pty_write")).length === writesBeforeQueue);
+check("Ctrl+Enter on a settled pane sends at once", (await sent()) === 1, `${await sent()}`);
+check("and nothing is left queued", (await queued()) === 0, `${await queued()}`);
+check("and the bar never asks the reader to wait", !(await barOpenPane()));
+check("and the pair leaves the stack", (await onStack()) === 0, `${await onStack()}`);
+
+// Mid-turn is no longer a reason to wait: Claude Code's own composer queues a
+// line typed during a turn, so dreamd types it. This is the check that fails if
+// the idle heuristic is ever reinstated.
+await seedPair(2);
+await nudgeFlow(0); // the child spoke this instant — a turn is running
+await pane.evaluate(() => { pty.settled = true; });
+await pressSend();
+check("a send during a running turn still goes", (await sent()) === 2, `${await sent()}`);
+check("and the bar stays shut", !(await barOpenPane()));
+
+// The one wait left, and the only one: a child that has not finished drawing
+// its first frame would lose the line entirely.
+await seedPair(3);
+await coldPane();
+const writesBeforeBoot = (await called("pty_write")).length;
+await pressSend();
+check("a send waits while the pane is still starting", (await sent()) === 2, `${await sent()}`);
+check("and says so", await barOpenPane());
+check("and writes nothing to the child", (await called("pty_write")).length === writesBeforeBoot);
 check("and the pair is still on the stack", (await onStack()) === 1, `${await onStack()}`);
 check(
   "and the card says so rather than leaving",
@@ -1334,40 +1378,135 @@ check(
   `${await pane.locator("#stack-list .pair.pending").count()}`,
 );
 
-// One gesture takes it back, and the state is exactly what it was.
-await clickBar("Undo");
-check("Undo cancels it", (await queued()) === 0 && !(await barOpenPane()));
+// Cancel is still the whole undo, and it is still a restoration rather than a
+// retraction: nothing was written, so there is nothing to reverse.
+await clickBar("Cancel");
+check("Cancel takes it back", (await queued()) === 0 && !(await barOpenPane()));
 check("the pair is untouched", (await onStack()) === 1, `${await onStack()}`);
 check(
   "and its card is a plain one again",
   (await pane.locator("#stack-list .pair.pending").count()) === 0,
 );
-check("and nothing ever reached the child", (await called("pty_write")).length === writesBeforeQueue);
+check("and nothing ever reached the child", (await called("pty_write")).length === writesBeforeBoot);
 
-// The queue heuristic, in the only form this harness can see it. Armed is not
-// sent: while the child is still producing output the submission waits, which
-// is the failure mode the plan says to bias towards.
+// The fallback for a boot that never goes quiet.
 await pressSend();
-await nudgeFlow(0); // the child spoke just now
-await pane.waitForTimeout(800);
-check("an armed send waits while the agent is still talking", (await sent()) === 0, `${await sent()}`);
-check("and says it is waiting", await barOpenPane());
-
-// The plan's stated fallback, built alongside the heuristic rather than held in
-// reserve: if the quiet never comes, this is how the stack still goes.
+check("the send is waiting again", await barOpenPane());
 await clickBar("Send now");
-check("Send now submits regardless of the heuristic", (await sent()) === 1, `${await sent()}`);
+check("Send now submits regardless of the boot watch", (await sent()) === 3, `${await sent()}`);
 check("and the pair leaves the stack", (await onStack()) === 0, `${await onStack()}`);
 check("and the bar clears", !(await barOpenPane()));
 
-// And the heuristic's own path: past the undo window, with the child quiet, it
-// goes on its own.
-await seedPair(2);
+// And the boot watch's own path: once the child goes quiet, the waiting
+// submission goes on its own, with no second keypress.
+await seedPair(4);
+await coldPane();
 await pressSend();
+check("a send made mid-boot is still waiting", (await sent()) === 3, `${await sent()}`);
 await nudgeFlow(60_000);
 await pane.waitForTimeout(900);
-check("a quiet agent takes the queued send", (await sent()) === 2, `${await sent()}`);
+check("and goes once the child falls quiet", (await sent()) === 4, `${await sent()}`);
 check("exactly once", (await queued()) === 0 && (await onStack()) === 0);
+check("and the write count matches the sends", (await called("pty_write")).length >= writesBeforeSend);
+
+// --- the two titlebar buttons ---------------------------------------------
+// The clipboard icon means the clipboard and the paper plane means the send.
+// They were one button until this change, so what is worth asserting is that
+// they now do *different* things and that the rightmost one is the send.
+const sentBeforeButtons = await sent();
+const copiesBefore = (await called("copy_to_clipboard")).length;
+// A pair on the stack first: `copyStack` refuses an empty one, so an empty
+// stack would make this pass for the wrong reason.
+await seedPair(5);
+await pane.locator("#btn-copy").click();
+await pane.waitForTimeout(200);
+check(
+  "the clipboard button copies",
+  (await called("copy_to_clipboard")).length === copiesBefore + 1,
+);
+check("and sends nothing", (await sent()) === sentBeforeButtons, `${await sent()}`);
+check("and leaves the pair on the stack", (await onStack()) === 1, `${await onStack()}`);
+check(
+  "the send button is the rightmost action",
+  await pane.evaluate(() => {
+    const row = document.getElementById("tb-actions");
+    return row.lastElementChild.id === "btn-send";
+  }),
+);
+check(
+  "and it is the primary one",
+  await pane.evaluate(() => document.getElementById("btn-send").classList.contains("primary")),
+);
+await nudgeFlow(60_000);
+await pane.locator("#btn-send").click();
+await pane.waitForTimeout(400);
+check("clicking it sends the stack", (await sent()) === sentBeforeButtons + 1, `${await sent()}`);
+
+// --- the model chips ------------------------------------------------------
+// Live, not staged: unlike the permission mode beside them nothing restarts, so
+// the check is that the child is neither killed nor respawned.
+const spawnsBeforeModel = (await called("pty_spawn")).length;
+const killsBeforeModel = (await called("pty_kill")).length;
+check(
+  "no chip is lit before one is pressed",
+  (await pane.locator("#pty-models .pty-model.sel").count()) === 0,
+);
+await pane.locator('#pty-models .pty-model[data-model="sonnet"]').click();
+await pane.waitForTimeout(200);
+check(
+  "a chip switches the model",
+  (await pane.evaluate(() => window.__MODEL__)) === "sonnet",
+  `${await pane.evaluate(() => window.__MODEL__)}`,
+);
+check(
+  "and lights exactly itself",
+  (await pane.locator("#pty-models .pty-model.sel").count()) === 1 &&
+    (await pane.locator('#pty-models .pty-model.sel[data-model="sonnet"]').count()) === 1,
+);
+check(
+  "and restarts nothing",
+  (await called("pty_spawn")).length === spawnsBeforeModel &&
+    (await called("pty_kill")).length === killsBeforeModel,
+);
+check(
+  "every chip names a model Rust's enum accepts",
+  await pane.evaluate(() =>
+    [...document.querySelectorAll("#pty-models .pty-model")]
+      .every((b) => ["opus", "sonnet", "haiku"].includes(b.dataset.model))),
+);
+// A restart is the one thing that *does* clear it: `/model` was typed into a
+// process that no longer exists.
+await pane.locator("#pty-restart").click();
+await pane.waitForTimeout(500);
+check(
+  "a restart clears the lit chip",
+  (await pane.locator("#pty-models .pty-model.sel").count()) === 0,
+);
+
+// --- the MCP status strip -------------------------------------------------
+// Silent when healthy, which is the state the stub boots in.
+check("a healthy socket says nothing", !(await pane.locator("#pty-pane.mcp-warn").count()));
+const mcp = async (next) => {
+  await pane.evaluate((m) => { window.__MCP__ = m; }, next);
+  await pane.evaluate(() => refreshMcpStatus());
+  await pane.waitForTimeout(150);
+};
+await mcp({ armed: true, serving: true, clients: 0 });
+check("an unreached socket warns", (await pane.locator("#pty-pane.mcp-warn").count()) === 1);
+check(
+  "and names the command that fixes it",
+  (await pane.locator("#pty-mcp code").textContent()) === "claude mcp add dreamd -- dreamd mcp",
+);
+await mcp({ armed: true, serving: false, clients: 0 });
+check("a secondary window warns too", (await pane.locator("#pty-pane.mcp-warn").count()) === 1);
+check(
+  "and does not offer a command that would not help",
+  (await pane.locator("#pty-mcp code").count()) === 0,
+);
+await mcp({ armed: false, serving: false, clients: 0 });
+check("and so does a window with no repo", (await pane.locator("#pty-pane.mcp-warn").count()) === 1);
+await mcp({ armed: true, serving: true, clients: 2 });
+check("and it goes quiet again once an agent connects", !(await pane.locator("#pty-pane.mcp-warn").count()));
 
 // --- docked right (`agent.position`) --------------------------------------
 // A second page, because position is read once on the pane's first open — the
@@ -1535,7 +1674,11 @@ await chrome.addInitScript(({ base }) => {
           // Without this the pane's first-open fetch reads `position` off null.
           case "agent_prefs": return { position: "bottom", permission_mode: "accept-edits" };
           case "pty_spawn": return true;
-          case "pty_write": case "pty_resize": case "pty_kill": return null;
+          case "pty_write": case "pty_resize": case "pty_kill": case "pty_model": return null;
+          // This page opens the pane as a side effect of pressing every
+          // binding, so it needs an answer here too: `refreshMcpStatus` runs on
+          // every open, and a bare `null` would be one more pageerror to chase.
+          case "mcp_status": return { armed: true, serving: true, clients: 1 };
           case "send_stack": return { method: "stub", detail: "nothing to send" };
           case "add_highlight": return "h0123456789abcdef";
           case "set_config":

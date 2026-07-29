@@ -53,24 +53,59 @@ pub struct Pty {
     killer: Box<dyn ChildKiller + Send + Sync>,
 }
 
+/// What the pane's agent may do without being asked, every launch.
+///
+/// The reader's half of the loop is already an act of consent: highlighting a
+/// passage and attaching a question to it *is* the grant. Making the agent then
+/// ask permission to read the stack that question is in, or to open the file it
+/// was highlighted in, is a prompt for something the reader has already said —
+/// and it lands in a terminal they may not be looking at, so the send appears to
+/// have gone nowhere.
+///
+/// So exactly two things are pre-granted: dreamd's own five MCP tools, and
+/// `Read`. Nothing that writes, nothing that runs a command — an edit is still a
+/// question the agent has to ask, in whatever mode the reader chose. The five
+/// are spelled out rather than wildcarded so that a sixth tool added to
+/// `mcp::schema` is a deliberate line here rather than a silent grant.
+///
+/// Named `mcp__dreamd__*` because `dreamd mcp` is registered under the server
+/// name `dreamd` (`claude mcp add dreamd -- dreamd mcp`), which is also
+/// `schema::SERVER_NAME`. A reader who registered it under another name gets
+/// the prompts back, which is the safe direction to be wrong in.
+///
+/// A `macro_rules!` rather than a `const` only because `concat!` takes
+/// literals: this expands to one at compile time, so the four commands below
+/// are still four whole string literals with nothing assembled at run time.
+macro_rules! grants {
+    () => {
+        " --allowed-tools Read \
+mcp__dreamd__get_stack mcp__dreamd__get_highlight mcp__dreamd__list_highlights \
+mcp__dreamd__resolve_highlight mcp__dreamd__mark_passage"
+    };
+}
+
 /// The command the pane runs in Claude Code's own default permission mode.
 ///
 /// A **fixed** string, not a template: nothing the user or a document supplies
-/// is interpolated here (tenet 3). The login shell is the wrapper rather than
-/// `claude` directly because a `.app` launched from Finder inherits launchd's
-/// minimal `PATH` — `/usr/bin:/bin:/usr/sbin:/sbin` — and `claude` installs to
-/// `~/.local/bin`. Spawning it directly works from a terminal and fails from
-/// the Dock, which is the worse of the two failures to ship.
-const PANE_COMMAND: &str = "exec claude";
+/// is interpolated here (tenet 3). `concat!` is a compile-time paste of two
+/// literals in this file, not a runtime build — there is still no `format!`, no
+/// `push_str`, and no value that becomes shell text. The login shell is the
+/// wrapper rather than `claude` directly because a `.app` launched from Finder
+/// inherits launchd's minimal `PATH` — `/usr/bin:/bin:/usr/sbin:/sbin` — and
+/// `claude` installs to `~/.local/bin`. Spawning it directly works from a
+/// terminal and fails from the Dock, which is the worse of the two failures to
+/// ship.
+const PANE_COMMAND: &str = concat!("exec claude", grants!());
 
 /// The other three. Four `const`s and a `match`, rather than one `const` and a
 /// flag appended to it, is what keeps tenet 3 intact: `config::PermissionMode`
 /// is a closed enum, so every string that can ever reach a shell is written out
-/// in this file and pinned by a test. There is no `format!`, no `push_str` and
-/// no path by which a config value — even a valid one — becomes shell text.
-const PANE_COMMAND_ACCEPT_EDITS: &str = "exec claude --permission-mode acceptEdits";
-const PANE_COMMAND_PLAN: &str = "exec claude --permission-mode plan";
-const PANE_COMMAND_BYPASS: &str = "exec claude --permission-mode bypassPermissions";
+/// in this file and pinned by a test.
+const PANE_COMMAND_ACCEPT_EDITS: &str =
+    concat!("exec claude --permission-mode acceptEdits", grants!());
+const PANE_COMMAND_PLAN: &str = concat!("exec claude --permission-mode plan", grants!());
+const PANE_COMMAND_BYPASS: &str =
+    concat!("exec claude --permission-mode bypassPermissions", grants!());
 
 /// Which of the four literals a mode launches.
 ///
@@ -84,6 +119,46 @@ fn pane_command(mode: PermissionMode) -> &'static str {
         PermissionMode::AcceptEdits => PANE_COMMAND_ACCEPT_EDITS,
         PermissionMode::Plan => PANE_COMMAND_PLAN,
         PermissionMode::BypassPermissions => PANE_COMMAND_BYPASS,
+    }
+}
+
+/// Which model the pane's chips can switch to, mid-session.
+///
+/// A closed enum for the same reason [`PermissionMode`] is one: the value
+/// crosses into a running Claude Code as *typed text*, so every string that can
+/// ever be typed is written out in this file and pinned by a test. The frontend
+/// sends one of three words and nothing else can reach [`model_line`].
+///
+/// Aliases rather than dated model ids (`claude-opus-5`): Claude Code resolves
+/// these itself and keeps resolving them across releases, so a chip does not
+/// rot the week a model is renamed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Model {
+    Opus,
+    Sonnet,
+    Haiku,
+}
+
+/// The line typed into a *running* Claude Code to switch model.
+///
+/// A slash command rather than a `--model` flag, because the flag is read at
+/// launch and a restart is a new session — the conversation in the scrollback
+/// is the thing the reader is mid-way through, and switching model is not worth
+/// losing it (the permission-mode select next door pays that cost only because
+/// its flag genuinely cannot be changed any other way).
+///
+/// Safe under the other reading of the far end, the one
+/// [`crate::prompt::read_line`]'s header sets out: if `claude` has exited, the
+/// thing receiving this is a **login shell**, and what it gets is the word
+/// `/model` — an absolute path that does not exist. It fails with "not found"
+/// and does nothing. There is no metacharacter in any of these three strings
+/// and no value interpolated into them (tenet 3).
+pub fn model_line(model: Model) -> &'static str {
+    match model {
+        Model::Opus => "/model opus",
+        Model::Sonnet => "/model sonnet",
+        Model::Haiku => "/model haiku",
     }
 }
 
@@ -426,15 +501,18 @@ mod tests {
     #[test]
     fn every_permission_mode_yields_a_fixed_command_with_nothing_interpolated() {
         let all = [
-            (PermissionMode::Default, "exec claude"),
+            (PermissionMode::Default, concat!("exec claude", grants!())),
             (
                 PermissionMode::AcceptEdits,
-                "exec claude --permission-mode acceptEdits",
+                concat!("exec claude --permission-mode acceptEdits", grants!()),
             ),
-            (PermissionMode::Plan, "exec claude --permission-mode plan"),
+            (
+                PermissionMode::Plan,
+                concat!("exec claude --permission-mode plan", grants!()),
+            ),
             (
                 PermissionMode::BypassPermissions,
-                "exec claude --permission-mode bypassPermissions",
+                concat!("exec claude --permission-mode bypassPermissions", grants!()),
             ),
         ];
         for (mode, want) in all {
@@ -467,6 +545,79 @@ mod tests {
             PANE_COMMAND_ACCEPT_EDITS,
         );
         assert!(login_shell().starts_with('/'), "an absolute program path");
+    }
+
+    /// Every launch pre-grants the stack and the file, and nothing else.
+    ///
+    /// The negative half is the one worth having: a grant list that grew an
+    /// `Edit`, a `Write` or a `Bash` would mean a reader who chose "ask each
+    /// time" is not being asked, and the flag is quiet enough that nothing else
+    /// in the tree would notice.
+    #[test]
+    fn every_launch_grants_the_stack_and_the_document_and_nothing_that_writes() {
+        for mode in [
+            PermissionMode::Default,
+            PermissionMode::AcceptEdits,
+            PermissionMode::Plan,
+            PermissionMode::BypassPermissions,
+        ] {
+            let cmd = pane_command(mode);
+            // The grant list, and nothing before it — `--permission-mode
+            // acceptEdits` has "Edit" in it, so a substring search over the
+            // whole command answers the wrong question. Whole words, from the
+            // flag onward.
+            let (_, granted) = cmd
+                .split_once(" --allowed-tools ")
+                .unwrap_or_else(|| panic!("{cmd:?} grants nothing"));
+            let granted: Vec<&str> = granted.split_whitespace().collect();
+            for tool in [
+                "Read",
+                "mcp__dreamd__get_stack",
+                "mcp__dreamd__get_highlight",
+                "mcp__dreamd__list_highlights",
+                "mcp__dreamd__resolve_highlight",
+                "mcp__dreamd__mark_passage",
+            ] {
+                assert!(granted.contains(&tool), "{tool} missing from {granted:?}");
+            }
+            // Exactly those six. An addition is a line in `grants!` and a line
+            // here, which is the point — a seventh tool must not be able to
+            // arrive as a side effect of anything.
+            assert_eq!(granted.len(), 6, "{granted:?}");
+            // A wildcard would grant a tool nobody has reviewed the moment
+            // `mcp::schema` grows one.
+            assert!(!cmd.contains('*'), "{cmd:?} wildcards the grant");
+        }
+    }
+
+    /// The three chips, and the same tenet-3 assertion the launch commands get:
+    /// the far end of this write may be a login shell rather than a composer.
+    #[test]
+    fn every_model_yields_a_fixed_line_with_nothing_interpolated() {
+        let all = [
+            (Model::Opus, "/model opus"),
+            (Model::Sonnet, "/model sonnet"),
+            (Model::Haiku, "/model haiku"),
+        ];
+        for (model, want) in all {
+            let got = model_line(model);
+            assert_eq!(got, want, "for {model:?}");
+            assert!(
+                !got.contains('{')
+                    && !got.contains('$')
+                    && !got.contains('`')
+                    && !got.contains(';')
+                    && !got.contains('&')
+                    && !got.contains('|')
+                    && !got.contains('\n')
+                    && !got.contains('\r'),
+                "{got:?} carries shell syntax or a submit",
+            );
+        }
+        let mut seen: Vec<&str> = all.iter().map(|(m, _)| model_line(*m)).collect();
+        seen.sort_unstable();
+        seen.dedup();
+        assert_eq!(seen.len(), 3, "each model gets its own line");
     }
 
     /// Drive the real machinery with a shell instead of `claude`.

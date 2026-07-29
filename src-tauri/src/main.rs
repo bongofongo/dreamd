@@ -53,6 +53,11 @@ struct AppState {
     /// `.git` still gets neither, but a secondary dreamd gets a watcher and no
     /// socket.
     mcp_cancel: Mutex<Option<Arc<AtomicBool>>>,
+    /// What the socket thread above has managed to do, for the pane's status
+    /// line. Replaced wholesale by `adopt_root` rather than reset, so a
+    /// retiring server on the previous root cannot write over its successor's
+    /// answer. `None` for a repo that never armed a socket at all.
+    mcp_status: Mutex<Option<Arc<mcp::server::Status>>>,
     /// A file to open on load (nvim-style `dreamd file.md`), if any.
     initial_file: Option<String>,
     /// Behind a lock because the settings panel rewrites it at runtime — the
@@ -105,8 +110,8 @@ struct AppState {
     /// an `Option` created on first open rather than at boot. One per window:
     /// the pane is a single dock, not a tab strip.
     pty: Mutex<Option<pty::Pty>>,
-    /// Submissions between Ctrl+Enter and the pty: the undo window and the
-    /// mid-turn queue. Empty in the steady state, and it dies with the process
+    /// Submissions between Ctrl+Enter and the pty: the dedupe, and the order
+    /// they were asked in. Empty in the steady state, and it dies with the process
     /// on purpose — a send nobody released before quitting was never sent, and
     /// its pairs are still on the stack in the marks file.
     flow: Mutex<Flow>,
@@ -492,10 +497,12 @@ fn send_stack(state: State<AppState>, ids: Vec<Id>) -> Result<SendResult, String
 // ---- the flow: Ctrl+Enter through to the pane ----------------------------
 // `send_stack` above is the *other* path — the tmux one, reached only from
 // `keymap.send_stack_tmux` (D6). Everything below is the product's send: it
-// ends at the pane's pty, and its whole shape is "delay, then submit" rather
-// than "submit, then retract" (D16).
+// ends at the pane's pty, and its whole shape is "queue, then submit" rather
+// than "submit, then retract" — a submission that has not been taken can be
+// cancelled with nothing to roll back. D16's five-second delay on top of that
+// is gone; see `flow.rs`'s header for why.
 
-/// Put the stack — or an explicit selection — in the undo window.
+/// Queue the stack — or an explicit selection — for submission.
 ///
 /// `None` means there was nothing usable to send, which the frontend reads as
 /// D10: Ctrl+Enter on an empty stack opens the pane and does nothing else.
@@ -520,8 +527,8 @@ fn queue_send(state: State<AppState>, ids: Vec<Id>) -> Option<flow::Pending> {
     state.flow.lock().unwrap().queue(ids)
 }
 
-/// The undo window elapsed. The submission is now eligible to go, and still
-/// cancellable — the pane may sit on it while a turn runs.
+/// The submission is now eligible to go, and still cancellable — a cold-starting
+/// pane may sit on it for a second or two before it can take a line.
 #[tauri::command]
 fn arm_send(state: State<AppState>, token: u64) -> bool {
     state.flow.lock().unwrap().arm(token)
@@ -545,11 +552,11 @@ struct Submitted {
 
 /// Submit the oldest armed submission, if the pane can take it.
 ///
-/// Called by the frontend when it believes the agent is idle (D11). Returning
-/// `None` is the normal, frequent answer — nothing armed, or no live child —
-/// and it deliberately consumes nothing: a queue that never fires is recovered
-/// by pressing the key again, and one that fires into the middle of a turn is
-/// not, so every ambiguous case here resolves to "not yet".
+/// Called by the frontend as soon as the pane has finished starting — mid-turn
+/// included, because Claude Code's composer queues a line typed during a turn.
+/// Returning `None` is a normal answer — nothing armed, or no live child — and
+/// it deliberately consumes nothing: a submission that was not taken is still
+/// there to take, and the reader has not lost their questions.
 ///
 /// The order of the last three steps is the recoverable one. The ticket is
 /// consumed first, so no second caller can take it; the pty write is next; and
@@ -1013,13 +1020,16 @@ fn adopt_root(app: &tauri::AppHandle, path: PathBuf) {
             old.store(true, Ordering::Relaxed);
         }
         let cancel = Arc::new(AtomicBool::new(false));
-        mcp::server::spawn(
+        let status = mcp::server::spawn(
             state.store.clone(),
             root.clone(),
             marking_dirty(state.dirty.clone(), notify::to_window(app.clone())),
             cancel.clone(),
         );
         *slot = Some(cancel);
+        // The new root's socket has its own claim to win or lose, and its own
+        // count of agents that have reached it — neither carries over.
+        *state.mcp_status.lock().unwrap() = Some(status);
     }
 
     // Off the main thread: this walks the repo, and the menu event is holding
@@ -1138,6 +1148,56 @@ fn pty_resize(rows: u16, cols: u16, state: State<AppState>) -> Result<(), String
 #[tauri::command]
 fn pty_kill(state: State<AppState>) {
     *state.pty.lock().unwrap() = None;
+}
+
+/// Switch the running session's model, from the pane header's chips.
+///
+/// A slash command typed into the live child, not a restart — see
+/// [`pty::model_line`] for why, and for why the string is safe whichever of the
+/// two things is on the far end. The submit is written separately, the way
+/// `take_send` and the tmux path both do it: a TUI reading a line and its
+/// submit key out of one `read` is a bet on the child's input handling that
+/// nothing here can check.
+#[tauri::command]
+fn pty_model(model: pty::Model, state: State<AppState>) -> Result<(), String> {
+    let mut slot = state.pty.lock().unwrap();
+    let child = slot.as_mut().ok_or("the pane is not running")?;
+    child.write(pty::model_line(model).as_bytes())?;
+    child.write(b"\r")
+}
+
+/// What the pane's status line reports about the agent half of dreamd.
+#[derive(serde::Serialize)]
+struct McpReport {
+    /// A socket was armed at all. False for a launch with no repo, where there
+    /// is nothing to be the socket *of*.
+    armed: bool,
+    /// This window holds the lock and is answering MCP.
+    serving: bool,
+    /// Connections accepted since the bind. Zero means no agent has ever
+    /// reached this window — the shim never ran, or `claude mcp add dreamd`
+    /// never did.
+    clients: usize,
+}
+
+/// Polled by the pane while it is open. Cheap by construction: two relaxed
+/// atomic loads behind one uncontended lock, and nothing that touches the
+/// socket — asking the transport whether it is healthy would mean connecting to
+/// ourselves on a UI thread.
+#[tauri::command]
+fn mcp_status(state: State<AppState>) -> McpReport {
+    match state.mcp_status.lock().unwrap().as_ref() {
+        Some(s) => McpReport {
+            armed: true,
+            serving: s.serving(),
+            clients: s.clients(),
+        },
+        None => McpReport {
+            armed: false,
+            serving: false,
+            clients: 0,
+        },
+    }
 }
 
 /// Frontend-side timing mark, forwarded into the same NDJSON stream as the Rust
@@ -1350,6 +1410,11 @@ fn main() {
         has_repo: AtomicBool::new(has_repo),
         watcher_cancel: Mutex::new(watcher_cancel.clone()),
         mcp_cancel: Mutex::new(mcp_cancel.clone()),
+        // Filled by `.setup()`, which is where the socket thread is actually
+        // started. `None` here rather than a default `Status` so that "no
+        // socket was ever armed" stays distinguishable from "one was armed and
+        // failed to bind".
+        mcp_status: Mutex::new(None),
         initial_file: initial,
         config: Mutex::new(cfg),
         store: store.clone(),
@@ -1413,6 +1478,8 @@ fn main() {
             pty_write,
             pty_resize,
             pty_kill,
+            pty_model,
+            mcp_status,
             perf_mark,
             perf_enabled,
         ])
@@ -1475,12 +1542,16 @@ fn main() {
             // repo finds the socket taken and says so on stderr rather than
             // stealing it.
             if let Some(cancel) = mcp_cancel.clone() {
-                mcp::server::spawn(
+                let status = mcp::server::spawn(
                     store.clone(),
                     repo_root.clone(),
                     marking_dirty(dirty.clone(), notify::to_window(app.handle().clone())),
                     cancel,
                 );
+                // Handed to the state the builder is already managing rather
+                // than built beside it, because `adopt_root` replaces it later
+                // and there must be exactly one slot both write to.
+                *app.state::<AppState>().mcp_status.lock().unwrap() = Some(status);
             }
             // The debounce thread. It reads the root and the claim through the
             // handle on every tick rather than capturing them, because

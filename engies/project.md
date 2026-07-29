@@ -243,6 +243,34 @@ causes were wrong.
 
 ## Recent updates
 
+- **2026-07-29** — **The send got instant, and the pane grew a header worth
+  reading.** Sending your stack of questions to Claude used to wait five seconds
+  before anything happened. The idea was that you could take it back in that
+  window — but you almost never wanted to, and you paid the five seconds every
+  single time. That delay is gone: pressing Ctrl+Enter now sends immediately.
+  It no longer waits for Claude to look idle either, because Claude Code already
+  queues a message typed while it is working. The one wait left is a pane that
+  is still starting up, where typing too early would lose your question
+  entirely; the bar on screen says so while it waits, and offers "Send now" if
+  you would rather not.
+
+  The button in the top-right corner used to be a clipboard icon that actually
+  sent things. Now the clipboard icon copies to your clipboard, and a new
+  paper-plane icon beside it does the sending.
+
+  The pane's header gained two things. **Three model buttons** — opus, sonnet,
+  haiku — that switch model mid-conversation without restarting anything, so you
+  keep everything said so far. And a **status line that appears only when
+  something is wrong**: if Claude cannot reach dreamd, it says so and tells you
+  the one command that fixes it. Before this, that failure was invisible — Claude
+  would answer your questions perfectly well and simply never tick them off,
+  which looked like forgetfulness rather than a missing connection.
+
+  Finally, Claude no longer asks permission to read your stack or the file you
+  are reading. You highlighted the passage and typed the question, so the
+  permission was already given — and the prompt was landing in a terminal you
+  might not be looking at. Anything that *writes* still asks, exactly as before.
+
 - **2026-07-28 (later the same day)** — **The Claude Code pane stopped being a
   plain terminal and started becoming the actual place the highlight →
   annotation → stack → send loop ends.** This was the first session against a
