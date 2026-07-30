@@ -2,7 +2,7 @@
 
 *This page is the daily landing spot for everyone on the team. It's kept up to date
 automatically and written so that you can be away for a week, read this in five
-minutes, and know exactly where things stand. Last updated: 2026-07-29.*
+minutes, and know exactly where things stand. Last updated: 2026-07-30.*
 
 ## What we're building
 
@@ -114,8 +114,9 @@ Two ideas that come up constantly:
 
 ## Where things stand right now
 
-**Status: v1 is built and works.** The repo went from an empty scaffold to a
-working app in a single session on 2026-07-24. It compiles clean (`cargo build`),
+**Status: v1 is built and works, and shipped as 0.2.0 on 2026-07-29.** The repo
+went from an empty scaffold to a working app in a single session on 2026-07-24.
+It compiles clean (`cargo build`),
 launches, and the send loop has been verified end to end — a real stack landed in a
 Claude Code pane as a formatted query.
 
@@ -243,6 +244,15 @@ causes were wrong.
   that is where its users look.
 
 ## Recent updates
+
+- **2026-07-30** — **dreamd 0.2.0 released.** The first release since 0.1.0
+  (2026-07-26) — 91 commits behind it, and a minor version bump rather than a
+  patch because almost none of 0.2.0 existed at 0.1.0: the embedded Claude Code
+  pane, the MCP server and its five tools, marks persisted to
+  `~/.config/dreamd`, and the window-chrome toggles are all new since then.
+  Everything in the release, including the window-chrome toggles and the four
+  reading fixes below, had already landed and been verified the day before —
+  this commit only bumped the version number.
 
 - **2026-07-29** — **Four things that got in the way of reading, fixed.** All four
   came from using dreamd rather than from testing it.
@@ -439,124 +449,20 @@ causes were wrong.
   gets a shorter one, and the "open a folder" shortcut moved there because the
   Mac shortcut would have silently stolen a key the app already uses.
 
-- **2026-07-27** — **Claude Code now runs inside dreamd.** Press `Ctrl+T` and a
-  terminal opens along the bottom of the reading pane with an assistant already
-  started in the repository you are reading — the same one that can see your
-  highlights and work through your queue. It is a real terminal, so everything
-  you would type in one works, and the key that opened it closes it again from
-  either side. Closing only hides it: the conversation is still there when you
-  bring it back, and it is put away automatically in distraction-free reading
-  mode and never printed. Nothing about it costs anything until you press the
-  key for the first time — a session that never opens a terminal doesn't load
-  one. Two caveats worth stating plainly: the pane has been tested but not yet
-  *looked at* by a person, and it assumes the `claude` command is installed the
-  usual way. If it isn't, the pane says the process exited and offers a retry
-  button rather than failing silently.
-  The app's icon also changed size. It had been drawn to fill its square, which
-  is right for a browser tab and wrong for the Dock, where it made dreamd look
-  larger than every app beside it. It is now drawn to Apple's grid.
-
-- **2026-07-27** — **Your marks now survive closing the app.** Until today,
-  highlights, the questions attached to them and the queue they form all lived
-  only in memory: quit dreamd and they were gone. That was a deliberate rule, and
-  it stopped being the right one the moment an assistant could work through your
-  queue — a conversation that spans a lunch break shouldn't lose the questions you
-  asked before it. They are now written to a small file in your own settings
-  folder, one per repository, readable only by your account. Nothing is written
-  into the repository itself, and your markdown is still never touched; that part
-  of the rule has not moved.
-  Three details worth knowing. Saving is deferred by half a second and happens
-  again on quit, so typing a question never waits on the disk and closing the app
-  never loses the one you just typed. If two dreamd windows are open on the same
-  repository, only the first writes — the second keeps its marks for as long as it
-  runs and stays out of the way, rather than the two overwriting each other. And
-  the file is treated as untrusted on the way back in: a hand-edited or copied one
-  cannot point dreamd at a file outside your repository, and a corrupted one costs
-  you the marks rather than the launch.
-  There is also a new way to look at all this from a terminal: `dreamd marks path`
-  prints the file, and `dreamd marks prune` says what it *would* tidy up before it
-  tidies anything. A question you asked and nobody answered is never deleted, by
-  any of it.
-  Two things not yet done: nobody has quit and reopened the real window to watch
-  the marks come back — everything underneath that is tested automatically — and a
-  second window doesn't yet *show* that it isn't saving, it only says so in a log
-  nobody reads.
-
-- **2026-07-27** — **The assistant can now read your queue, and the window answers
-  back.** This is the one the last few sessions were building toward. When you
-  highlight a passage and attach a question to it, that question joins an ordered
-  list — the order you asked in. Until today that list only travelled one way: you
-  pressed send, and it went out. Now an assistant working in a terminal beside
-  dreamd can ask for the list directly ("here is what I asked, in order"), work
-  through the questions with its own tools, and mark each one answered as it goes.
-  The count in the dreamd window ticks down as it happens. You don't touch the
-  window; you just watch it.
-  How the two halves find each other is worth a sentence, because it is the reason
-  there is nothing to configure. dreamd opens a private channel named after the
-  repository you're in — a file only your account can read, no network port, no
-  password, nothing to expose. The assistant, started from anywhere inside the same
-  repository, works out the same name and connects. Two dreamd windows on the same
-  repository is handled too: the second notices the first already owns the channel
-  and says so rather than fighting over it.
-  Two deliberate limits. The assistant can read your marks and close them; it
-  cannot reorder your list, delete a mark, or write to any of your files — editing
-  stays where it was. And a closed question keeps its highlight: the evidence
-  stays on the page, so "answered" doesn't mean "erased".
-  One thing has *not* been checked yet: nobody has sat in front of the finished
-  window and watched the count go 3, 2, 1, 0. Every part underneath it is tested
-  automatically; the whole loop, with human eyes on it, is the next thing to do.
-
-- **2026-07-27** — **Every highlight got a name that means something.** Groundwork,
-  and worth explaining because of what it unblocks. Each highlight you make has an
-  internal label so the rest of the program can refer to it. Those labels were
-  counted off from one, starting over every time dreamd opened — so the third
-  highlight of today and the third highlight of tomorrow had the *same* label. That
-  costs nothing while everything lives and dies inside one run, which is how dreamd
-  has always worked. It becomes a real problem the moment anything remembers a
-  highlight after you quit, or an assistant writes one down and comes back to it
-  later. Both of those are next on the roadmap. Labels are now unique for good.
-  The same change settled the full shape of what a highlight *is* — including two
-  pieces nothing reads yet: who made the mark (you, or an assistant) and whether a
-  question about it has been answered. Deciding all of that once, up front, is
-  deliberate: several strands of the next feature will be built against it at the
-  same time, and a shape that shifts underneath them would be expensive.
-  A separate check also joined the automatic ones: 611 stored examples that confirm
-  a highlight still lands on the right words after the surrounding text is edited.
-  That check existed but only ever ran by hand, and the code it guards had just
-  moved.
-
-- **2026-07-27** — **The project got a safety net. It had almost none.** Until today,
-  nothing checked the code automatically. There was one piece of automation, and it only
-  ran when a *release* was being cut — so a change could sit on the main branch for a week
-  before anyone discovered it didn't compile. The command that normally runs a project's
-  tests ran **zero** tests, because none had ever been written. Now: every change is
-  checked automatically the moment it lands, and there are **99 tests** where there were
-  none.
-  **What the tests actually protect.** dreamd reads files it did not write. A markdown
-  document is untrusted input — it can contain anything, including deliberate attempts to
-  make the app do something it shouldn't. There were five rules protecting against that
-  (a document can't run code inside the app window; it can't hand the operating system a
-  dangerous kind of link; it can't reach outside the folder you opened, whether through a
-  link, a picture, or a delete). Every one of those rules was real and working — and not
-  one of them was checked by anything. If a future change broke one, nothing would have
-  noticed. All five are now tested.
-  **And the tests were tested.** A test that passes proves nothing on its own: it might
-  pass because the rule works, or because the test never really checks anything. So each
-  protection was deliberately broken, one at a time, to confirm its test went red — then
-  put back. All five failed as they should have. Only then was the coverage claimed.
-  **A change that was measured and then thrown away.** Part of the work was meant to speed
-  up releases by not rebuilding a tool every time. The measurement said it made no
-  difference at all — the tool was already being reused, and the slow run that started the
-  whole idea was a one-off. So the change was removed, and the reason written down where
-  the next person will read it. Being wrong is cheap when you measure; it is expensive
-  when you don't.
-
-- **(earlier)** — In-document search with `/`, `n`/`N` (2026-07-27); an
+- **(earlier)** — Claude Code embedded in a pane inside dreamd, `Ctrl+T` to open
+  it (2026-07-27); highlights, annotations and the stack persisted to
+  `~/.config/dreamd` so they survive quitting, plus `dreamd marks path`/`prune`
+  (2026-07-27); an assistant able to read the highlight queue over a private
+  per-repo socket and mark items resolved as it works through them
+  (2026-07-27); unique, permanent highlight ids as groundwork for that
+  persistence (2026-07-27); the project's first safety net — CI on every push
+  and 99 tests where there had been zero, covering the five security rules
+  (escaping, link/scheme allowlists, repo-root containment) (2026-07-27);
+  in-document search with `/`, `n`/`N` (2026-07-27); an
   overnight-written batch of reading features reviewed and fixed — contents
   panel, code-block copy button,
   print/PDF, vim-style bookmarks, back/forward navigation — after a first pass
   caught a bug that made distraction-free mode render a blank window
-  (2026-07-27); unique highlight ids as groundwork for later persistence
   (2026-07-27); dreamd 0.1.0 released, signed and notarized, installable via
   Homebrew or a one-line terminal command, after discovering unsigned macOS
   builds are reported as "damaged" (2026-07-26); an Apache 2.0 licence
