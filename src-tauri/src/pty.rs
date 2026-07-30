@@ -166,7 +166,7 @@ pub fn model_line(model: Model) -> &'static str {
 /// emulator reads; the fallback matters only for an environment that stripped
 /// it. zsh is macOS's default since Catalina, but it is not guaranteed to exist
 /// on Linux at all — `/bin/sh` is the only interactive shell POSIX promises, and
-/// `-l -c` is portable across every implementation of it.
+/// `-l -i -c` is portable across every implementation of it.
 fn login_shell() -> String {
     std::env::var("SHELL").unwrap_or_else(|_| DEFAULT_SHELL.into())
 }
@@ -176,6 +176,11 @@ const DEFAULT_SHELL: &str = "/bin/zsh";
 #[cfg(not(target_os = "macos"))]
 const DEFAULT_SHELL: &str = "/bin/sh";
 
+/// Login *and* interactive, in that order, ahead of the `-c`. Both are
+/// load-bearing and a test pins them; see [`Pty::spawn`] for why `-i` is not
+/// optional.
+const SHELL_FLAGS: [&str; 2] = ["-l", "-i"];
+
 impl Pty {
     /// Open a pty, spawn the pane's command in it, and start pumping output at
     /// `sink`. `cwd` is the repo root, because `dreamd mcp` finds this repo's
@@ -184,6 +189,16 @@ impl Pty {
     /// `mode` selects one of four compiled-in commands — it is not a value that
     /// travels into the shell. Changing it is a restart, because Claude Code
     /// reads it once at launch.
+    ///
+    /// The shell is **login *and* interactive**. `-l` alone reads `.zprofile`
+    /// but not `.zshrc`, and `.zshrc` is where a PATH that finds `claude`
+    /// usually lives — `~/.local/bin` is the official installer's target and
+    /// nothing else puts it on PATH. A `.app` from Finder inherits launchd's
+    /// minimal PATH, so `-l -c` reached `exec claude` with no way to resolve it
+    /// and the pane died with 127. `cargo tauri dev` inherits the terminal's
+    /// PATH instead, which is exactly why the release build failed and the
+    /// development build never did. `-i` costs whatever the user's rc file
+    /// costs, once, before the exec.
     pub fn spawn(
         rows: u16,
         cols: u16,
@@ -196,7 +211,7 @@ impl Pty {
             cols,
             cwd,
             &login_shell(),
-            &["-l", "-c", pane_command(mode)],
+            &[SHELL_FLAGS[0], SHELL_FLAGS[1], "-c", pane_command(mode)],
             sink,
         )
     }
@@ -545,6 +560,15 @@ mod tests {
             PANE_COMMAND_ACCEPT_EDITS,
         );
         assert!(login_shell().starts_with('/'), "an absolute program path");
+    }
+
+    /// `-i` is what reads `.zshrc`, and `.zshrc` is where the PATH that finds
+    /// `claude` lives. Dropping it fails only in a bundled build launched from
+    /// Finder — `cargo tauri dev` inherits a working PATH from the terminal — so
+    /// nothing in a development loop would catch it.
+    #[test]
+    fn the_pane_shell_is_login_and_interactive() {
+        assert_eq!(SHELL_FLAGS, ["-l", "-i"]);
     }
 
     /// Every launch pre-grants the stack and the file, and nothing else.

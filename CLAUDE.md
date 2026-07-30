@@ -329,9 +329,14 @@ the upgrade procedure.
   **base64-encoded**: a 4 KiB read splits multi-byte characters, and only
   `Terminal.write`'s stateful decoder is in a position to reassemble them.
   Input is base64 for the mirror-image reason — a paste is arbitrary bytes. The
-  child is a **login** shell running a fixed `exec claude`, because a `.app`
-  launched from Finder inherits launchd's minimal `PATH` and would not find
-  `claude` at all. Takes a `Sink` closure rather than an `AppHandle`, the same
+  child is a **login *and* interactive** shell (`-l -i -c`) running a fixed
+  `exec claude`, because a `.app` launched from Finder inherits launchd's minimal
+  `PATH` and would not find `claude` at all. `-l` alone was not enough: it reads
+  `.zprofile`, never `.zshrc`, and `.zshrc` is where the PATH carrying
+  `~/.local/bin` — the official installer's target — lives. `cargo tauri dev`
+  inherits the terminal's PATH, so the failure existed only in a bundled build
+  and only from Finder; `SHELL_FLAGS` is a pinned const with a test for that
+  reason. Takes a `Sink` closure rather than an `AppHandle`, the same
   shape and for the same reason as `notify`'s. **A pty needs no entitlement**
   under dreamd's hardened runtime — measured against a signed bundle before the
   module was written; don't add an entitlements file for it.
