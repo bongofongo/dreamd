@@ -264,6 +264,18 @@ pub fn interrupt_line() -> String {
     .to_string()
 }
 
+impl super::Session for ClaudeSession {
+    fn send(&self, text: &str) -> Result<(), String> {
+        ClaudeSession::send(self, text)
+    }
+    fn interrupt(&self) -> Result<(), String> {
+        ClaudeSession::interrupt(self)
+    }
+    fn kill(&mut self) {
+        ClaudeSession::kill(self)
+    }
+}
+
 impl Drop for ClaudeSession {
     fn drop(&mut self) {
         self.kill();

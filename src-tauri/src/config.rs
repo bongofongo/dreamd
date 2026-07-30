@@ -93,6 +93,32 @@ pub struct Agent {
     ///
     /// Not settable from a repo-local `.dreamd.toml` — see [`Config::load`].
     pub permission_mode: PermissionMode,
+
+    /// How the agent is drawn.
+    pub surface: Surface,
+}
+
+/// Which of the two agent surfaces the pane opens.
+///
+/// The terminal came first and is real Claude Code in xterm.js: its own
+/// palette, its own typography, a composer dreamd cannot see into. The native
+/// surface is the same agent reached over `stream-json`, drawn with dreamd's own
+/// markdown pipeline — which is the point of the whole exercise, so it is the
+/// default.
+///
+/// **`Terminal` is kept, undocumented, as a fallback**, not as a supported
+/// choice: a slash command with no native equivalent, or a stream-json shape
+/// dreamd has not learned to draw, should cost a config line rather than a
+/// release. It goes when nobody reports needing it.
+///
+/// Settable from a repo-local `.dreamd.toml`, unlike its neighbour: choosing
+/// how a conversation is *drawn* is not a decision about what an agent may do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Surface {
+    #[default]
+    Native,
+    Terminal,
 }
 
 /// Which edge the agent pane docks to. `bottom` is how the pane has always
@@ -441,8 +467,11 @@ impl Config {
 ///   settings panel to get the frame back. The pair travels together: one key
 ///   deciding your chrome is the shape of the problem, not the direction.
 ///
-/// `agent.position` and `ui.tree_width` are left alone: they move furniture
-/// *inside* the window and read nothing.
+/// `agent.position`, `agent.surface` and `ui.tree_width` are left alone: they
+/// move furniture *inside* the window and read nothing. `surface` in particular
+/// only chooses how a conversation is *drawn* — neither of its two values
+/// widens what the agent may do, because the permission gate is a hook and
+/// outranks the surface entirely.
 fn strip_untrusted(local: &mut Table) -> Vec<(&'static str, &'static str)> {
     let mut warnings = Vec::new();
     if local.remove("theme_css").is_some() {
@@ -844,6 +873,37 @@ mod tests {
         let mut local = table("theme = \"nord\"\n[agent]\nposition = \"right\"\n");
         assert!(strip_untrusted(&mut local).is_empty());
         assert_eq!(local.len(), 2);
+    }
+
+    #[test]
+    fn a_repo_may_choose_how_a_conversation_is_drawn_but_not_what_it_may_do() {
+        // `surface` sits in the same table as `permission_mode` and is
+        // deliberately *not* stripped beside it. Neither of its values widens
+        // what the agent may do: the gate is a PreToolUse hook and outranks the
+        // surface entirely. This test exists so that "it's in [agent], strip it
+        // too" has to argue with something.
+        let mut local =
+            table("[agent]\nsurface = \"terminal\"\npermission_mode = \"bypass-permissions\"\n");
+        let warnings = strip_untrusted(&mut local);
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert_eq!(warnings[0].0, "agent.permission_mode");
+
+        let cfg = Config::deserialize(Value::Table(local)).expect("stripped config");
+        assert_eq!(cfg.agent.surface, Surface::Terminal, "surface survives");
+        assert_eq!(
+            cfg.agent.permission_mode,
+            PermissionMode::default(),
+            "the mode does not"
+        );
+    }
+
+    #[test]
+    fn the_native_surface_is_the_default() {
+        assert_eq!(Config::default().agent.surface, Surface::Native);
+        assert_eq!(
+            config_of("[agent]\nsurface = \"terminal\"\n").agent.surface,
+            Surface::Terminal
+        );
     }
 
     #[test]

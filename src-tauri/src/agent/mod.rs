@@ -42,3 +42,28 @@ pub use wire::AgentEvent;
 
 /// Where events go. See the module docs for why this is a closure.
 pub type Sink = Arc<dyn Fn(AgentEvent) + Send + Sync>;
+
+/// One running conversation, whoever is on the other end of it.
+///
+/// There is exactly one implementation ([`claude::ClaudeSession`]) and this
+/// trait is not an attempt to guess what a second one would need. It exists
+/// because `AppState` has to name the type it stores, and naming a concrete
+/// Claude Code session there would put "which agent" into the shape of every
+/// command that touches it. Three methods is the whole surface the commands
+/// use, so a second agent is a new file rather than a refactor of `main.rs`.
+///
+/// What is deliberately *not* here: spawning. Every agent will want different
+/// arguments, and a constructor in a trait would either take the union of them
+/// or take a bag of strings. `main.rs` matches on the configured agent once, at
+/// launch, and holds a `Box<dyn Session>` afterwards.
+pub trait Session: Send {
+    /// Send one turn. `&self` rather than `&mut self` because an interrupt can
+    /// arrive from another thread while a turn is being written.
+    fn send(&self, text: &str) -> Result<(), String>;
+
+    /// End the current turn, keeping the conversation.
+    fn interrupt(&self) -> Result<(), String>;
+
+    /// End the conversation. Must be idempotent.
+    fn kill(&mut self);
+}

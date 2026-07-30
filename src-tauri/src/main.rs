@@ -15,8 +15,8 @@ use dreamd::flow::Flow;
 use dreamd::fs_walk::FileNode;
 use dreamd::send::SendResult;
 use dreamd::{
-    cli, config, flow, guard, home_relative, markdown, marks_file, mcp, menu, notify, perf, prompt,
-    pty, read_source, rootfield, send, theme, watcher,
+    agent, cli, config, flow, guard, home_relative, markdown, marks_file, mcp, menu, notify, perf,
+    prompt, pty, read_source, rootfield, send, theme, watcher,
 };
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -110,6 +110,15 @@ struct AppState {
     /// an `Option` created on first open rather than at boot. One per window:
     /// the pane is a single dock, not a tab strip.
     pty: Mutex<Option<pty::Pty>>,
+    /// The native agent surface, or `None` while the pane has never been opened
+    /// natively. The sibling of `pty` above and an `Option` for the same reason:
+    /// a session that never opens the pane spawns no child and binds no socket.
+    ///
+    /// Exactly one of this and `pty` is ever occupied — `agent.surface` decides
+    /// which at open time — but they are separate fields rather than an enum
+    /// because the terminal path is on its way out, and a shared enum would mean
+    /// touching every native command again to delete it.
+    agent: Mutex<Option<NativeAgent>>,
     /// Submissions between Ctrl+Enter and the pty: the dedupe, and the order
     /// they were asked in. Empty in the steady state, and it dies with the process
     /// on purpose — a send nobody released before quitting was never sent, and
@@ -568,7 +577,8 @@ struct Submitted {
 fn take_send(state: State<AppState>) -> Result<Option<Submitted>, String> {
     // Checked before anything is consumed: a pane that was never opened, or one
     // whose child exited, leaves the submission armed for the next tick.
-    if state.pty.lock().unwrap().is_none() {
+    let native = state.agent.lock().unwrap().is_some();
+    if !native && state.pty.lock().unwrap().is_none() {
         return Ok(None);
     }
     let Some(pending) = state.flow.lock().unwrap().take_ready() else {
@@ -582,12 +592,24 @@ fn take_send(state: State<AppState>) -> Result<Option<Submitted>, String> {
     }
 
     let content = prompt::assemble(&state.root(), &pairs);
-    let path = send::write_query_file(&content).map_err(|e| format!("temp file: {e}"))?;
-    // Fixed but for a path dreamd minted. See `prompt::read_line` — the far end
-    // of this write is Claude Code's composer *or* a login shell, and the line
-    // has to be safe under either reading (tenet 3).
-    let line = prompt::read_line(&path);
-    {
+    if native {
+        // Straight down the wire as the turn's text. The temp file exists
+        // because the pty's far end may be a *shell* and because a newline in a
+        // TUI composer submits (`prompt::read_line`'s header); over stream-json
+        // neither is true — the prompt is a JSON string field built by
+        // `serde_json`, and there is no shell and no composer between here and
+        // the model. The assembly, the per-passage `untrusted::delimit`
+        // envelopes and the outside-the-envelope rule are all unchanged: that
+        // reasoning is about an LLM reading a document, not about transport.
+        let slot = state.agent.lock().unwrap();
+        let a = slot.as_ref().ok_or("the agent is not running")?;
+        a.session.send(&content)?;
+    } else {
+        let path = send::write_query_file(&content).map_err(|e| format!("temp file: {e}"))?;
+        // Fixed but for a path dreamd minted. See `prompt::read_line` — the far
+        // end of this write is Claude Code's composer *or* a login shell, and
+        // the line has to be safe under either reading (tenet 3).
+        let line = prompt::read_line(&path);
         let mut slot = state.pty.lock().unwrap();
         let child = slot.as_mut().ok_or("the pane is not running")?;
         child.write(line.as_bytes())?;
@@ -1226,6 +1248,171 @@ fn pty_model(model: pty::Model, state: State<AppState>) -> Result<(), String> {
     child.write(b"\r")
 }
 
+// ---- the native agent surface ----------------------------------------------
+//
+// The same pane, the same agent, drawn by dreamd instead of by a terminal. Where
+// the block above hands xterm.js a stream of bytes, these hand the frontend a
+// stream of *events* — `wire::digest` has already turned Claude Code's
+// `stream-json` into the handful of things a reader's window shows.
+//
+// Two events rather than one. `agent-event` is the conversation and it is a
+// firehose: a text delta per few tokens. `agent-ask` is a permission card, it
+// arrives at most a few times a turn, and it is the only one the reader has to
+// *answer* — routing it through the same channel would mean the frontend
+// filtering a hot path for a rare message it must never drop.
+//
+// A session owns three things that must be created and retired together, which
+// is what `NativeAgent` is for: the child process, the gate holding its pending
+// cards, and the socket thread the hook connects to.
+
+/// Event carrying one digested [`agent::AgentEvent`].
+const AGENT_EVENT: &str = "agent-event";
+/// Event carrying one [`agent::gate::Ask`] — a tool call waiting on the reader.
+const AGENT_ASK: &str = "agent-ask";
+
+/// One native conversation and the two things that outlive its turns.
+struct NativeAgent {
+    session: Box<dyn agent::Session>,
+    /// Held so `agent_decide` can answer a card, and so closing the pane can
+    /// deny everything still outstanding.
+    gate: Arc<agent::gate::Gate>,
+    /// Retires the socket thread. The socket is named after this session, so a
+    /// leftover would be unlinked by the next bind anyway — this is what stops
+    /// a thread per pane restart.
+    cancel: Arc<AtomicBool>,
+}
+
+impl Drop for NativeAgent {
+    fn drop(&mut self) {
+        // Order matters, and only in this direction: deny first, so a hook
+        // parked on a card gets dreamd's own answer rather than a connection
+        // that dies under it; then retire the socket; then the child.
+        self.gate.close();
+        self.cancel.store(true, Ordering::Relaxed);
+        self.session.kill();
+    }
+}
+
+/// Start a native session, or do nothing if one is already running.
+///
+/// Idempotent for the same reason `pty_spawn` is: the frontend calls it on every
+/// open, and closing the pane is a `display: none` rather than a kill.
+///
+/// **A gate that cannot be built refuses the launch.** There is no arm here that
+/// starts an agent without one: `--allowed-tools` would still hold the six
+/// pre-granted tools, so the failure would be quiet and survivable rather than
+/// obvious, which is exactly what makes it worth refusing. A pane that will not
+/// open is a bug report; an agent silently unable to ask for anything is a
+/// mystery.
+#[tauri::command]
+fn agent_spawn(app: tauri::AppHandle, state: State<AppState>) -> Result<bool, String> {
+    let mut slot = state.agent.lock().unwrap();
+    if slot.is_some() {
+        return Ok(false);
+    }
+
+    let asking = app.clone();
+    let gate = Arc::new(agent::gate::Gate::new(Arc::new(move |ask| {
+        let _ = asking.emit(AGENT_ASK, ask);
+    })));
+    let cancel = Arc::new(AtomicBool::new(false));
+
+    let socket = agent::gate_server::spawn(&session_token(), gate.clone(), cancel.clone())
+        .map_err(|e| format!("could not open the permission socket: {e}"))?;
+    let exe = std::env::current_exe().map_err(|e| format!("cannot find dreamd itself: {e}"))?;
+    let settings = agent::gate_server::settings_json(&exe, &socket)
+        .ok_or("dreamd's own path cannot be quoted safely; not starting an agent")?;
+
+    let emitting = app.clone();
+    let sink: agent::Sink = Arc::new(move |event| {
+        let _ = emitting.emit(AGENT_EVENT, event);
+    });
+    // The mode is read here rather than taken off the wire, the same as
+    // `pty_spawn` and for a weaker version of the same reason: it is a launch
+    // flag from a closed enum. It matters less now — the gate outranks it — but
+    // the frontend's control still writes config and restarts, so by the time
+    // it reaches here the preference *is* the config.
+    let mode = state.config.lock().unwrap().agent.permission_mode;
+    let session = agent::claude::ClaudeSession::spawn(&state.root(), mode, Some(&settings), sink)?;
+
+    *slot = Some(NativeAgent {
+        session: Box::new(session),
+        gate,
+        cancel,
+    });
+    Ok(true)
+}
+
+/// One turn, typed by the reader into the native composer.
+#[tauri::command]
+fn agent_send(text: String, state: State<AppState>) -> Result<(), String> {
+    match state.agent.lock().unwrap().as_ref() {
+        Some(a) => a.session.send(&text),
+        None => Err("the agent is not running".into()),
+    }
+}
+
+/// Stop the current turn, keeping the conversation.
+///
+/// Escape, from inside the pane. The terminal surface could not offer this —
+/// xterm.js claims the key and D12 spent it on "close the pane", leaving Ctrl+C
+/// as the only way to stop a turn. Natively dreamd owns the keyboard, so the
+/// obvious key does the obvious thing.
+#[tauri::command]
+fn agent_interrupt(state: State<AppState>) -> Result<(), String> {
+    match state.agent.lock().unwrap().as_ref() {
+        Some(a) => a.session.interrupt(),
+        // Nothing to interrupt is the postcondition already holding, not a
+        // failure — the same reading `pty_resize` takes.
+        None => Ok(()),
+    }
+}
+
+/// The reader's answer to a permission card.
+///
+/// Returns false when the id named nothing: a card clicked twice, or one whose
+/// hook gave up waiting. The frontend uses it to drop a card that has gone
+/// stale rather than to report an error — nobody needs telling that the thing
+/// they just answered was already answered.
+#[tauri::command]
+fn agent_decide(id: String, allow: bool, always: bool, state: State<AppState>) -> bool {
+    let verdict = if allow {
+        agent::gate::Verdict::Allow
+    } else {
+        agent::gate::Verdict::Deny
+    };
+    match state.agent.lock().unwrap().as_ref() {
+        Some(a) => a.gate.answer(&id, verdict, always),
+        None => false,
+    }
+}
+
+/// End the session. `NativeAgent::drop` does the work, in the order that lets a
+/// waiting hook hear a verdict rather than a broken pipe.
+#[tauri::command]
+fn agent_kill(state: State<AppState>) {
+    *state.agent.lock().unwrap() = None;
+}
+
+/// A value to name this window's permission socket after.
+///
+/// Not a security boundary — the socket's 0600 mode is that — so this only has
+/// to be *distinct* between live windows. Derived from the same per-process seed
+/// `untrusted`'s sentinel uses, mixed with the pid so two dreamds started in the
+/// same millisecond still differ.
+fn session_token() -> String {
+    let mut z = std::process::id() as u64;
+    z ^= std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    // splitmix64's finaliser, the same one `untrusted::mint` uses.
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    z ^= z >> 31;
+    format!("{z:016x}")[..agent::gate_server::SESSION_HEX].to_string()
+}
+
 /// What the pane's status line reports about the agent half of dreamd.
 #[derive(serde::Serialize)]
 struct McpReport {
@@ -1489,6 +1676,7 @@ fn main() {
         dirty: dirty.clone(),
         pending_reanchor: Mutex::new(pending_reanchor),
         pty: Mutex::new(None),
+        agent: Mutex::new(None),
         flow: Mutex::new(Flow::default()),
     };
 
@@ -1544,6 +1732,11 @@ fn main() {
             pty_resize,
             pty_kill,
             pty_model,
+            agent_spawn,
+            agent_send,
+            agent_interrupt,
+            agent_decide,
+            agent_kill,
             mcp_status,
             perf_mark,
             perf_enabled,
@@ -1669,6 +1862,11 @@ fn main() {
                 // only if something drops it — a `claude` reparented to launchd
                 // would keep running with no window to show it.
                 *app.state::<AppState>().pty.lock().unwrap() = None;
+                // The native surface has more to put down than a process:
+                // `NativeAgent::drop` denies whatever was waiting on a card
+                // before it retires the socket, so a hook outliving the window
+                // reads a verdict rather than a closed connection.
+                *app.state::<AppState>().agent.lock().unwrap() = None;
             }
         });
 }
