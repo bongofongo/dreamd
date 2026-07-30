@@ -1,5 +1,113 @@
 # Session log
 
+## 2026-07-30 — the agent floats, and is read-only until asked
+
+A feature session, run alongside a second thread working in the same tree. The
+agent got a third shape: `agent.popout`, a card centred on the window instead of
+a dock. A dock spends the reader's width for as long as it is open, which is the
+right trade for a session you work alongside and the wrong one for an answer you
+asked for in passing — which is what a stack send produces.
+
+### What happened
+
+`config::Popout` is a closed enum beside `Surface` and `Position`: `never`
+(default) / `send` / `always`. Three values rather than a bool because the reason
+to want one is usually the *send*, so `send` raises the card only on the stack
+hand-off and leaves the pane's own toggle on the dock, while `always` makes the
+card the only agent surface there is. Settable from a repo-local `.dreamd.toml`
+for the reason `surface` is, and a test says so next to the one that refuses
+`permission_mode`.
+
+Three decisions the code argues for and the log will state once:
+
+1. **One body, two containers — a move, not a copy.** `#agent-body` is
+   re-parented between `#pty-pane` and `#agent-card`, so a mid-stream turn keeps
+   streaming across the move and an unanswered permission card is still
+   answerable on the other side. Two logs would have meant two of every id in
+   them. The consequences are load-bearing: every rule styling the conversation
+   is scoped by *container*, `#pty-mcp` travels with the body (in `always` the
+   dock never opens, so a warning left behind in it is one nobody is ever
+   shown), and exactly one container may hold it — `openPane` lowers the card,
+   `raisePopout` closes the dock.
+2. **Read-only until asked, with two ways in.** A click that is not on a control
+   and does not end a text selection, or `i` while the card has focus. `i` is
+   deliberately not in the keymap: it is not a dreamd action, it is the card's
+   insert key. Escape gives the composer back and a second one puts the card
+   away; interrupting a running turn still outranks both, because the composer's
+   own keydown claims that one before this handler sees it.
+3. **The card takes focus on open, unlike the dock** — which pointedly does not,
+   since it opens *beside* what you are reading. This one opens over it, and `i`
+   is meaningless without focus. That is only honest if focus costs nothing, so
+   `j`/`k` and the arrows scroll the log: native arrow scrolling moves the
+   nearest scrollable *ancestor*, and `#agent-log` is a descendant of the box
+   holding focus.
+
+`popout` is ignored under `agent.surface = "terminal"`, which keeps its dock:
+xterm needs a box the fit addon manages, and this one grows a composer on demand.
+
+### Mistakes & deviations
+
+- **The card had nowhere to report a session that would not start.** Found by
+  accident and worth the accident: the first launch said "starting…" forever
+  because the scratchpad was again used as `XDG_CONFIG_HOME` and the sockets blew
+  `sun_path` — *the same trap as the previous session's log entry, hit again*.
+  The environment was my fault; the hole it exposed was real. The dock puts this
+  in `#pty-status`, which is inside a `display: none` box while the card is up,
+  so `setPaneStatus` now keeps the string on `pty.status` for the hint line to
+  read. A card that cannot start says why instead of reporting the failure as
+  patience.
+- **The MCP strip first landed below the composer**, because it was inserted as
+  a child of the card rather than of the body. Caught by looking at a real
+  window. The composer is the bottom-most thing in every agent surface dreamd
+  draws, and a status line under the box you type into reads as something that
+  box produced.
+- **The file tree's scrollbar drew over the card, and the first fix was wrong.**
+  Styling every scrollbar in the app (`::-webkit-scrollbar`) was the theory —
+  a styled scrollbar is a layout scrollbar and paints in order. Measured
+  instead of assumed, and it is **inert on WebKitGTK**: with the rule applied to
+  all ten scrollers, an overflowing tree still had no layout scrollbar. Neither
+  `scrollbar-width` nor `scrollbar-color` moved it either. Reverted — it would
+  not have fixed the reported window, and on macOS it would have restyled the
+  reading pane's scrollbar, which nobody asked for. The three existing copies of
+  that rule are therefore macOS-only and inert on Linux, which is what the xterm
+  one's own comment always implied.
+  The actual mechanism: an overflow box's scrollbar takes no part in z-index,
+  and on GTK it is an overlay indicator drawn into a composited scrolling layer
+  that paints over plain content whatever that content's z-index says.
+  `transform: translateZ(0)` on the open pop-out puts the two in the same
+  comparison. Fixed on the card rather than per scroller, so the document
+  scroller, the outline list and the stack list are covered too.
+- **That fix is not verified.** What shows the indicator is a wheel scroll with
+  the pointer over the tree, and Hyprland has no dispatcher to synthesise one;
+  keyboard-driven scrolls (`]` walks files and scrolls the tree — 96% of the
+  sidebar's pixels changed between captures) and `movecursor` hover never
+  brought it up in any capture. So the change follows from the mechanism and
+  from a measurement of what does *not* work, not from a before/after picture.
+  Stated rather than glossed.
+- **The session's first act was a tmux hand-off, and it misfired twice, safely.**
+  A watcher polling the pane above for idleness was killed by a `pkill -f` whose
+  pattern matched the shell running it — taking the send with it, which is why
+  nothing was typed into that pane. The replacement waited on *both* an idle
+  footer and an empty input line, and correctly held off while the reader was
+  mid-message. Worth keeping: `pkill -f` from a tool call matches its own
+  command line.
+
+### State
+
+`cargo build`, `fmt`, `clippy -D warnings` clean. `cargo test --all-features`
+**352 passed** (3 new in `config`), `config_check` 59 passed, `theme_check` and
+`marks_check` clean, `ui-check.mjs` **325 passed, 0 failed** (25 new: the move,
+the two-step Escape, both ways into the composer, the strip travelling, a spawn
+that fails, and the compositing promotion — pinned because it reads as
+decoration and is not).
+
+Verified by hand in a real window on Linux: open, `i`, a one-word turn that
+rendered, both Escape steps, and a reopen that still had the conversation in it.
+
+No perf tier run. The additions are a hidden empty card at boot and a re-parent
+on open, and `run.sh` refuses to compare against the baseline off Darwin, so a
+tier on this machine would have produced no signal to report.
+
 ## 2026-07-30 — the MCP strip grows a button
 
 A small feature session. The pane's "MCP not connected" strip printed the
