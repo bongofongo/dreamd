@@ -1,6 +1,6 @@
 [package]
 name = "dreamd"
-version = "0.2.0"
+version = "0.2.1"
 description = "Lightweight GUI markdown reader with a highlight/annotation -> agent loop"
 license = "Apache-2.0"
 edition = "2021"
