@@ -363,9 +363,73 @@ impl Mode {
     }
 }
 
+/// How a binding's *primary modifier* is spelled on the keyboard.
+///
+/// Every combo in [`Keymap`] is stored in one canonical form — `Ctrl+F`,
+/// `Ctrl+Shift+H` — and this decides what the reader actually presses to produce
+/// it. It is a rendering of the same keymap, not a second keymap: rebinding an
+/// action changes it in all three modes, and switching mode rebinds nothing.
+///
+/// Only the `Ctrl` in a stored combo moves. A binding that is *already* bare —
+/// `/`, `n`, `m`, `[`, `Home` — is bare in all three modes, because those keys
+/// were never reached through a modifier and there is nothing to respell. That
+/// is what keeps `Linux` identical to how the app behaved before this existed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum KeyMode {
+    /// `Ctrl+F` is Ctrl+F. The default, and byte-for-byte the pre-mode
+    /// behaviour on both platforms.
+    #[default]
+    Linux,
+    /// `Ctrl+F` is Cmd+F — the modifier every other Mac application means by
+    /// "the primary one". Note this hands `Cmd+C`/`Cmd+F` to dreamd rather than
+    /// to the webview's own copy and find, which is the point.
+    Mac,
+    /// `Ctrl+F` is a bare `f`. Modal editing's bargain: the document is not a
+    /// text field, so the letters are free, and every action costs one keypress.
+    ///
+    /// Shift and Alt survive the strip — `Ctrl+Shift+H` becomes `Shift+H` — so
+    /// a mode that drops the primary modifier still has a way to say "the other
+    /// one". Meta is dropped alongside Ctrl so a combo recorded in `Mac` mode
+    /// goes bare here too.
+    Vim,
+}
+
+impl KeyMode {
+    /// Rewrite one stored combo into the form this mode expects the reader to
+    /// press. Pure, total, and mirrored by `resolveCombo` in `ui/app.js` —
+    /// change one, change the other.
+    ///
+    /// Unknown modifiers and the key itself are passed through untouched, so a
+    /// combo this function does not understand degrades to "unchanged" rather
+    /// than to "unmatchable".
+    pub fn resolve(self, combo: &str) -> String {
+        let mut parts: Vec<&str> = combo.split('+').collect();
+        // A trailing `+` is the literal plus key, not an empty modifier: `Ctrl++`
+        // splits to ["Ctrl", "", ""]. Pop the key off first and the rest is
+        // unambiguously modifiers.
+        let key = parts.pop().unwrap_or_default();
+        let mut out: Vec<String> = Vec::with_capacity(parts.len() + 1);
+        for part in parts {
+            let primary = part.eq_ignore_ascii_case("ctrl") || part.eq_ignore_ascii_case("meta");
+            match (self, primary) {
+                (_, false) => out.push(part.to_string()),
+                (KeyMode::Linux, true) => out.push("Ctrl".into()),
+                (KeyMode::Mac, true) => out.push("Meta".into()),
+                (KeyMode::Vim, true) => {}
+            }
+        }
+        out.push(key.to_string());
+        out.join("+")
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Keymap {
+    /// How the combos below are spelled on the keyboard — see [`KeyMode`]. The
+    /// one field here that is not itself a binding.
+    pub mode: KeyMode,
     /// Open the Telescope-style file palette.
     pub palette: String,
     /// Previous / next result inside the palette (vim-style).
@@ -401,6 +465,21 @@ pub struct Keymap {
     /// Jump the reading pane to the top / bottom of the open document.
     pub jump_top: String,
     pub jump_bottom: String,
+    /// Scroll the reading pane a line at a time, and half a screen at a time —
+    /// vim's `j`/`k` and `Ctrl+D`/`Ctrl+U`, with the modifier dropped off the
+    /// last pair because a reader is not in a text field and `d`/`u` are free.
+    ///
+    /// Stored bare, so [`KeyMode`] leaves all four alone: scrolling is the one
+    /// thing that should never cost a modifier, in any mode.
+    pub scroll_down: String,
+    pub scroll_up: String,
+    pub scroll_half_down: String,
+    pub scroll_half_up: String,
+    /// Move keyboard focus one pane left / right — sidebar, document, and
+    /// whichever panel is docked on the right. Vim's window keys, minus the
+    /// `Ctrl+W` prefix a reader has no use for.
+    pub pane_left: String,
+    pub pane_right: String,
     /// Open the next / previous markdown file in the sidebar's order.
     pub next_file: String,
     pub prev_file: String,
@@ -431,10 +510,17 @@ pub struct Keymap {
 impl Default for Keymap {
     fn default() -> Self {
         Self {
+            mode: KeyMode::default(),
             palette: "Ctrl+F".into(),
             palette_prev: "Ctrl+P".into(),
             palette_next: "Ctrl+N".into(),
-            highlight: "Ctrl+H".into(),
+            // `Ctrl+Shift+H`, not `Ctrl+H`: pane navigation took the plain one,
+            // because `h` is the left half of `hjkl` and a pane key that is not
+            // `h` is not worth having. Highlighting keeps the same letter one
+            // Shift away, and bare `h` still does it whenever
+            // `quick_highlight` is on — which is the default, and which is how
+            // most readers reach it anyway.
+            highlight: "Ctrl+Shift+H".into(),
             send_stack: "Ctrl+Enter".into(),
             send_stack_tmux: None,
             toggle_stack: "Ctrl+O".into(),
@@ -460,6 +546,21 @@ impl Default for Keymap {
             // "Shift+G" in one line.
             jump_top: "Home".into(),
             jump_bottom: "End".into(),
+            // The four scroll keys, bare in every mode (see the field docs).
+            // `d`/`u` are half a viewport rather than a whole one because that
+            // is what vim's `Ctrl+D`/`Ctrl+U` do, and because a half-screen
+            // jump leaves a band of already-read text on screen to land on.
+            scroll_down: "j".into(),
+            scroll_up: "k".into(),
+            scroll_half_down: "d".into(),
+            scroll_half_up: "u".into(),
+            // `h`/`j` rather than `h`/`l`: left and right, spelled with the two
+            // keys asked for. In `vim` mode these strip to bare `h` and `j`,
+            // where `j` is already `scroll_down` and `h` is already
+            // `quick_highlight` — a real clash, reported by the settings
+            // panel's clash warning rather than hidden, and one rebind away.
+            pane_left: "Ctrl+H".into(),
+            pane_right: "Ctrl+J".into(),
             // `]`/`[` is the near-universal "next/prev thing" convention, and
             // unlike a bare letter it costs no typing keyspace a reader wants:
             // the dispatch sits below the `isEditable` and overlay guards, so
@@ -1213,5 +1314,81 @@ mod tests {
             Some("Ctrl+Alt+Enter")
         );
         assert_eq!(cfg.keymap.send_stack, "Ctrl+Enter", "a sibling was lost");
+    }
+
+    // ---- key modes -------------------------------------------------------
+    // `KeyMode::resolve` is mirrored by `resolveCombo` in `ui/app.js`, which is
+    // where matching actually happens; these pin the semantics both sides owe.
+
+    #[test]
+    fn linux_mode_is_the_pre_mode_behaviour() {
+        assert_eq!(KeyMode::default(), KeyMode::Linux);
+        for combo in ["Ctrl+F", "Ctrl+Shift+H", "/", "n", "Home", "["] {
+            assert_eq!(KeyMode::Linux.resolve(combo), combo, "{combo} moved");
+        }
+    }
+
+    #[test]
+    fn mac_mode_respells_the_primary_modifier_and_nothing_else() {
+        assert_eq!(KeyMode::Mac.resolve("Ctrl+F"), "Meta+F");
+        assert_eq!(KeyMode::Mac.resolve("Ctrl+Shift+H"), "Meta+Shift+H");
+        assert_eq!(KeyMode::Mac.resolve("Ctrl+Alt+Enter"), "Meta+Alt+Enter");
+    }
+
+    #[test]
+    fn vim_mode_drops_the_primary_modifier_and_keeps_the_others() {
+        assert_eq!(KeyMode::Vim.resolve("Ctrl+F"), "F");
+        assert_eq!(KeyMode::Vim.resolve("Ctrl+Shift+H"), "Shift+H");
+        assert_eq!(KeyMode::Vim.resolve("Ctrl+Alt+Enter"), "Alt+Enter");
+        // Meta goes too, so a combo recorded in `mac` mode is bare here rather
+        // than stranded behind a modifier this mode has no way to ask for.
+        assert_eq!(KeyMode::Vim.resolve("Meta+F"), "F");
+    }
+
+    #[test]
+    fn a_bare_binding_is_bare_in_every_mode() {
+        // The whole reason `linux` can be the default: modes respell modifiers,
+        // they do not add them. The four scroll keys live or die on this.
+        for mode in [KeyMode::Linux, KeyMode::Mac, KeyMode::Vim] {
+            for combo in ["j", "k", "d", "u", "/", "'", "]", "Home"] {
+                assert_eq!(mode.resolve(combo), combo, "{combo} moved in {mode:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn resolve_survives_a_combo_it_does_not_understand() {
+        // The literal plus key: `Ctrl++` splits to a trailing empty segment
+        // that is the *key*, not a modifier.
+        assert_eq!(KeyMode::Vim.resolve("Ctrl++"), "+");
+        assert_eq!(KeyMode::Mac.resolve("Ctrl++"), "Meta++");
+        // An unknown modifier is passed through rather than dropped, so an
+        // unrecognised combo degrades to "unchanged", never to "unmatchable".
+        assert_eq!(KeyMode::Vim.resolve("Hyper+X"), "Hyper+X");
+        assert_eq!(KeyMode::Vim.resolve(""), "");
+    }
+
+    #[test]
+    fn the_mode_reads_out_of_a_config_file() {
+        assert_eq!(config_of("").keymap.mode, KeyMode::Linux);
+        assert_eq!(
+            config_of("[keymap]\nmode = \"vim\"\n").keymap.mode,
+            KeyMode::Vim
+        );
+        let cfg = config_of("[keymap]\nmode = \"mac\"\n");
+        assert_eq!(cfg.keymap.mode, KeyMode::Mac);
+        // Switching mode rebinds nothing — the stored combos are canonical.
+        assert_eq!(cfg.keymap.palette, "Ctrl+F");
+    }
+
+    #[test]
+    fn pane_navigation_took_ctrl_h_and_highlight_moved_one_shift_away() {
+        let km = Keymap::default();
+        assert_eq!(km.pane_left, "Ctrl+H");
+        assert_eq!(km.pane_right, "Ctrl+J");
+        assert_eq!(km.highlight, "Ctrl+Shift+H");
+        // Bare `h` still highlights out of the box, which is what keeps the
+        // move from costing the reader the gesture they actually use.
+        assert!(km.quick_highlight);
     }
 }

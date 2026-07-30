@@ -64,12 +64,20 @@ let repoRoot = "";
 let hasRepo = true;
 // Overwritten wholesale from Rust at startup, and again whenever the settings
 // panel saves — rebinding a key takes effect without a restart.
+// Every field `Keymap` has, because this literal is what the app runs on until
+// the `get_keymap` round trip lands — a key missing here is one `matchCombo`
+// asks about as `undefined` and answers "no" to, i.e. an action that is quietly
+// dead for the first few frames.
 let keymap = {
+  // Not a binding: how the `Ctrl+` in the combos below is spelled on the
+  // keyboard. "linux" | "mac" | "vim" — see `resolveCombo`.
+  mode: "linux",
   palette: "Ctrl+F",
   palette_prev: "Ctrl+P",
   palette_next: "Ctrl+N",
-  highlight: "Ctrl+H",
+  highlight: "Ctrl+Shift+H",
   send_stack: "Ctrl+Enter",
+  send_stack_tmux: null,
   toggle_stack: "Ctrl+O",
   copy_stack: "Ctrl+C",
   settings: "Ctrl+,",
@@ -80,8 +88,18 @@ let keymap = {
   toggle_view: "Ctrl+M",
   jump_top: "Home",
   jump_bottom: "End",
+  scroll_down: "j",
+  scroll_up: "k",
+  scroll_half_down: "d",
+  scroll_half_up: "u",
+  pane_left: "Ctrl+H",
+  pane_right: "Ctrl+J",
   next_file: "]",
   prev_file: "[",
+  set_mark: "m",
+  jump_mark: "'",
+  jump_back: "Ctrl+[",
+  jump_forward: "Ctrl+]",
   find: "/",
   find_next: "n",
   find_prev: "Shift+N",
@@ -129,7 +147,10 @@ async function init() {
     if (km) keymap = km;
     applyPanelSizes(ui);
   } catch (e) {}
-  $("search-hint").textContent = `Press ${keymap.palette} to search`;
+  // `displayCombo`, not the raw value: what is stored is `Ctrl+F` in every key
+  // mode, and telling a reader in `vim` mode to press Ctrl+F is telling them
+  // to press a combo that does nothing.
+  $("search-hint").textContent = `Press ${displayCombo(keymap.palette)} to search`;
   perf.at("ipc_keymap");
 
   wireEvents();
@@ -1482,7 +1503,7 @@ function reconcileStack(list, pairs) {
   if (!pairs.length && !list.querySelector(".empty")) {
     const msg = document.createElement("div");
     msg.className = "empty";
-    msg.textContent = `No pairs yet. Select text and press ${keymap.highlight}.`;
+    msg.textContent = `No pairs yet. Select text and press ${displayCombo(keymap.highlight)}.`;
     list.appendChild(msg);
   }
 }
@@ -1590,6 +1611,136 @@ function toggleTree() { document.body.classList.toggle("nav-collapsed"); }
 function toggleStack() { $("stack-panel").classList.toggle("open"); refreshStack(); }
 function closeStack() { $("stack-panel").classList.remove("open"); }
 
+// ---- pane navigation -----------------------------------------------------
+// Move the keyboard one pane left or right. The window is a row — sidebar,
+// document, then whichever panels are docked on the right — and this walks it.
+//
+// Only *visible* panes are in the walk, which is what makes one pair of keys
+// enough: with nothing open on the right, `pane_right` from the document has
+// nowhere to go and says so, rather than focusing a panel the reader cannot
+// see. Nothing here opens or closes anything — that is what the toggles are
+// for, and a navigation key that also opened panels would have no way to mean
+// "just move".
+
+/// The panes, left to right, each with a test for whether it is on screen and a
+/// way to hand it the keyboard. Functions rather than elements because the
+/// answer changes with every toggle, and this list is consulted per keypress.
+///
+/// The sidebar and the document are real columns. The three on the right are
+/// not all columns: `#stack-panel` and `#pty-pane` hold a slot each (the stack
+/// insets by the pane's width when both are up), while `#outline-panel` is a
+/// transient overlay floating at `right: 8px` *above* the stack rather than
+/// beside it. It is in the walk anyway, because a panel the reader can see and
+/// click is one the keyboard should be able to reach — and it is ordered
+/// innermost of the three because it is the one drawn on top.
+const PANES = [
+  {
+    id: "sidebar",
+    shown: () => !document.body.classList.contains("nav-collapsed") &&
+                 !document.body.classList.contains("view-mode"),
+    focus: () => $("tree").focus(),
+  },
+  {
+    id: "document",
+    shown: () => true,
+    focus: () => scrollEl.focus({ preventScroll: true }),
+  },
+  {
+    id: "outline",
+    shown: () => $("outline-panel").classList.contains("open"),
+    focus: () => $("outline-panel").focus(),
+  },
+  {
+    id: "stack",
+    shown: () => $("stack-panel").classList.contains("open"),
+    focus: () => $("stack-panel").focus(),
+  },
+  {
+    id: "agent",
+    shown: () => popoutOpen() || $("pty-pane").classList.contains("open"),
+    focus: focusAgent,
+  },
+];
+
+/// `PANES` index of the document, which is the answer to every "where am I"
+/// question that has no better one. Derived rather than written as `2` so
+/// reordering the row above cannot silently point it at a panel.
+const DOC_PANE = PANES.findIndex((p) => p.id === "document");
+
+/// Which pane the keyboard is in now, as an index into `PANES`.
+///
+/// By containment rather than identity: focus is usually on something *inside*
+/// a pane — a tree row, the composer's textarea, the terminal's hidden helper —
+/// and all of those should answer with the pane they sit in. Searched
+/// right-to-left so a nested pane wins over the one it is drawn inside.
+function currentPane() {
+  const active = document.activeElement;
+  if (!active) return DOC_PANE;
+  for (let i = PANES.length - 1; i >= 0; i--) {
+    const host = paneHost(PANES[i].id);
+    if (host && host.contains(active)) return i;
+  }
+  // Focus on <body> — which is where it sits until something claims it —
+  // means the reader has not been anywhere yet. Answer "the document", so a
+  // first press moves off the thing they are reading rather than out of the
+  // sidebar they are not looking at.
+  return DOC_PANE;
+}
+
+function paneHost(id) {
+  if (id === "sidebar") return $("sidebar");
+  if (id === "document") return scrollEl;
+  if (id === "agent") return popoutOpen() ? $("agent-popout") : $("pty-pane");
+  return $(id === "outline" ? "outline-panel" : "stack-panel");
+}
+
+/// Hand the agent surface the keyboard, wherever it currently is.
+///
+/// The card and the dock share one `#agent-body` (they are one body in two
+/// containers), so this asks the containers rather than the body. The card gets
+/// focus on itself, which is the read-only state its own `i` key opens the
+/// composer out of; the dock has no such step, so this goes straight to
+/// whatever the reader would type into.
+function focusAgent() {
+  if (popoutOpen()) { $("agent-card").focus(); return; }
+  // The terminal fallback. Note the way *out* of it is `toggle_pane` or Escape,
+  // both claimed inside xterm — the global handler returns early on any key
+  // aimed at a terminal, so these navigation keys cannot be among them.
+  if (pty.term && !$("pty-pane").classList.contains("native")) { pty.term.focus(); return; }
+  const input = $("agent-input");
+  if (input && input.offsetParent) input.focus();
+  else $("agent-log").focus();
+}
+
+/// Step `dir` panes and focus what you land on. Stops at the ends rather than
+/// wrapping: a row of panels has a left and a right, and wrapping from the
+/// agent back to the sidebar would read as a jump, not a step.
+function focusPane(dir) {
+  const shown = PANES.map((p, i) => (p.shown() ? i : -1)).filter((i) => i >= 0);
+  const here = currentPane();
+  const at = shown.indexOf(here);
+  // `here` is always visible in practice — you cannot be focused inside a
+  // hidden pane — but if it somehow is, treat the move as coming from the
+  // document rather than doing nothing.
+  const from = at >= 0 ? at : shown.indexOf(DOC_PANE);
+  const next = shown[from + dir];
+  if (next === undefined) return;
+  PANES[next].focus();
+  paintPaneFocus();
+}
+
+/// The focus ring. `:focus-visible` will not do this on its own: these panes are
+/// reached by script, and a programmatic `.focus()` on a `tabindex="-1"`
+/// container does not count as keyboard focus to the browser — so without an
+/// explicit class the reader moves the keyboard somewhere with nothing on
+/// screen saying where it went.
+function paintPaneFocus() {
+  for (const p of PANES) {
+    const host = paneHost(p.id);
+    if (host) host.classList.toggle("pane-focus", host.contains(document.activeElement));
+  }
+}
+
 /// Send from inside the stack panel, which is the one send that also *closes*
 /// the panel.
 ///
@@ -1638,6 +1789,32 @@ function exitView() { document.body.classList.remove("view-mode"); }
 // smooth animation over a long document is the one place scrolling can jank.
 function jumpTop() { scrollEl.scrollTo({ top: 0 }); }
 function jumpBottom() { scrollEl.scrollTo({ top: scrollEl.scrollHeight }); }
+
+// Vim's motions over the same scroller, and bound to bare `j`/`k`/`d`/`u` in
+// every key mode — a reader should never reach for a modifier to move down a
+// page. They dispatch below the `isEditable` guard, so the find bar and the
+// annotation box still get plain letters.
+//
+// The document has no caret to move, so these are pure scrolling: `j` is a line
+// the way vim's is, `d`/`u` are *half* a viewport the way `Ctrl+D`/`Ctrl+U`
+// are. Half rather than whole on purpose — it leaves a band of already-read
+// text on screen to land on, which is what makes it a motion rather than a
+// page turn.
+//
+// Instant, not smooth, for the reason `jumpTop` is: key repeat is how a reader
+// actually travels, and a smooth animation per keydown fights the next one.
+function scrollLine(dir) { scrollEl.scrollTop += dir * lineHeight(); }
+function scrollHalf(dir) { scrollEl.scrollTop += dir * scrollEl.clientHeight / 2; }
+
+/// One line of the prose being read, from the stylesheet rather than a constant
+/// — the whole point of tenet 5 is that a palette may set its own type metrics,
+/// and a hard-coded 24px would drift from them. `normal` and any other
+/// non-pixel answer fall back rather than becoming `NaN`, which would silently
+/// stop `j` working at all.
+function lineHeight() {
+  const px = parseFloat(getComputedStyle(contentEl).lineHeight);
+  return Number.isFinite(px) && px > 0 ? px : 24;
+}
 
 // ---- position frames -----------------------------------------------------
 // A reading position is `{ path, top }` — a file and a scroll offset — and it
@@ -4215,6 +4392,13 @@ function isEditable(el) {
 }
 
 function wireKeys() {
+  // The ring has to track focus however it moved, not only when a pane key
+  // moved it — otherwise clicking into the stack leaves the ring on the
+  // document and the next `pane_right` steps from somewhere the reader is not.
+  // `focusin` rather than `focus` because it bubbles, and focus almost always
+  // lands on something *inside* a pane.
+  document.addEventListener("focusin", paintPaneFocus);
+
   document.addEventListener("keydown", (e) => {
     // The pane's keys are the child's, including every combo the branches below
     // claim. dreamd keeps exactly two — `toggle_pane` and Escape (D12) — and
@@ -4284,6 +4468,25 @@ function wireKeys() {
     // key, both directions.
     if (matchCombo(e, keymap.toggle_pane)) { e.preventDefault(); togglePane(); return; }
 
+    // Pane navigation is above `isEditable` too, and has to be: focusing a pane
+    // usually means focusing the thing in it you would type into, so a reader
+    // who navigated *into* the composer with these keys must be able to
+    // navigate back out with them. A binding checked only below the guard would
+    // be a one-way door.
+    //
+    // Only while it carries a modifier, though. In `vim` mode these strip to
+    // bare `h`/`j`, and a bare key claimed out of a text field is a key the
+    // reader cannot type — so there the check falls through to the bare-letter
+    // block below the guard, with every other bare binding, and the composer
+    // keeps its letters. The cost is honest and local: in `vim` mode you leave
+    // a text field the way you always could, with Escape.
+    if (hasModifier(keymap.pane_left) && matchCombo(e, keymap.pane_left)) {
+      e.preventDefault(); focusPane(-1); return;
+    }
+    if (hasModifier(keymap.pane_right) && matchCombo(e, keymap.pane_right)) {
+      e.preventDefault(); focusPane(1); return;
+    }
+
     // Bare-letter shortcuts must not fire while typing in a field.
     if (isEditable(e.target)) return;
 
@@ -4330,6 +4533,24 @@ function wireKeys() {
     if (matchCombo(e, keymap.toggle_stack)) { e.preventDefault(); toggleStack(); return; }
     if (matchCombo(e, keymap.jump_top)) { e.preventDefault(); jumpTop(); return; }
     if (matchCombo(e, keymap.jump_bottom)) { e.preventDefault(); jumpBottom(); return; }
+    // The scroll motions, checked before pane navigation so that in `vim` mode —
+    // where `pane_right` strips to a bare `j` — the key that arrives keeps
+    // scrolling. Losing a pane key to a rebind is a nuisance; losing `j` would
+    // be losing the reason to be in vim mode.
+    if (matchCombo(e, keymap.scroll_down)) { e.preventDefault(); scrollLine(1); return; }
+    if (matchCombo(e, keymap.scroll_up)) { e.preventDefault(); scrollLine(-1); return; }
+    if (matchCombo(e, keymap.scroll_half_down)) { e.preventDefault(); scrollHalf(1); return; }
+    if (matchCombo(e, keymap.scroll_half_up)) { e.preventDefault(); scrollHalf(-1); return; }
+    // The other half of the pane keys: the bare case the guard above skipped.
+    // Both branches are needed and neither is dead — `hasModifier` decides which
+    // one a given mode uses, and it is false for exactly the modes where these
+    // must not be claimed out of a text field.
+    if (!hasModifier(keymap.pane_left) && matchCombo(e, keymap.pane_left)) {
+      e.preventDefault(); focusPane(-1); return;
+    }
+    if (!hasModifier(keymap.pane_right) && matchCombo(e, keymap.pane_right)) {
+      e.preventDefault(); focusPane(1); return;
+    }
     if (matchCombo(e, keymap.next_file)) { e.preventDefault(); stepFile(1); return; }
     if (matchCombo(e, keymap.prev_file)) { e.preventDefault(); stepFile(-1); return; }
     if (matchCombo(e, keymap.find)) { e.preventDefault(); openFind(); return; }
@@ -4406,9 +4627,11 @@ function showTip(el) {
   clearTimeout(tipTimer);
   tipTarget = el;
   const tip = $("tooltip");
+  // Through `displayCombo`, so a tooltip shows the key this mode actually
+  // wants pressed rather than the canonical form the config file stores.
   const combo = el.dataset.tipKey ? keymap[el.dataset.tipKey] : null;
   tip.innerHTML = escapeHtml(el.dataset.tip) +
-    (combo ? `<span class="tt-key">${escapeHtml(combo)}</span>` : "");
+    (combo ? `<span class="tt-key">${escapeHtml(displayCombo(combo))}</span>` : "");
   tip.classList.add("show");
 
   // Prefer below the button; flip above when it would clip the viewport.
@@ -4439,9 +4662,69 @@ async function copyStack() {
   } catch (e) { toast(String(e)); }
 }
 
+/// Rewrite a stored combo into the form the reader's `keymap.mode` expects them
+/// to press. The twin of `KeyMode::resolve` in `src-tauri/src/config.rs` —
+/// change one, change the other; the tests there pin the semantics.
+///
+/// Every consumer of a combo goes through here — `matchCombo`, `displayCombo`
+/// and `comboClashes` — which is what makes a mode a *rendering* of the keymap
+/// rather than a second keymap: the config file keeps one canonical `Ctrl+…`
+/// form, rebinding an action changes it in all three modes, and switching mode
+/// rewrites nothing on disk.
+///
+/// Only `Ctrl` (and `Meta`, so a combo recorded in `mac` mode is not stranded)
+/// moves. A binding that is already bare stays bare in all three modes: modes
+/// respell modifiers, they never add one. That is the whole reason `linux` can
+/// be the default and still be byte-for-byte the old behaviour.
+function resolveCombo(combo) {
+  if (!combo) return combo;
+  const mode = (keymap && keymap.mode) || "linux";
+  if (mode === "linux") return combo;
+  const parts = combo.split("+");
+  // Pop the key first: `Ctrl++` is the literal plus key and splits to a
+  // trailing empty segment that is the key, not an empty modifier.
+  const key = parts.pop();
+  const out = [];
+  for (const p of parts) {
+    const primary = /^(ctrl|meta)$/i.test(p);
+    if (!primary) out.push(p);              // unknown modifiers pass through
+    else if (mode === "mac") out.push("Meta");
+    // vim: dropped
+  }
+  out.push(key);
+  return out.join("+");
+}
+
+/// Does this binding, *as the current mode spells it*, need a modifier held?
+///
+/// The question the dispatcher asks before deciding whether a binding may be
+/// claimed out of a text field. Asked of the resolved form, because that is the
+/// one the reader presses: `Ctrl+H` is modified in `linux` and `mac` and bare in
+/// `vim`, and the answer has to change with it.
+function hasModifier(combo) {
+  if (!combo) return false;
+  const parts = resolveCombo(combo).split("+");
+  parts.pop(); // the key, which may itself be `+` and leave an empty segment
+  return parts.some((p) => p !== "");
+}
+
+/// The identity of a binding: two combos with the same key are the same
+/// shortcut, whatever their spelling. `matchCombo` compares case-insensitively
+/// and by modifier *set*, so anything asking "are these the same binding?" has
+/// to do the same or it will miss real collisions — `Ctrl+M` resolves to `M`
+/// while `set_mark` is `m`, and those are one key, not two.
+///
+/// Modifiers are sorted as well as lowercased. `comboFromEvent` always writes
+/// them in one order, but a hand-edited `config.toml` need not.
+function comboKey(combo) {
+  const parts = resolveCombo(combo).toLowerCase().split("+");
+  const key = parts.pop();
+  return [...parts.sort(), key].join("+");
+}
+
 function matchCombo(e, combo) {
   if (!combo) return false;
-  const parts = combo.toLowerCase().split("+");
+  const parts = resolveCombo(combo).toLowerCase().split("+");
   const key = parts.pop();
   if (e.ctrlKey !== parts.includes("ctrl")) return false;
   if (e.shiftKey !== parts.includes("shift")) return false;
@@ -4450,13 +4733,16 @@ function matchCombo(e, combo) {
   return (e.key || "").toLowerCase() === key;
 }
 
-/// Render a combo the way the platform writes it. Purely cosmetic — what gets
-/// stored and matched is always the `Ctrl+Shift+X` form.
+/// Render a combo the way the reader will press it: through `resolveCombo`
+/// first, so a tooltip in `vim` mode says `f` and not `Ctrl+F`, then through the
+/// platform's symbols. Purely cosmetic — what gets stored is always the
+/// canonical `Ctrl+Shift+X` form.
 const MAC_SYMBOLS = { ctrl: "⌃", shift: "⇧", alt: "⌥", meta: "⌘" };
 function displayCombo(combo) {
   if (!combo) return "—";
-  if (!document.body.classList.contains("mac")) return combo;
-  const parts = combo.split("+");
+  const resolved = resolveCombo(combo);
+  if (!document.body.classList.contains("mac")) return resolved;
+  const parts = resolved.split("+");
   const key = parts.pop();
   return parts.map((p) => MAC_SYMBOLS[p.toLowerCase()] || p + "+").join("") + key;
 }
@@ -4479,6 +4765,12 @@ const KEY_ACTIONS = [
   { id: "toggle_pane", label: "Toggle Claude Code pane", sub: "Claude Code in this repo, docked beside the document — the same key gets you back out of it" },
   { id: "jump_top", label: "Jump to top", sub: "Scroll the open document to the start" },
   { id: "jump_bottom", label: "Jump to bottom" },
+  { id: "scroll_down", label: "Scroll down a line", sub: "Bare in every key mode — scrolling should never cost a modifier" },
+  { id: "scroll_up", label: "Scroll up a line" },
+  { id: "scroll_half_down", label: "Scroll down half a screen", sub: "vim's Ctrl+D, without the Ctrl" },
+  { id: "scroll_half_up", label: "Scroll up half a screen" },
+  { id: "pane_left", label: "Focus pane to the left", sub: "Walks the visible panes: sidebar, document, contents, stack, agent" },
+  { id: "pane_right", label: "Focus pane to the right" },
   { id: "next_file", label: "Next file", sub: "Move through the sidebar's order without touching the tree — wraps at the ends" },
   { id: "prev_file", label: "Previous file" },
   { id: "find", label: "Find in document", sub: "Search the open file's text; Enter keeps the matches and closes the bar, Esc clears them" },
@@ -4556,10 +4848,42 @@ function shadowed(key) {
 }
 
 // ---- keys tab ----
+const KEY_MODES = [
+  { id: "linux", label: "Ctrl", sub: "Ctrl+F opens the palette. The default." },
+  { id: "mac", label: "Cmd", sub: "Cmd+F instead — including Cmd+C and Cmd+F, which dreamd then claims from the webview" },
+  { id: "vim", label: "None", sub: "Bare f. Every binding loses its Ctrl; Shift and Alt survive" },
+];
+
 function renderKeys() {
   const box = $("st-keys");
   box.innerHTML = "";
   const clashes = comboClashes();
+
+  // The mode picker, above the list it re-renders. It changes how every combo
+  // below is *spelled*, never what is stored — which is why switching it and
+  // switching back is a no-op on the config file.
+  const modeRow = document.createElement("div");
+  modeRow.className = "st-row";
+  const current = keymap.mode || "linux";
+  modeRow.innerHTML =
+    `<span class="lbl">Modifier for every shortcut` +
+    `<span class="sub">${escapeHtml(KEY_MODES.find((m) => m.id === current).sub)}</span>` +
+    (shadowed("keymap.mode") ? `<span class="sub shadowed">overridden by .dreamd.toml in this repo</span>` : "") +
+    `</span>`;
+  const sel = document.createElement("select");
+  for (const m of KEY_MODES) {
+    const opt = document.createElement("option");
+    opt.value = m.id;
+    opt.textContent = m.label;
+    opt.selected = m.id === current;
+    sel.appendChild(opt);
+  }
+  sel.onchange = async () => {
+    if (await applyPatch({ keymap: { mode: sel.value } })) renderKeys();
+    else sel.value = current;
+  };
+  modeRow.appendChild(sel);
+  box.appendChild(modeRow);
 
   for (const action of KEY_ACTIONS) {
     const row = document.createElement("div");
@@ -4571,8 +4895,9 @@ function renderKeys() {
       (shadowed("keymap." + action.id) ? `<span class="sub shadowed">overridden by .dreamd.toml in this repo</span>` : "") +
       `</span>`;
     const btn = document.createElement("button");
-    btn.className = "combo" + (clashes.has(combo) ? " clash" : "");
+    btn.className = "combo" + (combo && clashes.has(comboKey(combo)) ? " clash" : "");
     btn.textContent = displayCombo(combo);
+    // The stored form, which in a non-`linux` mode is not what the button says.
     btn.title = combo || "";
     btn.onclick = () => startRecording(action.id, btn);
     row.appendChild(btn);
@@ -4605,21 +4930,42 @@ function renderKeys() {
   if (clashes.size) {
     const warn = document.createElement("p");
     warn.className = "st-warn";
-    warn.textContent = "Two actions share a shortcut — the first one listed wins.";
+    // Named differently in `vim` mode, because there the clash is not something
+    // the reader did — it is what dropping the modifier off every binding costs,
+    // and saying "two actions share a shortcut" would read as their mistake.
+    warn.textContent = (keymap.mode === "vim")
+      ? "Without a modifier some bindings collide — the first one listed wins. " +
+        "Rebind the loser, or switch the modifier above."
+      : "Two actions share a shortcut — the first one listed wins.";
     box.appendChild(warn);
   }
 }
 
 /// Combos bound to more than one action. The global handler is an if-chain, so
 /// a duplicate is not an error — it just means the later action is unreachable.
+///
+/// Compared *after* `resolveCombo`, which is what makes this carry its weight in
+/// `vim` mode: stripping the primary modifier off every binding collapses pairs
+/// that were distinct with it on — `Ctrl+M` onto `m`, `Ctrl+N` onto `n`,
+/// `Ctrl+[` onto `[`, the new `Ctrl+J` onto `j` — and those collisions are
+/// exactly the ones a reader has no other way to discover. Keyed by the resolved
+/// combo, so the caller must resolve before asking.
 function comboClashes() {
   const seen = new Map();
   const dupes = new Set();
   for (const a of KEY_ACTIONS) {
     const c = keymap[a.id];
     if (!c) continue;
-    if (seen.has(c)) dupes.add(c);
-    seen.set(c, a.id);
+    const k = comboKey(c);
+    if (seen.has(k)) dupes.add(k);
+    seen.set(k, a.id);
+  }
+  // Bare `h` is a binding too, and in `vim` mode it is the one that shadows
+  // pane-left. It is not in KEY_ACTIONS because it is a checkbox, not a combo.
+  if (keymap.quick_highlight) {
+    for (const a of KEY_ACTIONS) {
+      if (keymap[a.id] && comboKey(keymap[a.id]) === "h") dupes.add("h");
+    }
   }
   return dupes;
 }
@@ -4659,16 +5005,28 @@ async function onRecordKey(e) {
 
 const MODIFIER_KEYS = ["Control", "Shift", "Alt", "Meta"];
 
+/// Encode a keypress as a combo to *store*, which is not the same as the combo
+/// the reader just pressed — the config file speaks one canonical `Ctrl+…`
+/// dialect and `resolveCombo` translates it back out per mode.
+///
+/// The only translation needed on the way in is `mac`: there Cmd *is* the
+/// primary modifier, so a recorded Cmd is written down as `Ctrl` and the
+/// binding keeps working after a switch to `linux`. Two consequences worth
+/// naming, both inherent to the mode rather than to this function: in `mac`
+/// mode a real Ctrl records as the primary modifier too (that mode has no way
+/// to spell Ctrl separately), and a key recorded in `vim` mode is stored bare —
+/// which is exactly what was pressed, and so stays bare in every other mode.
 function comboFromEvent(e) {
   const key = e.key || "";
   if (MODIFIER_KEYS.includes(key)) return null;
   // `matchCombo` splits on "+", so a combo whose key is "+" can never match.
   if (key === "+") { toast("“+” can't be used as a shortcut key"); return null; }
+  const macMode = (keymap.mode || "linux") === "mac";
   const parts = [];
-  if (e.ctrlKey) parts.push("Ctrl");
+  if (e.ctrlKey || (macMode && e.metaKey)) parts.push("Ctrl");
   if (e.shiftKey) parts.push("Shift");
   if (e.altKey) parts.push("Alt");
-  if (e.metaKey) parts.push("Meta");
+  if (e.metaKey && !macMode) parts.push("Meta");
   parts.push(key);
   return parts.join("+");
 }
