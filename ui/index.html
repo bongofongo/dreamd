@@ -740,6 +740,96 @@
         background: var(--border, #2e2940); border-radius: 4px;
       }
 
+      /* ---- the pop-out (`agent.popout`) -----------------------------------
+         The same conversation as the dock, over the window instead of beside
+         it. A dock spends width for as long as it is open, which is the right
+         trade for a session you work alongside and the wrong one for an answer
+         you asked for in passing and want to read.
+
+         `#agent-body` is **moved** in here rather than copied — see
+         `raisePopout` in app.js — so everything below this block styles the one
+         subtree in whichever container currently holds it. That is why the
+         rules are scoped to `#agent-popout` rather than written as their own
+         classes: the dock's version of the same element must not change.
+
+         Deliberately **not** a `.modal-overlay`: no backdrop, no dim, and
+         `pointer-events: none` on the full-window wrapper so every click
+         outside the card lands on the document underneath. The reader can keep
+         reading, keep highlighting and keep stacking with the answer up. It is
+         a card that floats, not a dialog that blocks — which is also why
+         Escape's first job here is to give the composer back rather than to
+         close.
+
+         z-index sits above the two docks (20/21) and below the palette (50) and
+         the modals (60): those *are* modal, and one raised over this card is
+         the newer thing. */
+      #agent-popout {
+        display: none; position: fixed; inset: 0; z-index: 40;
+        place-items: center; pointer-events: none;
+      }
+      #agent-popout.open { display: grid; }
+
+      /* No header. Not a slimmer one — none: no title, no dot, no model chips,
+         no permission select, no ✕. Everything the dock's header offers is
+         either available from the settings panel or costs a restart, and a card
+         centred over the document is the one surface where a strip of chrome is
+         the first thing the eye lands on. The keyboard is the way out (Escape)
+         and the way in (`i`).
+
+         Sized in `min()` against both a fixed maximum and the viewport, so it
+         is a readable measure on a wide window and still fits a narrow one
+         without a media query. Not draggable and not resizable: the whole
+         proposition is that it needs no managing. */
+      #agent-card {
+        pointer-events: auto;
+        display: flex; flex-direction: column;
+        width: min(720px, 78vw); height: min(560px, 72vh);
+        border: 1px solid var(--border, #2e2940); border-radius: 12px;
+        background: var(--sidebar-bg, #100e17);
+        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
+        overflow: hidden; outline: none;
+      }
+      /* Focused and read-only: the accent edge is the whole of the "press `i`"
+         affordance that is not words. `:focus-within` rather than `:focus`, so
+         the card still reads as the active surface while the caret is in the
+         composer it grew. */
+      #agent-popout.open:focus-within #agent-card { border-color: var(--accent, #a48cf5); }
+      #agent-popout #agent-body { display: flex; }
+      #agent-popout #agent-log { padding: 16px 18px 10px; }
+      /* Read-only until asked. `display: none` rather than a height animation:
+         the composer is a flex item in a column, and a hidden one must cost the
+         log nothing. */
+      #agent-popout:not(.editing) #agent-composer { display: none; }
+
+      /* The one line of chrome, and it is a sentence rather than a control: how
+         to type, or what the agent is doing while it is doing it. It occupies
+         the bottom edge only while the composer does not, so the card never
+         shows both — see `paintPopout`. */
+      #agent-hint {
+        flex: 0 0 auto; padding: 8px 18px 12px;
+        font-size: 11px; letter-spacing: .04em; opacity: .45;
+        display: flex; gap: 6px; align-items: center;
+      }
+      #agent-popout.editing #agent-hint { display: none; }
+      #agent-hint kbd {
+        font-family: var(--font-mono, ui-monospace, Menlo, monospace);
+        font-size: 10px; padding: 1px 5px; border-radius: 4px;
+        border: 1px solid var(--border, #2e2940); background: var(--btn-bg, #1f1c2b);
+      }
+      /* Busy reads in the accent and drops the dimming — it is the one thing
+         this line says that is news rather than instruction. */
+      #agent-hint.busy { opacity: .8; color: var(--accent, #a48cf5); }
+
+      /* The MCP strip travels into the card with the body, and lands between
+         the log and the composer — the card has no top chrome and this is not
+         the exception, and a status line *below* the box you type into reads as
+         something that box produced. Its border flips to match: in the dock it
+         separates itself from the log below it, here from the log above. */
+      #agent-popout.mcp-warn #pty-mcp { display: flex; }
+      #agent-popout #pty-mcp {
+        border-bottom: none; border-top: 1px solid var(--border, #2e2940);
+      }
+
       /* The `::highlight()` rules that paint matches are deliberately NOT here.
          They are written into `#find-css` the first time the bar is opened —
          see the comment on that element and `installFindCss` in app.js. */
@@ -897,7 +987,10 @@
          costs nothing: the pane's child process keeps running behind
          `display: none`, its scrollback is intact, and `toggle_pane` brings it
          back exactly as it was. View mode is the distraction-free reading
-         state, and a live terminal is the distraction. */
+         state, and a live terminal is the distraction. `#agent-popout` is the
+         same conversation in a different box and is in the list for the same
+         reason — more so, because it is the one agent surface that sits *over*
+         the document view mode exists to clear. */
       /* `#drag-strip` is deliberately absent from this list: it is the whole
          reason the list can hide `#titlebar` at all. See its rule at the top
          of this stylesheet. */
@@ -906,6 +999,7 @@
       body.view-mode #btn-expand,
       body.view-mode #outline-panel,
       body.view-mode #pty-pane,
+      body.view-mode #agent-popout,
       body.view-mode #stack-panel { display: none; }
       /* One column, not `0 1fr` — and the difference is the whole screen.
          `display: none` takes the sidebar out of grid *placement* entirely,
@@ -1015,6 +1109,18 @@
       .st-row .lbl { flex: 1; min-width: 0; }
       .st-row .lbl .sub { display: block; font-size: 11px; opacity: 0.55; }
       .st-row .shadowed { font-size: 11px; color: var(--hl, #f2d16b); }
+      /* The panel's only `<select>`. Styled like the buttons beside it rather
+         than left to the platform: WebKitGTK draws an unstyled select out of
+         the *system* theme, which on a dark palette is a light grey box in the
+         middle of the panel. `#pty-mode` in the pane header carries the same
+         rule for the same reason. */
+      .st-row select {
+        font: inherit; font-size: 12px; cursor: pointer;
+        padding: 4px 8px; border-radius: 6px;
+        border: 1px solid var(--border, #2e2940);
+        background: var(--btn-bg, #1f1c2b); color: inherit;
+      }
+      .st-row select:disabled { opacity: 0.4; cursor: default; }
       .combo {
         font-family: var(--font-mono, ui-monospace, Menlo, monospace); font-size: 12px;
         min-width: 120px; text-align: center;
@@ -1222,7 +1328,7 @@
            a small empty box over each one. */
         #titlebar, #drag-strip, #sidebar, #btn-expand,
         #outline-panel, #stack-panel, #stale-rail, #find-bar, #pty-pane,
-        #pane-resize,
+        #pane-resize, #agent-popout,
         #file-menu, #tooltip, #toast,
         #palette-overlay, .modal-overlay,
         button.code-copy { display: none !important; }
@@ -1495,6 +1601,28 @@
     <div id="file-menu">
       <div class="fm-item" id="fm-copy">Copy path</div>
       <div class="fm-item danger" id="fm-delete">Delete file</div>
+    </div>
+
+    <!-- The pop-out agent. A child of <body> rather than of `#main-wrap`,
+         because "centred on the window" is what it means: `#main-wrap` excludes
+         the titlebar and the tree, and a card centred on *that* sits visibly low
+         and to the right of the window it belongs to.
+
+         Empty but for the hint, and that is the design: `#agent-body` is moved
+         in here from the dock on open and moved back on close. One conversation,
+         two containers — moving a node carries its children and its listeners
+         with it, so a streaming block keeps streaming, the tool ticker keeps its
+         rows, and a permission card raised while the pane was docked is still
+         there, still answerable, in the card. Duplicating the subtree would have
+         meant two logs to keep in step and two ids for every element in them.
+
+         `tabindex="-1"` on the card: focusable by click and by script, and out
+         of the Tab order, which is what makes `i` a key the card can claim
+         without claiming it from the reader. See `raisePopout` in app.js. -->
+    <div id="agent-popout">
+      <div id="agent-card" tabindex="-1" role="region" aria-label="Claude">
+        <div id="agent-hint"></div>
+      </div>
     </div>
 
     <div id="palette-overlay">

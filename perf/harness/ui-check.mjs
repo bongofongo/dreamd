@@ -70,6 +70,12 @@ await page.addInitScript(({ base, palettes }) => {
         tree_width: 260, stack_width: 280, pane_width: 380, pane_height: 240,
         menubar: false, titlebar: false,
       },
+      // `config::Agent` is a plain struct too, and the Window tab now renders
+      // two of its fields. Spelled out for the same reason `ui` is.
+      agent: {
+        position: "right", permission_mode: "accept-edits",
+        surface: "native", popout: "never",
+      },
     },
     // What `mode: "system"` resolves to. The page is opened with
     // `colorScheme: "dark"`, so this is what Rust would have answered.
@@ -257,6 +263,35 @@ check(
   chromeLabels.includes("Terminal agent pane"),
   `got ${JSON.stringify(chromeLabels)}`,
 );
+check(
+  "and so is where the conversation is drawn",
+  chromeLabels.includes("Pop-out agent"),
+  `got ${JSON.stringify(chromeLabels)}`,
+);
+// The select's round trip. Its *effect* is checked on the pane pages below,
+// against a page booted into each value; this is only that the control writes
+// the key those pages read.
+const popSelect = page.locator("#st-window .st-row", { hasText: "Pop-out agent" }).locator("select");
+check("the pop-out starts from the config payload", (await popSelect.inputValue()) === "never");
+await popSelect.selectOption("send");
+await page.waitForTimeout(200);
+check(
+  "choosing one writes agent.popout",
+  (await page.evaluate(() => window.__STATE__.config.agent.popout)) === "send",
+);
+// Native-only, and the row says so by going dead rather than by disappearing —
+// a control that vanished would leave a reader who turned the terminal on
+// hunting for a setting that was there a moment ago.
+const surfaceBox = page.locator("#st-window .st-row", { hasText: "Terminal agent pane" })
+  .locator('input[type="checkbox"]');
+await surfaceBox.click();
+await page.waitForTimeout(200);
+check("the terminal fallback disables the pop-out row", await popSelect.isDisabled());
+await surfaceBox.click();
+await page.waitForTimeout(200);
+check("and turning it back off re-enables it", !(await popSelect.isDisabled()));
+await popSelect.selectOption("never");
+await page.waitForTimeout(150);
 const titlebarBox = page.locator("#st-window .st-row", { hasText: "Native titlebar" })
   .locator('input[type="checkbox"]');
 check("titlebar starts from the config payload", !(await titlebarBox.isChecked()));
@@ -1174,7 +1209,7 @@ check("but the passage is still painted", (await priorAttr(STACKED)) !== null);
 // The stub is a named function rather than an inline arrow because it is
 // installed on two pages: one docked bottom and one docked right, which is the
 // only way to assert `agent.position` actually reaches the layout.
-const paneStub = ({ base, position, surface }) => {
+const paneStub = ({ base, position, surface, popout }) => {
   const calls = [];
   window.__CALLS__ = calls;
   // T6's send stack and the queue behind it, mirroring `src-tauri/src/flow.rs`
@@ -1195,7 +1230,7 @@ const paneStub = ({ base, position, surface }) => {
   // terminal, which is now the *fallback* surface, and the conversation log
   // belongs to the native one, which is the default. A page that wants the
   // terminal has to say so, exactly as a reader would.
-  window.__AGENT__ = { position, permission_mode: "accept-edits", surface };
+  window.__AGENT__ = { position, permission_mode: "accept-edits", surface, popout };
   // What `mcp_status` answers. Healthy, so the strip is hidden on boot and the
   // checks that want it have to say what is wrong.
   window.__MCP__ = { armed: true, serving: true, clients: 1 };
@@ -1285,7 +1320,12 @@ const paneStub = ({ base, position, surface }) => {
           // Claude Code's JSON into events, and this page owns turning events
           // into DOM. The seam between them is `__EMIT__("agent-event", …)`,
           // which is exactly what `main.rs` emits.
-          case "agent_spawn": return true;
+          case "agent_spawn":
+            // The one failure worth stubbing: `claude` not on the login shell's
+            // PATH is what `agent::claude::resolve` refuses on, and it is the
+            // thing a headerless pop-out has nowhere to say.
+            if (window.__SPAWN_FAILS__) throw "claude was not found on your PATH";
+            return true;
           case "agent_send": case "agent_interrupt": case "agent_kill": return null;
           case "agent_decide": window.__DECIDED__.push({ ...args }); return true;
           // Stands in for `markdown::render_with`. Deliberately *not* a real
@@ -1322,13 +1362,18 @@ const paneStub = ({ base, position, surface }) => {
 
 /// A page with the pane stub installed, docked to `position`, booted as far as
 /// the document.
-async function newPanePage(position, surface = "terminal") {
+/// `allowError` is for the one page that provokes a failure on purpose: a
+/// `console.error` is otherwise a harness failure, and the pop-out's
+/// cannot-start check needs the spawn to reject.
+async function newPanePage(position, surface = "terminal", popout = "never", allowError = null) {
   const p = await newPage();
   p.on("pageerror", (e) => results.push(`FAIL pageerror (pane/${position}): ` + e.message));
   p.on("console", (m) => {
-    if (m.type() === "error") results.push(`FAIL console.error (pane/${position}): ` + m.text());
+    if (m.type() !== "error") return;
+    if (allowError && m.text().includes(allowError)) return;
+    results.push(`FAIL console.error (pane/${position}): ` + m.text());
   });
-  await p.addInitScript(paneStub, { base, position, surface });
+  await p.addInitScript(paneStub, { base, position, surface, popout });
   await p.goto(pathToFileURL(join(UI, "index.html")).href);
   await p.waitForFunction(() => document.getElementById("content").textContent.includes("alpha bravo"));
   return p;
@@ -2044,6 +2089,115 @@ check("and never reaches the pty command", await nat.evaluate(() =>
   !window.__CALLS__.some((c) => c.cmd === "pty_model")));
 
 await nat.close();
+
+// --- the pop-out (`agent.popout`) -------------------------------------------
+// Three pages, because `popout` is read once on the pane's first open — the
+// same reason `agent.position` gets one per value below.
+//
+// What is asserted is *where the conversation is* and *who has the keyboard*:
+// the card holds one moved `#agent-body`, not a second copy of it, and the
+// composer is absent until asked for. Whether the card is pretty, centred and
+// shadowed is CSS in a browser that is not WebKitGTK, and stays a hand-check.
+const pop = await newPanePage("right", "native", "always");
+await pop.keyboard.press("Control+t");
+await pop.waitForFunction(() => typeof agent !== "undefined" && agent.running, null, { timeout: 15000 })
+  .catch(() => {});
+await pop.waitForTimeout(300);
+
+check("`always` raises the card instead of the dock", await pop.locator("#agent-popout.open").isVisible());
+check("and the dock stays shut", !(await pop.locator("#pty-pane.open").isVisible()));
+// The move, not a copy: one `#agent-body` in the document, and it is the card's.
+check("the conversation moved rather than being duplicated", await pop.evaluate(() =>
+  document.querySelectorAll("#agent-body").length === 1 &&
+  document.getElementById("agent-body").parentElement.id === "agent-card"));
+check("it opens read-only", !(await pop.locator("#agent-composer").isVisible()));
+check("and takes the keyboard, so `i` has something to mean", await pop.evaluate(() =>
+  document.activeElement === document.getElementById("agent-card")));
+
+await pop.keyboard.press("i");
+await pop.waitForTimeout(150);
+check("`i` reveals the composer", await pop.locator("#agent-popout.editing #agent-composer").isVisible());
+check("and puts the caret in it", await pop.evaluate(() =>
+  document.activeElement === document.getElementById("agent-input")));
+
+// Escape's two jobs, in order. The first gives the composer back; only the
+// second puts the card away — which is why one press must not do both.
+await pop.keyboard.press("Escape");
+await pop.waitForTimeout(150);
+check("Escape gives the composer back first", await pop.evaluate(() =>
+  !popout.editing && document.getElementById("agent-popout").classList.contains("open")));
+await pop.keyboard.press("Escape");
+await pop.waitForTimeout(200);
+check("and a second one lowers the card", !(await pop.locator("#agent-popout.open").isVisible()));
+check("returning the conversation to the dock intact", await pop.evaluate(() =>
+  document.getElementById("agent-body").parentElement.id === "pty-pane" &&
+  document.getElementById("pty-mcp").nextElementSibling.id === "pty-confirm"));
+
+// The other way in. A press on a control is an answer, not a request to type —
+// otherwise answering a permission card in the card would grow a textarea under
+// the cursor every time.
+await pop.keyboard.press("Control+t");
+await pop.waitForTimeout(250);
+await pop.evaluate(() =>
+  window.__EMIT__("agent-ask", { id: "t9", tool: "Bash", input: { command: "ls" } }));
+await pop.locator(".agent-card button", { hasText: "Deny" }).click();
+await pop.waitForTimeout(150);
+check("answering a permission card is not a request to type", await pop.evaluate(() => !popout.editing));
+await pop.locator("#agent-log").click();
+await pop.waitForTimeout(150);
+check("but clicking the log itself is", await pop.locator("#agent-popout.editing").isVisible());
+
+// The MCP strip travels with the body. In `always` the dock never opens, so a
+// warning left behind in it is a warning nobody is ever shown.
+await pop.evaluate(() => {
+  window.__MCP__ = { armed: true, serving: true, clients: 0 };
+  return refreshMcpStatus();
+});
+await pop.waitForTimeout(200);
+check("the MCP warning is visible in the card", await pop.locator("#agent-popout #pty-mcp").isVisible());
+await pop.evaluate(() => { window.__MCP__ = { armed: true, serving: true, clients: 1 }; });
+await pop.close();
+
+// `send` is the middle answer and the reason the setting is not a bool: the
+// toggle still docks, and only the stack hand-off raises the card.
+const popSend = await newPanePage("right", "native", "send");
+await popSend.keyboard.press("Control+t");
+await popSend.waitForTimeout(400);
+check("`send` leaves the pane's own toggle on the dock", await popSend.locator("#pty-pane.open").isVisible());
+check("and raises nothing", !(await popSend.locator("#agent-popout.open").isVisible()));
+// D10: an empty stack still opens the agent, which is what makes this a check of
+// the *route* rather than of the queue.
+await popSend.keyboard.press("Control+Enter");
+await popSend.waitForTimeout(500);
+check("but a stack send raises the card", await popSend.locator("#agent-popout.open").isVisible());
+check("and the dock it was in gives the conversation up", await popSend.evaluate(() =>
+  document.getElementById("agent-body").parentElement.id === "agent-card" &&
+  !document.getElementById("pty-pane").classList.contains("open")));
+await popSend.close();
+
+// A session that will not start. The dock puts this in `#pty-status`; the card
+// has no header to put it in, so the hint line carries it — and the check that
+// matters is that it stops saying "starting", which would report the failure as
+// patience and leave the reader waiting on a process that does not exist.
+const popDead = await newPanePage("right", "native", "always", "not found on your PATH");
+await popDead.evaluate(() => { window.__SPAWN_FAILS__ = true; });
+await popDead.keyboard.press("Control+t");
+await popDead.waitForTimeout(500);
+check("a card that cannot start says why", await popDead.evaluate(() => {
+  const t = document.getElementById("agent-hint").textContent;
+  return t.includes("not found") && !t.includes("starting");
+}), await popDead.evaluate(() => document.getElementById("agent-hint").textContent));
+await popDead.close();
+
+// The fallback surface never pops out, whatever the config says: xterm needs a
+// box the fit addon manages, and this card grows a composer on demand.
+const popTerm = await newPanePage("right", "terminal", "always");
+await popTerm.keyboard.press("Control+t");
+await popTerm.waitForTimeout(600);
+check("the terminal surface ignores the pop-out and docks", await popTerm.evaluate(() =>
+  document.getElementById("pty-pane").classList.contains("open") &&
+  !document.getElementById("agent-popout").classList.contains("open")));
+await popTerm.close();
 
 // --- docked right (`agent.position`) --------------------------------------
 // A second page, because position is read once on the pane's first open — the

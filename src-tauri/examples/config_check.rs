@@ -10,7 +10,7 @@
 //! cargo run --example config_check
 //! ```
 
-use dreamd::config::{self, Config, Mode, PermissionMode, Position};
+use dreamd::config::{self, Config, Mode, PermissionMode, Popout, Position};
 use dreamd::theme;
 use std::path::Path;
 
@@ -159,6 +159,7 @@ fn main() {
         cfg.agent.permission_mode,
         PermissionMode::AcceptEdits,
     );
+    checks.eq("the pane docks by default", cfg.agent.popout, Popout::Never);
     checks.eq(
         "default tree width",
         cfg.ui.tree_width,
@@ -179,8 +180,19 @@ fn main() {
         PermissionMode::Plan,
     );
 
+    // `popout` layers like `position` and, like it, is a repo's to choose:
+    // where the conversation is drawn is not what the agent may do.
+    write_global("[agent]\npopout = \"always\"\n");
+    write_local(&repo, Some("[agent]\npopout = \"send\"\n"));
+    checks.eq(
+        "a repo may choose when the pane pops out",
+        Config::load(&repo).agent.popout,
+        Popout::Send,
+    );
+
     // Same shape as the theme_css check above: repo content does not get to
     // decide how much the agent may do without asking.
+    write_global("[agent]\nposition = \"right\"\npermission_mode = \"plan\"\n");
     write_local(
         &repo,
         Some("[agent]\npermission_mode = \"bypass-permissions\"\n"),

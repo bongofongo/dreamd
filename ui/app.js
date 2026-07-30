@@ -2319,7 +2319,11 @@ async function runStack(ids) {
   }
   // Opened either way (D10): an empty stack is not an error and not a scolding,
   // it is the other thing this key does.
-  const opening = openPane();
+  //
+  // `true` is the whole of `popout = "send"`: this is the one path that knows a
+  // send is what opened the agent, and the setting exists because *this* answer
+  // is one to read rather than a session to move into.
+  const opening = openAgent(true);
   if (queued) {
     flow.pending.set(queued.token, { ids: queued.ids, armed: false });
     paintSendBar();
@@ -2750,6 +2754,10 @@ const pty = {
   // says "starting" rather than "not running", which is the same fact worded as
   // a failure.
   opening: false,
+  // What `setPaneStatus` last said. Held here rather than read back off
+  // `#pty-status`, because the pop-out has no header and has to be able to show
+  // it while that element is inside a dock that is `display: none`.
+  status: "",
 };
 
 /// How each `agent.permission_mode` reads in the header, and in the sentence
@@ -2842,15 +2850,25 @@ function fromB64(b64) {
   return out;
 }
 
+/// The toggle, over whichever container the config gives the agent.
+///
+/// In `popout = "always"` the card *is* the pane: this key and the titlebar
+/// button raise and lower it, and the dock is simply never used. That is the
+/// setting's whole claim — one agent surface, not two to choose between at
+/// every press.
 function togglePane() {
+  if (popoutOpen()) { lowerPopout(); return; }
   if ($("pty-pane").classList.contains("open")) closePane();
-  else openPane();
+  else openAgent();
 }
 
 /// Show the pane, building the terminal and starting the process the first
 /// time. Every later open is a class flip and a refit.
 async function openPane() {
   const pane = $("pty-pane");
+  // The card cannot keep a conversation the dock is about to show. `false`
+  // because focus is on its way into this pane, not back to the document.
+  if (popoutOpen()) lowerPopout(false);
   pane.classList.add("open");
   // The grid that docks the pane right is declared on `#main-wrap`, which
   // cannot see its child's class — see the `agent-right` block in index.html.
@@ -3061,8 +3079,19 @@ function fitPane() {
   }
 }
 
+/// The pane's one line of status, and — since the pop-out has no header to put
+/// it in — the card's too.
+///
+/// Kept on `pty` rather than read back off the element, because the card's hint
+/// has to be able to ask for it while `#pty-status` is sitting in a dock that is
+/// `display: none`. The interesting text here is a *failure*: `claude` not on
+/// the login shell's PATH is the one thing that stops the surface working and
+/// the one thing neither container can otherwise show. A card that answered
+/// "starting…" forever would be reporting the failure as patience.
 function setPaneStatus(text) {
-  $("pty-status").textContent = text || "";
+  pty.status = text || "";
+  $("pty-status").textContent = pty.status;
+  paintPopout();
 }
 
 /// Kill and start again, in place. The button exists because the interesting
@@ -3212,7 +3241,12 @@ function paintMcpStatus(s) {
     text = "MCP not connected — no agent has reached dreamd yet. If marks stay pending after an answer, register dreamd with Claude Code.";
     register = true;
   }
+  // Both containers, because the strip is moved between them and the rule that
+  // shows it is scoped to whichever one currently holds it. Toggling only the
+  // pane would make the warning invisible in `popout = "always"`, which is the
+  // one mode where the pane never opens to show it.
   $("pty-pane").classList.toggle("mcp-warn", !!text);
+  $("agent-popout").classList.toggle("mcp-warn", !!text);
   if (!text) return;
   const span = document.createElement("span");
   span.textContent = text;
@@ -3654,6 +3688,10 @@ function paintComposer() {
   const send = $("agent-send");
   if (send) send.disabled = !agent.running;
   setPaneDot(agent.busy);
+  // The card's hint line is the pop-out's half of the same repaint: it says
+  // what `#pty-status` and the dot say in the dock, and this is already the
+  // function every status change and every turn boundary calls.
+  paintPopout();
 }
 
 function setPaneDot(busy) {
@@ -3676,6 +3714,206 @@ function autoGrowComposer() {
   if (!input) return;
   input.style.height = "auto";
   input.style.height = `${input.scrollHeight}px`;
+}
+
+// ---- the pop-out (`agent.popout`) -------------------------------------------
+// The same conversation as the dock, in a card centred on the window instead of
+// an edge that spends the document's width. A dock is the right shape for a
+// session you are working alongside and the wrong one for an answer you asked
+// for in passing: the stack send in particular produces something to *read*,
+// and reading it should not cost the page it is about.
+//
+// **One body, two containers.** `#agent-body` is moved between `#pty-pane` and
+// `#agent-card` rather than duplicated — see `raisePopout` — so a turn that is
+// mid-stream keeps streaming across the move, the tool ticker keeps its rows,
+// and a permission card raised in one container is still there, still
+// answerable, in the other. The MCP strip travels with it for the sharper
+// reason: in `always` mode the dock never opens, so a strip left behind in it
+// would be a warning nobody could ever be shown.
+//
+// The card is **read-only until asked**. Not as a restriction — the composer is
+// one click or one `i` away — but because the default state of a thing floating
+// over a document should be "readable", and a focused textarea in the middle of
+// the window is a claim on the keyboard that an answer you glanced at has not
+// earned. `Escape` gives the composer back, and a second one puts the card away.
+
+const popout = {
+  /// True while the composer is revealed. Every open returns to false.
+  editing: false,
+};
+
+/// `never` | `send` | `always`, out of the prefs the pane already loads.
+function popoutMode() {
+  return pty.prefs?.popout ?? "never";
+}
+
+/// Should *this* open raise the card rather than the dock?
+///
+/// The terminal fallback never pops out, whatever the config says. xterm.js
+/// needs a box whose size the fit addon manages and re-fits on every change;
+/// this card changes height the moment a composer appears, and there is no
+/// header in it to restart or re-mode the session from. `Surface::Terminal` is
+/// a fallback for when the native surface cannot draw something — putting it in
+/// the newer container would be the opposite of that.
+function wantsPopout(fromSend) {
+  if (!nativeSurface()) return false;
+  const mode = popoutMode();
+  return mode === "always" || (mode === "send" && fromSend);
+}
+
+function popoutOpen() {
+  return $("agent-popout").classList.contains("open");
+}
+
+/// Does the keyboard belong to the card right now?
+///
+/// `contains` rather than an identity test, and it answers true for the card
+/// itself: a node contains itself, and while the composer is up the caret is in
+/// a descendant. That is what keeps `i` from being claimed out of the document.
+function popoutHasFocus() {
+  const card = $("agent-card");
+  return !!(card && card.contains(document.activeElement));
+}
+
+/// Open the agent in whichever container the config asks for.
+///
+/// The one entry point, and the reason it is `async` before it decides
+/// anything: `pty.prefs` is null until the first `agent_prefs` round trip, so a
+/// first open that asked `wantsPopout` before awaiting it would read `never`
+/// out of an empty object and dock — once per process, on exactly the open the
+/// reader is most likely to be testing the setting with.
+async function openAgent(fromSend = false) {
+  await loadAgentPrefs();
+  if (wantsPopout(fromSend)) return raisePopout();
+  return openPane();
+}
+
+/// Raise the card, starting the session on the first open the way `openPane`
+/// does.
+async function raisePopout() {
+  // One body, one container. The dock is closed *before* the move rather than
+  // left open behind it: `closePane` after would find a pane whose conversation
+  // had already gone and hide an empty box, and both open at once is a state
+  // with no correct contents.
+  if ($("pty-pane").classList.contains("open")) closePane();
+  const card = $("agent-card");
+  // The strip goes *inside* the body, above the composer, rather than under the
+  // whole card: the composer is the bottom-most thing in every agent surface
+  // dreamd draws, and a status line below the box you type into reads as
+  // something the box produced.
+  $("agent-body").insertBefore($("pty-mcp"), $("agent-composer"));
+  card.insertBefore($("agent-body"), $("agent-hint"));
+  $("agent-popout").classList.add("open");
+  setEditing(false);
+  // Focused on open, unlike the dock — which deliberately does not take focus,
+  // because it opens *beside* what you are reading and stealing the caret there
+  // disarms `j`/`k`/`/` for a pane you may only have glanced at. This card is
+  // over the document rather than beside it, `i` is meaningless without focus,
+  // and Escape hands the keyboard straight back. `j`/`k` still scroll, so the
+  // focus costs the reader nothing it does not replace — see `wireKeys`.
+  card.focus({ preventScroll: true });
+  pty.opening = true;
+  try {
+    await openNativeAgent();
+  } catch (e) {
+    console.error(e);
+    setPaneStatus(String(e.message || e));
+  } finally {
+    pty.opening = false;
+    paintPopout();
+    paintSendBar();
+  }
+  // Outside the try for the reason `openPane`'s copy is: a session that failed
+  // to start is exactly the one whose MCP status is worth reading.
+  startMcpWatch();
+}
+
+/// Put the conversation back in the dock and hide the card.
+///
+/// Hiding, never killing — the same promise `closePane` makes. The session, the
+/// log and any unanswered permission card are all still there, in the dock,
+/// which is where the next `openPane` will find them.
+function lowerPopout(refocus = true) {
+  $("agent-popout").classList.remove("open");
+  setEditing(false);
+  dockAgentBody();
+  stopMcpWatch();
+  if (refocus) contentEl.focus({ preventScroll: true });
+}
+
+/// Return the travelling nodes to the pane, in the order the markup declares
+/// them: head, MCP strip, staged-restart strip, terminal, body.
+///
+/// Order is not cosmetic here. `#pty-mcp` styles itself with a `border-bottom`
+/// and sits above `#pty-confirm` so that a staged restart is the bottom-most
+/// strip and reads as the newest thing; appended instead, it would land under
+/// the terminal.
+function dockAgentBody() {
+  const pane = $("pty-pane");
+  const body = $("agent-body");
+  if (body.parentElement === pane) return;
+  pane.insertBefore($("pty-mcp"), $("pty-confirm"));
+  pane.appendChild(body);
+}
+
+/// Reveal the composer and take the caret, or give both back.
+///
+/// Two ways in, because the card is both something you read with a mouse in
+/// your hand and something you reach without one: a click anywhere in it that
+/// is not a button and not a text selection, and `i` while it has focus. Both
+/// land here, so there is one state and one class.
+function setEditing(on) {
+  popout.editing = !!on;
+  $("agent-popout").classList.toggle("editing", popout.editing);
+  if (popout.editing) {
+    const input = $("agent-input");
+    input.focus();
+    autoGrowComposer();
+  }
+  paintPopout();
+}
+
+/// Escape's two jobs in the card, urgent one first: give the composer back,
+/// then put the card away.
+///
+/// Interrupting a running turn is a *third* job and outranks both, but it never
+/// reaches here — the composer's own keydown handler claims Escape while
+/// `agent.busy` and stops it propagating. So this is only ever the quiet case.
+function escapePopout() {
+  if (popout.editing) {
+    setEditing(false);
+    $("agent-card").focus({ preventScroll: true });
+    return;
+  }
+  lowerPopout();
+}
+
+/// The card's one line of chrome, and it is a sentence rather than a control:
+/// how to type, or what the agent is doing while it is doing it.
+///
+/// It stands in for the whole of the dock's header, which this card does not
+/// have — the status text, the dot, and the "you can type here" that a visible
+/// textarea says by existing. Hidden entirely while the composer is up, so the
+/// card never shows both.
+function paintPopout() {
+  const hint = $("agent-hint");
+  if (!hint) return;
+  hint.textContent = "";
+  hint.classList.toggle("busy", !!agent.busy);
+  if (agent.busy) {
+    hint.textContent = "thinking…";
+    return;
+  }
+  if (!agent.running) {
+    // Whatever `setPaneStatus` last said, which on the failing path is the
+    // reason rather than the word "starting".
+    hint.textContent = pty.status || "starting…";
+    return;
+  }
+  hint.append("click or press ");
+  const kbd = document.createElement("kbd");
+  kbd.textContent = "i";
+  hint.append(kbd, " to reply");
 }
 
 /// Light the chip matching whatever model the session reports.
@@ -3883,6 +4121,18 @@ function wireUi() {
       interruptAgent();
     }
   });
+  // The pop-out's other way in. Two things are deliberately *not* a request to
+  // type: a press that landed on a control — a permission card's Allow/Deny,
+  // a code block's copy button — which is an answer or a copy and is complete
+  // in itself, and a press that ends a text selection, which is reading. Both
+  // would otherwise be swallowed by a textarea appearing under the cursor.
+  $("agent-card").addEventListener("click", (e) => {
+    if (popout.editing) return;
+    if (e.target.closest("button, a, input, select, textarea")) return;
+    const sel = window.getSelection();
+    if (sel && !sel.isCollapsed && $("agent-card").contains(sel.anchorNode)) return;
+    setEditing(true);
+  });
   // In highlight mode, finishing a text selection auto-starts the flow.
   contentEl.addEventListener("mouseup", () => {
     if (!highlightMode || pending) return;
@@ -3996,11 +4246,20 @@ function wireKeys() {
       // `closePane`, which is what makes D12 one rule rather than two: Escape
       // closes the pane in every mode, and it hides rather than kills, so the
       // session is still there on the next open.
+      // `agent-popout` is in the list and claims Escape the same way the dock
+      // does, with one difference: its handler is a *step* rather than a close.
+      // A card with the composer up gives the composer back first, because the
+      // state the reader is escaping from is "typing", not "the card is here" —
+      // and pressing it again does close the card. Interrupting a running turn
+      // outranks both and never reaches this handler; the composer's own
+      // keydown claims that one.
       const claimed = ["palette-overlay", "annot-overlay", "confirm-overlay",
-                       "settings-overlay", "file-menu", "find-bar", "pty-pane"]
+                       "settings-overlay", "file-menu", "find-bar", "pty-pane",
+                       "agent-popout"]
         .some((id) => $(id).classList.contains("open"));
       closePalette();
       closeFileMenu();
+      if (popoutOpen()) escapePopout();
       if ($("pty-pane").classList.contains("open")) closePane();
       if (findBar.classList.contains("open")) closeFind();
       if ($("annot-overlay").classList.contains("open")) cancelAnnot();
@@ -4027,6 +4286,35 @@ function wireKeys() {
 
     // Bare-letter shortcuts must not fire while typing in a field.
     if (isEditable(e.target)) return;
+
+    // The pop-out's own keys, and they exist only while it has focus and is
+    // read-only — with the composer up the guard above has already returned,
+    // because the target is a textarea.
+    //
+    // `i` is not in the keymap and deliberately not rebindable: it is not a
+    // dreamd action, it is the card's insert key, and it means nothing anywhere
+    // else. Claimed above every binding below so that a reader who has bound
+    // `i` to something in the document still gets a composer out of the card
+    // they are looking at.
+    //
+    // `j`/`k` and the arrows scroll the log, which is what makes focusing the
+    // card on open cost nothing: without them a focused card is a keyboard dead
+    // end with two exits, and the reader's scroll keys would go nowhere until
+    // they pressed Escape. Native arrow scrolling does not do this — it moves
+    // the nearest scrollable ancestor of the focused element, and `#agent-log`
+    // is a *descendant* of the card that holds focus.
+    if (popoutOpen() && !popout.editing && popoutHasFocus()) {
+      if (matchCombo(e, "i")) { e.preventDefault(); setEditing(true); return; }
+      const step = e.key === "PageDown" ? 1 : e.key === "PageUp" ? -1 : 0;
+      const line = matchCombo(e, "j") || e.key === "ArrowDown" ? 1
+        : matchCombo(e, "k") || e.key === "ArrowUp" ? -1 : 0;
+      if (step || line) {
+        e.preventDefault();
+        const log = $("agent-log");
+        log.scrollTop += step ? step * log.clientHeight * 0.9 : line * 64;
+        return;
+      }
+    }
 
     // The configured highlight key turns the current selection into a dreamd
     // highlight and prompts for an annotation. It does NOT toggle mode. Bare
@@ -4460,9 +4748,53 @@ function renderWindow() {
     if (!(await applyPatch({ agent: { surface } }))) term.checked = !term.checked;
     // So the next open reads the new value rather than the cached one.
     else if (pty.prefs) pty.prefs.surface = surface;
+    // The pop-out belongs to the native surface, and the row below says so by
+    // going dead rather than by disappearing.
+    pop.disabled = term.checked;
   };
   row.appendChild(term);
   box.appendChild(row);
+
+  // Where the conversation is drawn. A select rather than two checkboxes
+  // because the three answers are exclusive and the middle one is the whole
+  // point of the setting: a stack send produces something to read, and a dock
+  // charges the document its width for as long as it is open.
+  //
+  // Below the surface toggle, and dimmed by it: the pop-out is native-only, and
+  // a control that silently does nothing is worse than one that says why.
+  const popRow = document.createElement("div");
+  popRow.className = "st-row";
+  popRow.innerHTML =
+    `<span class="lbl">Pop-out agent` +
+    `<span class="sub">A card centred on the window instead of a dock, read-only until you click it or press ` +
+    `<b>i</b>. Escape gives the composer back, then puts the card away. ` +
+    `Takes effect the next time the pane opens.</span></span>`;
+  const pop = document.createElement("select");
+  for (const [value, label] of [
+    ["never", "Never — dock it"],
+    ["send", "When I send the stack"],
+    ["always", "Always"],
+  ]) {
+    const opt = document.createElement("option");
+    opt.value = value;
+    opt.textContent = label;
+    pop.appendChild(opt);
+  }
+  pop.value = settings.config.agent?.popout ?? "never";
+  // Disabled rather than hidden when the terminal fallback is on: hiding it
+  // would leave a reader who turned the terminal on wondering where the setting
+  // went, and the sentence above already says which surface it belongs to.
+  pop.disabled = term.checked;
+  pop.onchange = async () => {
+    const before = pty.prefs?.popout ?? "never";
+    if (!(await applyPatch({ agent: { popout: pop.value } }))) {
+      pop.value = before;
+      return;
+    }
+    if (pty.prefs) pty.prefs.popout = pop.value;
+  };
+  popRow.appendChild(pop);
+  box.appendChild(popRow);
 
   // Print, which is an action rather than a preference and the only one in this
   // panel. It lived in the titlebar and moved here because it is rare and

@@ -293,7 +293,14 @@ the upgrade procedure.
   dock to the same edge, so sending from the stack panel is a *substitution* —
   the queue closes, the pane opens where it was — rather than a jump across the
   window. `bottom` stays a supported layout and is the one value a test should
-  use when it means "not the default".
+  use when it means "not the default". `agent.popout` (`never` / `send` /
+  `always`) is the other axis and outranks `position` when it fires: the
+  conversation goes into a centred card instead of a dock. Three values rather
+  than a bool because the reason to want one is usually the *send* — a stack
+  hand-off produces an answer to read, not a session to sit in — so `send`
+  leaves the pane's own toggle on the dock and `always` makes the card the only
+  agent surface there is. Like `surface` and unlike `permission_mode` it is a
+  repo's to set: where a conversation is drawn is not what an agent may do.
 - `theme` — the palette registry: `BUNDLED` (`include_str!`'d), user palettes in
   `~/.config/dreamd/themes/`, and the `--bg` / `--syntax-theme` values parsed back out of
   the CSS for the native window and syntect. Those two lookups take a `Scheme`, because
@@ -459,6 +466,22 @@ purpose: gating it was what kept it from ever being built off macOS.
 file and the themes directory need no per-platform anything. `webkit` is the
 pattern to copy for the next such quirk: a runtime probe of something only the
 affected system has, not a `cfg` arm nobody else compiles.
+
+**The pop-out is one body in two containers, not two views.** `#agent-body` is
+*moved* between `#pty-pane` and `#agent-card` — `raisePopout` / `dockAgentBody`
+in app.js — so a mid-stream turn keeps streaming across the move and an
+unanswered permission card is still answerable on the other side. Duplicating
+the subtree would mean two logs to keep in step and two ids for every element in
+them. Consequences a change here has to keep: every rule styling the
+conversation is scoped by *container* (`#pty-pane.native …` / `#agent-popout …`)
+rather than written as its own class; `#pty-mcp` travels with the body, so
+`paintMcpStatus` toggles `mcp-warn` on **both**, without which the one mode that
+never opens the dock (`always`) could never show the warning; and exactly one
+container may hold it, which is why `openPane` lowers the card and `raisePopout`
+closes the dock rather than either leaving the other up. The card has **no
+header at all** — the dock's status text has nowhere to go there, so
+`setPaneStatus` also keeps the string on `pty.status` for the hint line to read,
+and a session that cannot start says why instead of saying "starting" forever.
 
 **Highlight anchoring is the subtle part.** A quote is located in the *source* by
 `markdown::locate` in three fallbacks: exact `prefix+quote+suffix`, exact quote, then

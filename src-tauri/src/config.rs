@@ -79,10 +79,10 @@ pub struct Config {
 
 /// The embedded Claude Code pane's preferences.
 ///
-/// Both fields are read when the pane is *opened*, not continuously: `position`
-/// is applied by the frontend on mount and `permission_mode` reaches the child
-/// as a launch flag, so changing either mid-session is a restart, not a live
-/// update.
+/// Every field is read when the pane is *opened*, not continuously: `position`
+/// and `popout` are applied by the frontend on mount and `permission_mode`
+/// reaches the child as a launch flag, so changing any of them mid-session is a
+/// restart, not a live update.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Agent {
@@ -96,6 +96,44 @@ pub struct Agent {
 
     /// How the agent is drawn.
     pub surface: Surface,
+
+    /// When the conversation floats over the reader instead of docking to an
+    /// edge.
+    pub popout: Popout,
+}
+
+/// When the agent appears as a centred card over the window rather than as a
+/// dock, and therefore whether [`Agent::position`] means anything.
+///
+/// A dock spends window: it takes its width off the document for as long as it
+/// is open, which is the right trade for a conversation you are working
+/// alongside and the wrong one for a question you asked in passing. The pop-out
+/// is the other shape — a card centred on the window, no header at all, over
+/// the document rather than beside it, and read-only until you ask it for a
+/// composer.
+///
+/// Three values rather than a bool because the reason to want one is usually
+/// the *send*: a stack hand-off produces an answer to read, not a session to
+/// sit in. `Send` is that and leaves the pane's own toggle on the dock;
+/// `Always` makes the card the only agent surface there is, toggle included.
+///
+/// Ignored when [`Agent::surface`] is [`Surface::Terminal`]: xterm.js needs a
+/// box whose size the fit addon manages, and a card that grows a composer on
+/// demand is not one. The fallback surface gets the dock.
+///
+/// Settable from a repo-local `.dreamd.toml`, for the reason [`Surface`] is —
+/// where a conversation is *drawn* is not a decision about what an agent may
+/// do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Popout {
+    /// The pane docks, always. How it has always worked.
+    #[default]
+    Never,
+    /// Sending from the stack raises the card; the pane's toggle still docks.
+    Send,
+    /// The card *is* the agent surface. Nothing docks.
+    Always,
 }
 
 /// Which of the two agent surfaces the pane opens.
@@ -538,12 +576,12 @@ impl Config {
 ///   settings panel to get the frame back. The pair travels together: one key
 ///   deciding your chrome is the shape of the problem, not the direction.
 ///
-/// `agent.position`, `agent.surface` and the four `ui` sizes — `tree_width`,
-/// `stack_width`, `pane_width`, `pane_height` — are left alone: they move
-/// furniture *inside* the window and read nothing. `surface` in particular
-/// only chooses how a conversation is *drawn* — neither of its two values
-/// widens what the agent may do, because the permission gate is a hook and
-/// outranks the surface entirely.
+/// `agent.position`, `agent.surface`, `agent.popout` and the four `ui` sizes —
+/// `tree_width`, `stack_width`, `pane_width`, `pane_height` — are left alone:
+/// they move furniture *inside* the window and read nothing. `surface` and
+/// `popout` in particular only choose how and where a conversation is *drawn* —
+/// no value of either widens what the agent may do, because the permission gate
+/// is a hook and outranks both entirely.
 fn strip_untrusted(local: &mut Table) -> Vec<(&'static str, &'static str)> {
     let mut warnings = Vec::new();
     if local.remove("theme_css").is_some() {
@@ -979,6 +1017,30 @@ mod tests {
             config_of("[agent]\nsurface = \"terminal\"\n").agent.surface,
             Surface::Terminal
         );
+    }
+
+    #[test]
+    fn the_pane_docks_unless_told_otherwise() {
+        assert_eq!(Config::default().agent.popout, Popout::Never);
+        assert_eq!(
+            config_of("[agent]\npopout = \"send\"\n").agent.popout,
+            Popout::Send
+        );
+        assert_eq!(
+            config_of("[agent]\npopout = \"always\"\n").agent.popout,
+            Popout::Always
+        );
+    }
+
+    #[test]
+    fn popout_is_a_repo_local_choice_like_the_surface_beside_it() {
+        // Same argument as `surface`, and the same table: where a conversation
+        // is drawn is not what the agent may do. Stripped, a repo that prefers
+        // the card would silently get the dock instead.
+        let mut local = table("[agent]\npopout = \"always\"\n");
+        assert!(strip_untrusted(&mut local).is_empty());
+        let cfg = Config::deserialize(Value::Table(local)).expect("stripped config");
+        assert_eq!(cfg.agent.popout, Popout::Always);
     }
 
     #[test]
