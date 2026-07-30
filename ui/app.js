@@ -1784,11 +1784,32 @@ function exitView() { document.body.classList.remove("view-mode"); }
 // Jump the reading pane to the ends of the document. `#content-scroll` is the
 // scroller, not the window, so the browser's own Home/End would do nothing
 // unless focus happened to be inside it — which is why these are worth binding
-// at all. Instant, not smooth: everything else that moves this pane
-// (`scrollIntoView`, restoring `scrollTop` after a re-render) is instant, and a
-// smooth animation over a long document is the one place scrolling can jank.
-function jumpTop() { scrollEl.scrollTo({ top: 0 }); }
-function jumpBottom() { scrollEl.scrollTo({ top: scrollEl.scrollHeight }); }
+// at all. Instant, unlike the four motion keys below: `j` and `d` are travel,
+// and travel is worth animating, but Home/End are teleports — the reader is
+// asking to *be* somewhere, not to go there, and easing the full height of a
+// long document is both slow and the one place scrolling can jank. Everything
+// else that moves this pane (`scrollIntoView`, restoring `scrollTop` after a
+// re-render) is instant for the same reason.
+function jumpTop() { jumpTo(0); }
+function jumpBottom() { jumpTo(scrollEl.scrollHeight); }
+
+/// Put the reader at an exact offset, cancelling any glide first.
+///
+/// The cancel cannot be left to `stepGlide`'s hijack check, which notices the
+/// scroller *moving*: a jump to where we already are moves nothing. Press `d`
+/// and then Home at the top of a document and the check sees 0 before and 0
+/// after, while the reader very much meant "no, stay at the top" — and the
+/// glide would carry them down anyway. Intent is not recoverable from the
+/// value, so the three callers that mean to own the position say so out loud.
+///
+/// The `scrollIntoView` callers are deliberately not routed through here: they
+/// aim at an element rather than an offset, and in the only case the detector
+/// misses — the target already being exactly in place — there is no
+/// disagreement to resolve, because the reader is already looking at it.
+function jumpTo(top) {
+  endGlide();
+  scrollEl.scrollTo({ top });
+}
 
 // Vim's motions over the same scroller, and bound to bare `j`/`k`/`d`/`u` in
 // every key mode — a reader should never reach for a modifier to move down a
@@ -1801,10 +1822,124 @@ function jumpBottom() { scrollEl.scrollTo({ top: scrollEl.scrollHeight }); }
 // text on screen to land on, which is what makes it a motion rather than a
 // page turn.
 //
-// Instant, not smooth, for the reason `jumpTop` is: key repeat is how a reader
-// actually travels, and a smooth animation per keydown fights the next one.
-function scrollLine(dir) { scrollEl.scrollTop += dir * lineHeight(); }
-function scrollHalf(dir) { scrollEl.scrollTop += dir * scrollEl.clientHeight / 2; }
+// Smooth, via `glideBy` — see the block below for why that is a hand-rolled
+// animation rather than `scrollTo({ behavior: "smooth" })`.
+function scrollLine(dir) { glideBy(dir * lineHeight()); }
+function scrollHalf(dir) { glideBy(dir * scrollEl.clientHeight / 2); }
+
+// ---- the glide -----------------------------------------------------------
+// Smooth scrolling for the four motion keys, and the reason it is ~40 lines
+// instead of one `behavior: "smooth"` is **key repeat**. Holding `j` delivers
+// keydowns at the OS repeat rate, and the native smooth scroller treats each
+// one as a new gesture to re-aim at: the result stalls and surges rather than
+// travelling. What a reader holding a key means is "keep going", so this
+// accumulates a *target* and eases toward it. Ten presses in flight are one
+// motion to a point ten lines further on, not ten motions fighting.
+//
+// Easing is exponential rather than a fixed-duration tween, which is what lets
+// the target move mid-flight: velocity is a function of the remaining distance,
+// so a target that grows simply speeds the glide up instead of restarting it.
+// It also makes one line and half a screen feel like the same gesture at
+// different sizes — same settling time, different speed.
+//
+// The whole thing is inert when nothing is moving: the rAF loop exists only
+// between the first press and arrival.
+
+/// Half-life of the remaining distance, in ms. The single feel knob: lower is
+/// snappier. 40ms puts a one-line press perceptually done in ~5 frames while
+/// still reading as motion rather than as a jump.
+const GLIDE_HALF_LIFE = 40;
+/// Minimum pixels per frame, so the tail of the exponential does not crawl the
+/// last two pixels over a dozen frames — an arrival that is visibly *late*
+/// costs more than the eased tail buys.
+const GLIDE_FLOOR = 0.6;
+
+let glide = null; // { target, expected, raf, last } while a glide is in flight
+
+function maxScroll() {
+  return Math.max(0, scrollEl.scrollHeight - scrollEl.clientHeight);
+}
+
+/// Scroll `delta` pixels, smoothly, accumulating onto any glide already running.
+function glideBy(delta) {
+  // A reader who asked the OS for less motion gets the jump. Checked per press
+  // rather than cached, because the setting can change while the app is up.
+  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    endGlide();
+    scrollEl.scrollTop = clampScroll(scrollEl.scrollTop + delta);
+    return;
+  }
+  // Accumulate onto the target, not onto where we happen to be mid-flight —
+  // that is what makes the tenth press of a held `j` land ten lines further on
+  // rather than ten lines from wherever the animation had reached.
+  const from = glide ? glide.target : scrollEl.scrollTop;
+  const target = clampScroll(from + delta);
+  if (glide) { glide.target = target; return; } // the running loop will re-aim
+  // `expected` starts at where the scroller is *now*, not null: a jump landing
+  // between this press and the first frame — Home, a link click, a mark jump —
+  // has to be visible to the hijack check below, and a null would skip it for
+  // exactly that one frame and then drag the reader back off the jump.
+  glide = {
+    target,
+    expected: scrollEl.scrollTop,
+    last: performance.now(),
+    raf: 0,
+  };
+  glide.raf = requestAnimationFrame(stepGlide);
+}
+
+function clampScroll(top) {
+  return Math.max(0, Math.min(top, maxScroll()));
+}
+
+function stepGlide(now) {
+  if (!glide) return;
+  const cur = scrollEl.scrollTop;
+
+  // Somebody else moved the scroller — a wheel, `scrollIntoView` from the find
+  // bar, `jumpTop`, a mark jump, `scrollTop` restored after a re-render. Their
+  // move wins and this glide is abandoned. Comparing against what we ourselves
+  // last wrote is what makes this cover every one of those without each having
+  // to know the glide exists; the tolerance absorbs the engine's sub-pixel
+  // rounding of a fractional `scrollTop`.
+  if (Math.abs(cur - glide.expected) > 1.5) {
+    endGlide();
+    return;
+  }
+
+  // Re-clamp every frame: the document can grow under a glide (an image
+  // decoding, a re-render), and a target past the new end would stall the loop
+  // against the bottom instead of arriving.
+  glide.target = clampScroll(glide.target);
+  const gap = glide.target - cur;
+  if (Math.abs(gap) < 0.5) {
+    scrollEl.scrollTop = glide.target;
+    endGlide();
+    return;
+  }
+
+  // `dt` is clamped because a backgrounded window delivers one enormous frame
+  // on return, and an unclamped step would teleport rather than glide.
+  const dt = Math.min(now - glide.last, 64);
+  glide.last = now;
+  const k = 1 - Math.pow(0.5, dt / GLIDE_HALF_LIFE);
+  let step = gap * k;
+  const floor = GLIDE_FLOOR * (dt / 16.7);
+  if (Math.abs(step) < floor) step = Math.sign(gap) * Math.min(Math.abs(gap), floor);
+
+  const next = cur + step;
+  scrollEl.scrollTop = next;
+  // Read back rather than trusting `next`: the engine rounds, and the whole
+  // hijack check above depends on this being what the scroller actually holds.
+  glide.expected = scrollEl.scrollTop;
+  glide.raf = requestAnimationFrame(stepGlide);
+}
+
+function endGlide() {
+  if (!glide) return;
+  cancelAnimationFrame(glide.raf);
+  glide = null;
+}
 
 /// One line of the prose being read, from the stylesheet rather than a constant
 /// — the whole point of tenet 5 is that a palette may set its own type metrics,
@@ -1852,7 +1987,7 @@ async function restoreFrame(f) {
     // session.
     restoring = false;
   }
-  scrollEl.scrollTo({ top: f.top });
+  jumpTo(f.top);
 }
 
 // ---- the mark ------------------------------------------------------------
