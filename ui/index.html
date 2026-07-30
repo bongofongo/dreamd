@@ -188,7 +188,19 @@
       }
       body.nav-collapsed #btn-expand { display: inline-flex; }
 
-      #main-wrap { position: relative; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+      /* The pane's two docked sizes, declared once because two unrelated boxes
+         have to agree on them: `#pty-pane` sizes itself from them, and
+         `#stack-panel` — which is `position: absolute` against this element and
+         so does not know the pane exists — insets itself by them to stop
+         covering the pane. Both percentages resolve against `#main-wrap` at
+         either use site (a flex basis against the container's main size, an
+         inset against the containing block), so the two agree exactly rather
+         than approximately. */
+      #main-wrap {
+        position: relative; min-width: 0; min-height: 0; display: flex; flex-direction: column;
+        --pane-h: max(40%, 140px);
+        --pane-w: clamp(320px, 38%, 720px);
+      }
       body.hl-mode #content { cursor: crosshair; }
       body.hl-mode #content-scroll { box-shadow: inset 0 3px 0 var(--hl, #f2d16b); }
 
@@ -329,7 +341,7 @@
          appearances — xterm paints its own foreground/background from the
          `theme` object app.js builds out of the same CSS variables. */
       #pty-pane {
-        display: none; flex: 0 0 40%; min-height: 140px;
+        display: none; flex: 0 0 var(--pane-h);
         flex-direction: column; overflow: hidden;
         border-top: 1px solid var(--border, #2e2940);
         background: var(--sidebar-bg, #100e17);
@@ -351,14 +363,16 @@
 
          `#outline-panel` and `#stack-panel` are `position: absolute` with inset
          values, so they resolve against `#main-wrap`'s padding box in both
-         layouts and neither gains a grid track. */
+         layouts and neither gains a grid track. The cost of that is that the
+         stack panel has to be told about the pane by hand — see `--pane-w` /
+         `--pane-h` on its rule. */
       /* `:not(.view-mode)` because view mode hides the pane with `display:
          none` while `pane-open` is still true — without it the second track
          would hold a pane-width strip of nothing open beside the document, in
          the one mode whose entire job is to give the document the window. */
       body.agent-right.pane-open:not(.view-mode) #main-wrap {
         display: grid;
-        grid-template-columns: minmax(0, 1fr) clamp(320px, 38%, 720px);
+        grid-template-columns: minmax(0, 1fr) var(--pane-w);
         grid-template-rows: minmax(0, 1fr) auto;
       }
       body.agent-right.pane-open #content-scroll { grid-area: 1 / 1; }
@@ -677,6 +691,15 @@
         display: none; flex-direction: column; z-index: 20;
       }
       #stack-panel.open { display: flex; }
+      /* Unlike `#outline-panel`, which is transient and allowed to overlap what
+         is under it, the stack and the pane are read *together* — the queue is
+         what the agent below is working through. So the panel stops at the
+         pane's edge rather than covering it, on whichever edge the pane is
+         docked. Gated on `body.pane-open` for the same reason the grid above is:
+         a `display: none` pane occupies nothing, and insetting for one that is
+         not there would leave a strip of document showing through the panel. */
+      body.pane-open:not(.agent-right) #stack-panel { bottom: var(--pane-h); }
+      body.pane-open.agent-right #stack-panel { right: var(--pane-w); }
       #stack-panel h3 { margin: 0; padding: 10px 12px; border-bottom: 1px solid var(--border, #2e2940); font-size: 13px; display: flex; align-items: center; justify-content: space-between; }
       #stack-list { flex: 1; overflow: auto; padding: 8px; }
       /* A card, not a bare outline: `--btn-bg` over the panel's `--sidebar-bg`

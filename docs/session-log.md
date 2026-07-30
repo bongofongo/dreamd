@@ -1,5 +1,95 @@
 # Session log
 
+## 2026-07-30 — two things the native pane broke, and neither was in Rust
+
+A short repair session on the surface the previous thread shipped. Two visual
+bugs reported from actually using it: the stack panel drew straight over the
+agent pane, and toggling the pane put the caret in the composer. Both fixed in
+`ui/`, both proved by reverting the fix and watching the check go red. No Rust
+changed.
+
+### What happened
+
+1. **The stack panel never knew the pane existed.** `#stack-panel` is
+   `position: absolute; top:0 right:0 bottom:0` against `#main-wrap`, and the
+   pane is a *flex child* of that same element. So the panel ran the full height
+   over a bottom-docked pane, and in the right dock — where the pane is a grid
+   track and the panel still resolves against the padding box — it covered the
+   pane outright. The comment on the `agent-right` block already said the two
+   panels "neither gain a grid track"; what it did not say is that this is
+   exactly why the stack panel has to be told about the pane by hand.
+
+   The fix is two custom properties on `#main-wrap` — `--pane-h: max(40%, 140px)`
+   and `--pane-w: clamp(320px, 38%, 720px)` — consumed by both boxes, so they
+   agree **exactly** rather than approximately. Both percentages resolve against
+   `#main-wrap` at either use site (a flex basis against the flex container's
+   main size, an inset against the containing block), which is what makes one
+   declaration serve two very different properties. `#pty-pane`'s
+   `flex: 0 0 40%; min-height: 140px` collapsed into the `max()`, and the grid's
+   inline `clamp()` became `var(--pane-w)`, so neither number is written twice.
+
+   Gated on `body.pane-open` for the same reason the right-dock grid is: a
+   `display: none` pane occupies nothing, and insetting for an absent one would
+   leave a strip of document showing through the panel.
+
+   Deliberately **not** applied to `#outline-panel`, whose own comment earns its
+   overlap: it is transient and closes on the next scroll. The stack is
+   different — the queue and the agent working through it are read *together*,
+   which is the whole reason the overlap read as a bug rather than as a card.
+
+2. **`openNativeAgent` ended in `$("agent-input").focus()`.** Inherited from the
+   terminal surface, where it was correct — an unfocused xterm is a dead box.
+   Natively it is the opposite: the pane is a reading surface with a text field
+   at the bottom, and opening it is usually a glance at what the agent is doing.
+
+   The cost was larger than a stray caret. `isEditable(e.target)` in the global
+   keydown gates every bare-letter binding, so with focus in the textarea
+   `j`/`k`, `/`, `h` and `Ctrl+O` were all dead — one keystroke silently disarmed
+   the reader's keyboard. Removed; clicking the composer is what says "I am
+   typing".
+
+3. **Verified with a scratch Chromium harness** built on `ui-check.mjs`'s stub —
+   real `ui/`, stubbed IPC, both dock positions — asserting on bounding-box
+   overlap and on `document.activeElement`. Then each fix was reverted in place
+   to prove the check had teeth: the CSS revert reports `overlap 340x345` in the
+   bottom dock and `340x862` (total occlusion) in the right, and the focus revert
+   made the harness *crash* before its own assertion — `Ctrl+O` never reached the
+   stack toggle, which is the disarmed-keyboard bug demonstrating itself.
+
+### Mistakes & deviations
+
+- **Reverting both fixes at once hid the evidence.** With the focus bug back, the
+  stack panel could not be opened at all, so the overlap assertion had no box to
+  measure and the script died on a null. Re-run one arm at a time; each failure
+  is then legible.
+- **The `pass` tier reported 26 regressions and none of them were real.** The
+  baseline is old, and the run was noisy — `real.startup.debug.launch.spread_ms`
+  went 178 → 799, which is the run flagging itself. Diffed against
+  `pass-b66da19` (this morning, pre-session, functionally HEAD) instead, which
+  left one row that could plausibly have been a new CSS rule: Chromium scroll
+  `composite_ms` +23%. A direct 3-rep A/B of that scenario answered it — 4.44ms
+  with the change against 4.61ms at HEAD, i.e. marginally *faster*. Noise.
+- **The A/B needed the working tree swapped twice**, so the fixed files were
+  copied to the scratchpad first and restored from there rather than through
+  git — `git checkout ui/app.js` would have wiped the uncommitted fix. Restore
+  confirmed by `shasum`, byte-identical.
+
+### State
+
+No Rust touched, so `cargo build` is the gate only in the sense that it was run
+and is clean. `node --test ui/paths.test.mjs` green; `ui-check.mjs` **260
+passed, 0 failed**; the scratch geometry harness green in both dock positions.
+`perf/run.sh pass` ran and is recorded at
+`perf/results/pass-c86cd80-20260730-190047.json` — **no regression attributable
+to this session**, per the A/B above. `perf/baseline.json` untouched.
+
+Left open: Escape mid-turn now closes the pane rather than interrupting, because
+the interrupt lives on the composer's `keydown` and the composer no longer takes
+focus for free. Flagged to the user rather than fixed — promoting the interrupt
+to the global handler would change what Escape means in the reader, and D12's
+"Escape closes the pane in every mode" is a rule worth breaking on purpose or
+not at all.
+
 ## 2026-07-30 — the agent stops being a terminal
 
 The fourth and last step of what "AI-integrated" can mean here. dreamd had an

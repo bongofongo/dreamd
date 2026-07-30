@@ -3162,6 +3162,14 @@ function nativeSurface() {
 }
 
 /// Show the native body, starting the session the first time.
+///
+/// Deliberately does **not** focus the composer. The terminal surface had to
+/// take focus — an unfocused xterm is a dead box — but here the pane is a
+/// reading surface with a text field at the bottom, and opening it is usually a
+/// glance at what the agent is doing, not the start of typing. Stealing the
+/// caret meant the toggle silently disarmed the reader's keys: `j`/`k`, `/`, the
+/// highlight bindings all went into a textarea instead of the document. Opening
+/// the pane opens the pane; clicking the composer is what says "I am typing".
 async function openNativeAgent() {
   attachAgentListeners();
   if (!agent.running) {
@@ -3171,7 +3179,6 @@ async function openNativeAgent() {
     setPaneStatus("ready");
     $("pty-pane").classList.remove("dead");
   }
-  $("agent-input").focus();
 }
 
 /// Attached once per process, guarded the way the pty listeners are: `listen`
