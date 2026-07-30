@@ -2111,6 +2111,17 @@ check("the conversation moved rather than being duplicated", await pop.evaluate(
   document.querySelectorAll("#agent-body").length === 1 &&
   document.getElementById("agent-body").parentElement.id === "agent-card"));
 check("it opens read-only", !(await pop.locator("#agent-composer").isVisible()));
+// The compositing promotion, pinned because it reads as decoration and is not:
+// an overflow box's scrollbar does not take part in z-index, and on GTK it is
+// drawn into a composited scrolling layer that paints over plain content
+// whatever that content's z-index says. `#tree`'s scrollbar drew over this
+// card. A layer of its own is what puts the two in the same comparison.
+// Chromium computes the same property; whether it cures the paint order is a
+// WebKitGTK question and stays a hand-check.
+check("the card is promoted to its own layer", await pop.evaluate(() => {
+  const t = getComputedStyle(document.getElementById("agent-popout")).transform;
+  return !!t && t !== "none";
+}), await pop.evaluate(() => getComputedStyle(document.getElementById("agent-popout")).transform));
 check("and takes the keyboard, so `i` has something to mean", await pop.evaluate(() =>
   document.activeElement === document.getElementById("agent-card")));
 

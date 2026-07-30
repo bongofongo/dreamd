@@ -60,6 +60,19 @@
       button.danger { border-color: var(--stale, #ef6a7d); color: var(--stale, #ef6a7d); }
       button.danger:hover { background: var(--stale-bg, #3a1a22); }
 
+      /* Styling scrollbars globally was tried here and **reverted**, and the
+         measurement is worth keeping: on WebKitGTK neither `::-webkit-scrollbar`
+         nor `scrollbar-width`/`scrollbar-color` changes `#tree`'s scrollbar at
+         all. Applied to every scroller in this file, the tree — which overflows
+         on any real repo — still had no layout scrollbar and still had the
+         platform's overlay one. The three private copies below (`#agent-log`,
+         `#agent-input`, the xterm viewport) are therefore **macOS-only** rules
+         that happen to be inert on Linux, which is also what the xterm one's
+         own comment says: it describes a light-grey *macOS* bar.
+
+         So a scrollbar that paints over something it should be under cannot be
+         fixed by styling it. See `#agent-popout` for what does. */
+
       /* The window is never un-draggable.
          A ~10px `data-tauri-drag-region` strip pinned to the top of the window,
          with no background, no hover affordance and nothing to notice. It is
@@ -626,7 +639,9 @@
       #pty-term .xterm { padding: 10px 6px 8px 14px; }
       /* xterm's scroller is a plain overflowing div, so it gets the platform
          scrollbar unless told otherwise — a light-grey macOS bar over a dark
-         palette is the most conspicuous un-themed pixel in the pane. */
+         palette is the most conspicuous un-themed pixel in the pane. macOS is
+         the operative word: measured inert on WebKitGTK, see the top of this
+         stylesheet. */
       #pty-term .xterm-viewport { scrollbar-width: thin; }
       #pty-term .xterm-viewport::-webkit-scrollbar { width: 8px; }
       #pty-term .xterm-viewport::-webkit-scrollbar-track { background: transparent; }
@@ -767,7 +782,24 @@
         display: none; position: fixed; inset: 0; z-index: 40;
         place-items: center; pointer-events: none;
       }
-      #agent-popout.open { display: grid; }
+      /* `translateZ(0)` is not decoration and not a paint hint — it is the
+         stacking fix, and z-index alone was not enough.
+
+         An overflow box's scrollbar is not an ordinary box and does not take
+         part in z-index. On GTK it is an **overlay** indicator drawn into the
+         scrolling layer, and a layer composited for scrolling paints above
+         plain non-composited content whatever the plain content's z-index says
+         — so `#tree`'s scrollbar drew *over* this card, which floats twenty
+         layers above the sidebar. Promoting the card to a compositing layer of
+         its own puts the two in the same comparison, where z-index decides and
+         this wins.
+
+         On `.open` rather than on the rule above, so a closed pop-out — the
+         overwhelmingly common state — holds no layer for a full-viewport box
+         that is `display: none` anyway. Measured on WebKitGTK: styling the
+         scrollbar instead does nothing at all, which is why this is the lever
+         and not `::-webkit-scrollbar` (see the note at the top of this file). */
+      #agent-popout.open { display: grid; transform: translateZ(0); }
 
       /* No header. Not a slimmer one — none: no title, no dot, no model chips,
          no permission select, no ✕. Everything the dock's header offers is
