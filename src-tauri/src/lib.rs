@@ -8,6 +8,7 @@
 //! reason alone: its two predicates decide what a document may reach, and while
 //! they sat inline in `main.rs` nothing could assert on them.
 
+pub mod agent;
 pub mod annotations;
 pub mod catalog;
 pub mod cli;
