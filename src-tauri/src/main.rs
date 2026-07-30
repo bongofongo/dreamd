@@ -1464,6 +1464,22 @@ fn mcp_status(state: State<AppState>) -> McpReport {
     }
 }
 
+/// Register dreamd's MCP server with Claude Code, from the button on the strip
+/// above.
+///
+/// The one command here that writes outside `~/.config/dreamd` — and not to a
+/// file dreamd owns, but to Claude Code's, through Claude Code's own CLI. That
+/// is why it is a button the reader presses and never something startup does:
+/// tenet 2 is about what dreamd persists on its own initiative, and this is the
+/// reader asking another program to remember something.
+///
+/// Returns what the press turned out to mean, so the strip can say what it
+/// wrote — or that there was nothing to write — rather than merely that it ran.
+#[tauri::command]
+fn mcp_register(state: State<AppState>) -> Result<mcp::register::Registration, String> {
+    mcp::register::register(&state.root())
+}
+
 /// Frontend-side timing mark, forwarded into the same NDJSON stream as the Rust
 /// marks. A no-op unless built with `--features perf`; `console.log` inside
 /// WKWebView never reaches our stdout, so this is the only way to get webview
@@ -1756,6 +1772,7 @@ fn main() {
             agent_decide,
             agent_kill,
             mcp_status,
+            mcp_register,
             perf_mark,
             perf_enabled,
         ])

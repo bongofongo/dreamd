@@ -183,6 +183,10 @@ to the crate version, verified.
    `config.toml` and saved themes, written by the settings panel and the
    `config`/`theme` subcommands. Still no database, and still nothing written
    anywhere else — a third thing that wants to persist needs its own decision.
+   The one write *outside* it is `mcp::register`, and it is not dreamd's own
+   state: the Register button on the pane's MCP strip runs `claude mcp add`, so
+   Claude Code writes its own config through its own CLI. Reader-initiated,
+   never at startup — that is what keeps it a click rather than an exception.
 3. **No shell interpolation of user content.** Sent queries go through a temp file and
    a fixed `read @<file>` prompt. Highlighted text never enters a command line.
    The pane's `$SHELL -l -c "exec claude"` is the second shell dreamd spawns and
@@ -322,7 +326,18 @@ the upgrade procedure.
   is **not** liveness — the shim connects per call — so the only honest question
   it answers is "has an agent ever reached this window", which is exactly the
   failure worth naming: without it, an unregistered MCP server looks like an
-  agent that simply forgets to resolve marks.
+  agent that simply forgets to resolve marks. `register` is the button that
+  strip grows in that last case: `claude mcp add dreamd --scope user --
+  <launcher> mcp`, spawned through `agent::claude::resolve` with one
+  `Command::arg` each. **`--scope user`, because `shim` derives the root from
+  its own cwd** — one registration serves every repo, where the CLI's default
+  `local` scope would put the button back on screen in the next one. The
+  launcher is `$APPIMAGE` before `current_exe`: a registration outlives the
+  process, and an AppImage's `current_exe` is a `/tmp` mount that dies with the
+  window. Already-registered is settled by `claude mcp get`'s **exit status**,
+  not by reading its refusal, and it is the *common* answer — the strip is up
+  for every session until an agent first calls a dreamd tool, so a press that
+  changed nothing must not read as a failure.
 - `notify` — `marks-changed`, the only *store* change dreamd pushes unprompted.
   Emitted **only** from the MCP layer, never from a command: a command's return
   value is already the frontend's truth for its own mutation, and a second

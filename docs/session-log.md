@@ -1,5 +1,74 @@
 # Session log
 
+## 2026-07-30 — the MCP strip grows a button
+
+A small feature session. The pane's "MCP not connected" strip printed the
+command that fixes it and left the reader to go and type it, which is a strange
+thing for a GUI to do when it already knows where `claude` is — the agent it
+just launched came from there. Now it is a **Register** button.
+
+### What happened
+
+`src-tauri/src/mcp/register.rs` is the new module: `claude mcp add dreamd
+--scope user -- <launcher> mcp`, spawned through `agent::claude::resolve()` with
+one `Command::arg` per argument, so tenet 3 holds without an argument. `main.rs`
+gets `mcp_register` and nothing else; `paintMcpStatus` grows the button on the
+`clients === 0` branch only.
+
+Three decisions the code argues for at length and the log will state once:
+
+1. **`--scope user`, not the CLI's default `local`.** `shim` derives the repo
+   root from its own cwd, so one registration serves every repo the reader ever
+   opens. `local` would put the same button back on screen in the next one.
+2. **The launcher is `$APPIMAGE` before `current_exe`.** A registration outlives
+   the process that wrote it, and an AppImage's `current_exe` is a `/tmp` mount
+   that dies with the window. `launcher_from` is that rule, pure and tested; an
+   otherwise-ephemeral path (AppImage mount, macOS app translocation) falls back
+   to the bare name and `PATH`.
+3. **Already-registered is an answer, not a failure** — and the *likely* answer.
+   The strip is up for every session until an agent first calls a dreamd tool,
+   so a correctly-registered reader pressing the button is the common path, not
+   the edge. Settled by `claude mcp get`'s exit status rather than by parsing the
+   add's refusal, and only on the failure path, so the happy press costs one
+   process and not two.
+
+Registering cannot take effect in the running session — Claude Code reads its
+MCP servers at launch — so the strip stops polling (a poll that continued would
+paint "not connected" back over the sentence explaining why it says that) and
+offers a **Restart agent** button beside the confirmation, labelled with what it
+costs.
+
+### Mistakes & deviations
+
+- **The first attempt to see the button used the scratchpad as
+  `XDG_CONFIG_HOME`, and the path was too long for `sun_path`.** Both sockets
+  failed to bind, so the window reported itself a secondary and painted the
+  wrong one of the three sentences. `gate_server`'s module doc says the budget
+  is 102 bytes and the session directory spends most of it; a two-segment
+  `/tmp/dd-xdg` was the fix. Worth remembering when driving dreamd from a
+  harness: the scratchpad is not a usable config root.
+- **Two of the existing `ui-check.mjs` strip assertions were on the `<code>`
+  element the button replaced**, so they had to be rewritten rather than left
+  alone. That is the harness working — the section knew what the strip said.
+- **The click path could not be verified in the real app.** No click injection
+  on this box (`sendshortcut` is keys only), so the button was confirmed to
+  *paint* under Hyprland and its three outcomes were driven in Chromium instead.
+  Stated rather than glossed: nothing here asserts what WKWebView does with it.
+
+### State
+
+`cargo build`, `fmt`, `clippy -D warnings` clean. `cargo test --all-features`
+**348 passed** (8 new, all in `mcp::register`), `mcp_check` 49 passed,
+`ui-check.mjs` **269 passed, 0 failed** (8 new). The argv was also run against
+the real CLI under a scratch `HOME`: it writes
+`{"type":"stdio","command":"…","args":["mcp"]}`, and a second add exits 1 with
+its message on stderr — which is the branch `is_registered` now catches.
+
+No perf tier run. Nothing here is on a hot path — a module nothing calls at
+startup, plus a branch that only runs while the pane is open — and `run.sh`
+refuses to compare against the baseline off Darwin, so a tier on this machine
+would have produced no signal to report.
+
 ## 2026-07-30 — two things the native pane broke, and neither was in Rust
 
 A short repair session on the surface the previous thread shipped. Two visual

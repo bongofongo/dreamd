@@ -22,6 +22,8 @@
 //!   Binding it is also how a dreamd claims a repo.
 //! - [`shim`] — `dreamd mcp`, the process Claude Code spawns. Answers
 //!   `initialize`/`tools/list` locally and proxies `tools/call` to the socket.
+//! - [`register`] — `claude mcp add dreamd`, run from the pane's status strip
+//!   instead of printed there for the reader to retype.
 //!
 //! **The flow this surface exists to serve is queue-first.** The agent's entry
 //! point is `get_stack` — the human's ordered queue of annotated passages — not
@@ -29,6 +31,7 @@
 //! human's outbox, and this is the half where the outbox answers back.
 
 pub mod jsonrpc;
+pub mod register;
 pub mod schema;
 pub mod server;
 pub mod shim;

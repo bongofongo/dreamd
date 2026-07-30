@@ -1253,6 +1253,14 @@ const paneStub = ({ base, position, surface }) => {
           // it otherwise — which is also the real answer once an agent has
           // connected.
           case "mcp_status": return { ...window.__MCP__ };
+          // Whatever the current check wants one press of Register to mean.
+          // A string is thrown rather than returned, which is how a `Result`'s
+          // `Err` reaches the frontend.
+          case "mcp_register": {
+            const next = window.__REGISTER__;
+            if (typeof next === "string") throw new Error(next);
+            return { ...next };
+          }
           default: return null;
         }
       },
@@ -1756,19 +1764,70 @@ const mcp = async (next) => {
 await mcp({ armed: true, serving: true, clients: 0 });
 check("an unreached socket warns", (await pane.locator("#pty-pane.mcp-warn").count()) === 1);
 check(
-  "and names the command that fixes it",
-  (await pane.locator("#pty-mcp code").textContent()) === "claude mcp add dreamd -- dreamd mcp",
+  "and offers the button that fixes it",
+  (await pane.locator("#pty-mcp button").textContent()) === "Register",
 );
 await mcp({ armed: true, serving: false, clients: 0 });
 check("a secondary window warns too", (await pane.locator("#pty-pane.mcp-warn").count()) === 1);
 check(
-  "and does not offer a command that would not help",
-  (await pane.locator("#pty-mcp code").count()) === 0,
+  "and offers no button, because none of them would help",
+  (await pane.locator("#pty-mcp button").count()) === 0,
 );
 await mcp({ armed: false, serving: false, clients: 0 });
 check("and so does a window with no repo", (await pane.locator("#pty-pane.mcp-warn").count()) === 1);
+check(
+  "also with nothing to press",
+  (await pane.locator("#pty-mcp button").count()) === 0,
+);
 await mcp({ armed: true, serving: true, clients: 2 });
 check("and it goes quiet again once an agent connects", !(await pane.locator("#pty-pane.mcp-warn").count()));
+
+// --- Register: `claude mcp add dreamd`, from the strip ---------------------
+// The three answers one press can have, and the poll it stops in each: nothing
+// dreamd can observe changes at the moment of a registration, so a strip that
+// kept polling would paint "not connected" back over the sentence explaining
+// why it says that.
+const strip = () => pane.locator("#pty-mcp").textContent();
+const polling = () => pane.evaluate(() => pty.mcpTimer != null);
+const pressRegister = async (answer) => {
+  await mcp({ armed: true, serving: true, clients: 0 });
+  await pane.evaluate((a) => { window.__REGISTER__ = a; }, answer);
+  await pane.locator("#pty-mcp button").first().click();
+  await pane.waitForTimeout(200);
+};
+
+await pressRegister({ added: true, launcher: "/usr/bin/dreamd" });
+check("a registration names the launcher it wrote", (await strip()).includes("/usr/bin/dreamd"));
+check("and stops the poll that would overwrite it", !(await polling()));
+check(
+  "and offers the restart that makes it take effect",
+  (await pane.locator("#pty-mcp button").allTextContents()).includes("Restart agent"),
+);
+
+await pressRegister({ added: false, launcher: null });
+check(
+  "an existing registration is an answer, not a failure",
+  (await strip()).includes("already knows") && !(await strip()).includes("Could not"),
+);
+check("and still offers the restart", (await pane.locator("#pty-mcp button").count()) === 1);
+
+await pressRegister("claude: command not found");
+check("a failure is reported in claude's own words", (await strip()).includes("claude: command not found"));
+check(
+  "and offers a retry rather than a restart that would fix nothing",
+  (await pane.locator("#pty-mcp button").allTextContents()).join() === "Try again",
+);
+// The retry is the same handler, so pressing it again with a working answer
+// has to land where the first press would have.
+await pane.evaluate(() => { window.__REGISTER__ = { added: true, launcher: "/usr/bin/dreamd" }; });
+await pane.locator("#pty-mcp button").first().click();
+await pane.waitForTimeout(200);
+check("and the retry registers", (await strip()).includes("/usr/bin/dreamd"));
+
+// Left as the boot state found it, because everything after this section
+// assumes a quiet strip.
+await pane.evaluate(() => startMcpWatch());
+await mcp({ armed: true, serving: true, clients: 1 });
 
 // --- the native agent surface ----------------------------------------------
 // A page booted into `surface: "native"`, which is the default a reader gets.

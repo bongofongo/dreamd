@@ -3089,29 +3089,102 @@ async function refreshMcpStatus() {
 /// The distinction between them is worth the extra branches, because the fix
 /// for each is completely different: no repo is "open one", not serving is
 /// "this is the second window", and no client is "register the server".
+///
+/// Only the third has a button, because it is the only one dreamd can act on.
+/// A second window cannot take a socket it lost, and no repo is a File → Open;
+/// offering a control that cannot help would make the other two read as
+/// dreamd's fault rather than as statements about the session.
 function paintMcpStatus(s) {
   const el = $("pty-mcp");
   el.textContent = "";
   let text = null;
-  let command = null;
+  let register = false;
   if (!s.armed) {
     text = "No repository open, so dreamd is not serving MCP — this agent cannot see your stack.";
   } else if (!s.serving) {
     text = "Another dreamd window owns this repository's MCP socket. This agent will reach that window's stack, not this one's.";
   } else if (s.clients === 0) {
-    text = "MCP not connected — no agent has reached dreamd yet. If marks stay pending after an answer, register the server:";
-    command = "claude mcp add dreamd -- dreamd mcp";
+    text = "MCP not connected — no agent has reached dreamd yet. If marks stay pending after an answer, register dreamd with Claude Code.";
+    register = true;
   }
   $("pty-pane").classList.toggle("mcp-warn", !!text);
   if (!text) return;
   const span = document.createElement("span");
   span.textContent = text;
   el.appendChild(span);
-  if (command) {
-    const code = document.createElement("code");
-    code.textContent = command;
-    el.appendChild(code);
+  if (register) {
+    const button = document.createElement("button");
+    button.className = "pty-cta";
+    button.textContent = "Register";
+    button.title = "claude mcp add dreamd -- dreamd mcp";
+    button.addEventListener("click", () => registerMcp(button));
+    el.appendChild(button);
   }
+}
+
+/// Run `claude mcp add dreamd` for the reader.
+///
+/// The poll is stopped for the duration and *not* restarted on success, which
+/// looks wrong and is not: registering changes nothing dreamd can observe.
+/// Claude Code reads its MCP servers once at launch, so the running agent will
+/// never connect however long the strip waits, and the next poll would paint
+/// the same "not connected" over the sentence that just explained why. The
+/// restart is what makes the registration real, and the button that does it
+/// re-arms the watch on the far side.
+async function registerMcp(button) {
+  stopMcpWatch();
+  button.disabled = true;
+  button.textContent = "Registering…";
+  const say = (msg) => {
+    const strip = $("pty-mcp");
+    strip.textContent = "";
+    const span = document.createElement("span");
+    span.textContent = msg;
+    strip.appendChild(span);
+    return strip;
+  };
+  let done;
+  try {
+    done = await invoke("mcp_register");
+  } catch (e) {
+    // Verbatim: whatever claude said is more specific than anything dreamd
+    // could say on its behalf.
+    const strip = say(`Could not register: ${String(e.message || e)}`);
+    const retry = document.createElement("button");
+    retry.className = "pty-cta";
+    retry.textContent = "Try again";
+    retry.addEventListener("click", () => registerMcp(retry));
+    strip.appendChild(retry);
+    return;
+  }
+  // Already registered is an answer, not a failure — and the *likely* answer,
+  // since this strip is up for every session until an agent first calls a
+  // dreamd tool. Either way the next step is the same one.
+  const strip = say(done.added
+    ? `Registered ${done.launcher} with Claude Code, for all your projects. Restart the agent to connect it.`
+    : "Claude Code already knows dreamd — this agent started before the registration, or has not called a dreamd tool yet. Restarting it is the fix for the first.");
+  addRestartCta(strip);
+}
+
+/// The "Restart agent" button the strip offers after a registration.
+///
+/// Says what it costs. `restartPane` drops the transcript, and a reader who has
+/// just been told to press a button deserves to know that before rather than
+/// after — the same argument `#pty-confirm` exists for.
+///
+/// Re-arms the poll on the far side, which is the one place a restart should:
+/// the fresh session is the first one that can connect, and the strip clearing
+/// itself is how the reader learns that it did.
+function addRestartCta(strip) {
+  const go = document.createElement("button");
+  go.className = "pty-cta";
+  go.textContent = "Restart agent";
+  go.title = "Ends this conversation and starts a new one";
+  go.addEventListener("click", async () => {
+    await restartPane();
+    startMcpWatch();
+  });
+  strip.appendChild(go);
 }
 
 // ---- the native agent surface ---------------------------------------------

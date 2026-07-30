@@ -456,14 +456,17 @@
         background: color-mix(in srgb, var(--accent, #a48cf5) 10%, transparent);
       }
       #pty-pane.mcp-warn #pty-mcp { display: flex; }
-      #pty-mcp code {
-        font-family: var(--font-mono, ui-monospace, Menlo, monospace);
-        font-size: 10px; padding: 1px 4px; border-radius: 4px;
-        background: var(--btn-bg, #1f1c2b);
-        /* The command is the only part worth selecting, and it is the one thing
-           in the pane chrome that is meant to be copied out. */
-        user-select: text; -webkit-user-select: text;
+      /* The sentence takes the slack so the buttons stay at the right edge and
+         a long one wraps inside the strip rather than pushing them off it.
+         `min-width: 0` because a flex child will not shrink below its longest
+         word without it. */
+      #pty-mcp span { flex: 1; min-width: 0; }
+      /* The first `.pty-cta` here is the one that acts, and it is lit the way
+         `#pty-mode-go` is: this strip is read once and then pressed. */
+      #pty-mcp button.pty-cta:first-of-type {
+        border-color: var(--accent, #a48cf5); color: var(--accent, #a48cf5);
       }
+      #pty-mcp button.pty-cta:disabled { opacity: 0.55; pointer-events: none; }
 
       /* The mode-change confirmation strip. Hidden until a change is staged;
          `display: none` rather than a height transition, so a pane that never
