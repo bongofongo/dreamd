@@ -17,6 +17,12 @@
 //!   draws. Lenient by contract; the drift lands here and nowhere else.
 //! - [`claude`] — the child process: where `claude` is, what it is launched
 //!   with, the reader thread, and the two lines dreamd ever writes to it.
+//! - [`gate`] — pure policy plus the cards waiting on the reader. Deny is the
+//!   answer to every kind of silence.
+//! - [`gate_server`] — the per-session socket the permission hook talks to, and
+//!   the `--settings` document that points it there.
+//! - [`hook`] — `dreamd approve`, the process Claude Code spawns per tool call.
+//!   Shaped like `mcp::shim`, but failing closed where that one fails open.
 //!
 //! [`Sink`] is shaped exactly like [`crate::pty::Sink`] and
 //! [`crate::notify::Notifier`], and for the third time for the same reason: a
@@ -25,6 +31,9 @@
 //! knows a webview exists.
 
 pub mod claude;
+pub mod gate;
+pub mod gate_server;
+pub mod hook;
 pub mod wire;
 
 use std::sync::Arc;

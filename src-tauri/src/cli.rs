@@ -39,6 +39,19 @@ pub enum Cmd {
     /// Claude Code sees the tools whether or not dreamd is open, and a call
     /// made while it is closed says so instead of failing the session.
     Mcp,
+    /// Answer one of Claude Code's permission prompts from the dreamd window.
+    ///
+    /// Not for typing. dreamd installs this as a `PreToolUse` hook when it
+    /// launches an agent, so the reader approves a tool call on a card in the
+    /// window they are already reading in, rather than at a prompt in a
+    /// terminal. Reads the hook payload on stdin, prints a verdict on stdout,
+    /// and denies whenever it cannot reach the window that asked.
+    #[command(hide = true)]
+    Approve {
+        /// The window's permission socket, minted by dreamd at launch.
+        #[arg(long)]
+        socket: PathBuf,
+    },
 }
 
 #[derive(Subcommand)]
@@ -109,6 +122,13 @@ pub fn repo_is_claimed(root: &Path) -> bool {
 /// Run a subcommand. The `Err` message is printed to stderr by the caller,
 /// which then exits non-zero.
 pub fn run(cmd: Cmd) -> Result<(), String> {
+    // `approve` runs before *everything*, including the repo-root walk: it is
+    // spawned once per tool call and blocks the agent while it runs, so its
+    // whole job is a socket path it was handed and a line of JSON. It reads no
+    // configuration and needs to know nothing about a repository.
+    if let Cmd::Approve { socket } = &cmd {
+        return crate::agent::hook::run(socket);
+    }
     let repo_root = crate::resolve_repo_root(None);
     // `mcp` runs before the config read the other two need: it reads no
     // configuration at all, and every millisecond here is on the path of an
@@ -121,8 +141,8 @@ pub fn run(cmd: Cmd) -> Result<(), String> {
         Cmd::Theme { action } => theme_cmd(action, &cfg),
         Cmd::Config { action } => config_cmd(action, &repo_root),
         Cmd::Marks { action } => marks_cmd(action, &repo_root),
-        // Handled above, before the config read.
-        Cmd::Mcp => unreachable!(),
+        // Both handled above, before the config read.
+        Cmd::Mcp | Cmd::Approve { .. } => unreachable!(),
     }
 }
 

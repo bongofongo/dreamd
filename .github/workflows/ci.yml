@@ -115,7 +115,15 @@ jobs:
       # leaves behind and the rule deciding which of two dreamds may write at
       # all are only observable against a real one.
       #
-      # These are the four that gain the most from the Linux arm: the socket,
+      # agent_check is the fifth and the only one that runs a *second dreamd*:
+      # it drives the real `dreamd approve` binary — the PreToolUse hook the
+      # permission gate is built out of — against a real socket, so the two
+      # halves of the gate are checked against each other rather than each
+      # against its own idea of the protocol. It also pins the direction every
+      # failure falls in, which is the whole security claim: an unreachable
+      # window, an unparseable payload and a retired server all deny.
+      #
+      # These are the five that gain the most from the Linux arm: the sockets,
       # the 0600/0700 modes and the atomic rename are the same *code* on both
       # platforms but a different kernel underneath, and until this matrix
       # existed none of it had ever run anywhere but macOS.
@@ -125,6 +133,7 @@ jobs:
           cargo run --example theme_check
           cargo run --example mcp_check
           cargo run --example marks_check
+          cargo run --example agent_check
 
       # locate_check used to be excluded here as a perf tier's job. It isn't:
       # it is the only check with an independent oracle for highlight
