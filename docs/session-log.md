@@ -1,5 +1,162 @@
 # Session log
 
+## 2026-07-30 — the agent stops being a terminal
+
+The fourth and last step of what "AI-integrated" can mean here. dreamd had an
+MCP server (the agent reads the stack) and an embedded pane (the agent lives in
+the window), but the pane was *Claude Code's* UI: an xterm.js terminal painting
+a TUI, with its own palette, its own typography and a composer dreamd could not
+see into. A question asked about typeset prose came back in a 13px monospace
+box. The conversation is now dreamd's own, rendered through dreamd's own
+markdown pipeline, with a native composer and native permission cards. Native
+is the default; the terminal is a documented fallback behind
+`agent.surface = "terminal"`.
+
+Six commits, `3681a64` → `b66da19`.
+
+### What happened
+
+1. **Four things were measured against the installed `claude` 2.1.220 before a
+   line was written**, and one of them changed the design.
+
+   - Multi-turn over stdin keeps one `session_id` — two `{"type":"user",…}`
+     lines, two turns, two `result` messages, no restart. That is the whole
+     transport.
+   - **`--permission-prompt-tool` no longer exists.** The plan had assumed it
+     did. The replacement is a `PreToolUse` hook installed via `--settings`, and
+     it is *better*: it fired, blocked for two seconds and denied a `Bash` call
+     **while the session ran under `--permission-mode bypassPermissions`**. The
+     hook outranks the mode.
+   - `{"type":"control_request","request":{"subtype":"interrupt"}}` ends a turn
+     without killing the child.
+   - **`/model haiku` sent as ordinary user-message text is honoured**, and the
+     next turn's `system/init` reports the new model. The plan had named "model
+     switching costs a restart natively" as a regression to own up to in the
+     release notes. It does not exist; the chips work exactly as before.
+
+2. **`agent/wire.rs` is the only place that knows another program's schema**, and
+   it is `serde_json::Value` navigation rather than derived structs on purpose —
+   we do not own this format and did not version it. `digest` returns a `Vec`,
+   never a `Result`: an unknown `type`, an unknown content block, a line that is
+   not JSON each yield nothing. A message kind dreamd has never seen costs a
+   ticker row, never the pane. Two committed fixtures carry invented message
+   kinds, an invented `stream_event` type and a line of prose to keep that true.
+
+   Text is read **twice** and both readings are used: `text_delta` events paint
+   plain so prose visibly moves, then the closing `assistant` block replaces the
+   node with markdown-rendered HTML. Rendering mid-stream flickers between block
+   types as fences and list markers arrive; waiting for the end makes a long
+   answer look like nothing is happening. Tool calls are read only from the
+   complete message — `content_block_start` announces an empty `input` and
+   dribbles the real one out in fragments.
+
+3. **No shell.** The pane runs `$SHELL -l -i -c "exec claude"` because a `.app`
+   from Finder inherits launchd's minimal `PATH`. That reasoning holds; the
+   remedy does not have to. `agent::claude::resolve` asks a login shell *where*
+   `claude` is, once, and everything after that is `Command::arg`. It matters
+   more here than it did there: this launch carries two dreamd-minted paths
+   inside a `--settings` JSON document, which through a shell would be a quoting
+   problem with a security answer.
+
+4. **The permission gate inverts the old trade.** The six pre-granted tools were
+   the whole policy precisely because Claude Code's own prompt lands in a
+   terminal nobody is watching. With a card in the window the reader is already
+   in, the six become the *fast path* — a tool on the list never reaches the hook
+   — and the policy moves out of an argv string into `gate::decide`, a pure
+   function with tests. **Deny is the answer to every kind of silence**: a closed
+   pane, a retired server, an unparseable payload, an elapsed wait. There is no
+   path that fails open, and `agent_spawn` refuses to launch at all if the gate
+   cannot be built.
+
+   `dreamd approve` is shaped like `mcp::shim` and inverted where it counts: the
+   MCP shim answers `initialize`/`tools/list` locally so a closed dreamd cannot
+   blank an agent's tool list for a session — it fails *open* toward usefulness.
+   This one has no local answers and fails closed.
+
+5. **The gate socket is per-session, not per-repo.** Routed through the MCP
+   socket, a secondary window's agent would raise its cards in the primary's,
+   where a reader who never asked the question would be asked to approve it.
+
+6. **Assistant prose goes through `markdown::render_with`** — the same
+   pulldown-cmark and syntect the documents go through. One decision, and it buys
+   both halves of the point: the answer is typeset in the reader's own palette
+   and syntax theme, *and* it inherits tenet 4's escaping rather than needing its
+   own, because it is the same string through the same renderer.
+
+7. **Escape interrupts now.** xterm claimed the key and D12 spent it on "close
+   the pane", leaving Ctrl+C as the only way to stop a turn — a cost the pane's
+   own comments record as deliberate. dreamd owns the keyboard natively, so
+   Escape stops a running turn and closes the pane when none is running.
+
+### Mistakes & deviations
+
+- **The plan's permission design was built on a flag that had been removed.**
+  Caught before any code, by running `claude --help` instead of trusting the
+  research summary that reported the flag as present. The hook that replaced it
+  is strictly better, so the plan improved rather than shrank.
+- **A `gate-` prefix on a 16-hex socket name would not bind.** macOS caps
+  `sun_path` at ~104 bytes and `mcp_check`'s socket already sits at **102**. The
+  gate name is now `g<12hex>.sock` — 18 characters against MCP's 21 — so the
+  budget question is answered relatively: anywhere MCP binds, the gate binds. A
+  test pins the inequality. This was two bytes from being someone else's bug
+  report.
+- **A `tool_of_answer` stub would have made "Always allow" silently do nothing.**
+  Written as a placeholder returning `None`, caught on reread, replaced by
+  carrying the tool name on the waiting entry — which is also stricter, since a
+  frontend naming a different tool can no longer widen the session's policy.
+- **Adding a settings row made an existing harness check pass for the wrong
+  reason.** `both chrome toggles listed off macOS` counted rows in the Window
+  tab; the third row made it 2 on macOS (titlebar + surface) while the same three
+  rows would have failed on Linux. Now asserted by label.
+- **The first A/B arm silently produced zero output** — a worktree needs
+  `perf/corpus/generated` copied in as well as `node_modules`, or every scenario
+  dies with `ENOENT … repos/repo-500`. Exactly the failure mode
+  `perf-scripts-fail-silently` warns about, caught by checking the line count.
+
+### State
+
+`cargo build` clean, `cargo clippy --all-targets --all-features -D warnings`
+clean. **340 unit tests** pass. All five example harnesses green, including the
+new `agent_check` (17 checks), which drives the **real `dreamd approve` binary**
+against a **real socket** — the two halves of the gate had never been run against
+each other before it. It joins `ci.yml`. `node --test ui/paths.test.mjs` 10/10;
+`ui-check.mjs` **260 passed, 0 failed**, including ~40 new checks over the
+`agent-event` → DOM seam.
+
+**Both new guards were proven to have teeth rather than merely to be green.**
+Forcing `wire::digest` to `unwrap` turned 7 tests red; forcing `gate::decide` to
+return `Auto` turned 5 harness checks and 10 unit tests red. Both restored by
+hand.
+
+The end-to-end launch path was verified against the real CLI with a throwaway
+example since deleted: `resolve()` found `~/.local/bin/claude` through the login
+shell, and one turn produced `Ready → Status → two TextDeltas → Text → Turn`,
+with the deltas concatenating to the settled block.
+
+**Perf: `perf-pass` read 19 regressed and none of it is this work.** The loud
+rows are `chromium.highlight.mixed-512k.spanning.*`, where `applied` went 50 →
+214 and `failRatio` went *negative*. That is 2026-07-29's `placeAcrossNodes`
+wrapping one `<mark>` per text-node slice sharing an id, so the scenario's
+element counter overcounts — a negative fail ratio is the tell that the metric
+broke, not the code. Settled by A/B rather than by argument: a worktree at
+`1ce7416` against HEAD, 3 reps per arm, put the `spanning.*` rows **flat to −10%**
+with the only ≥15% movers being sub-millisecond noise or improvements.
+`real.loop.debug-h10.apply_highlights_ms` (+77–92%) and `repaints` (2 → 4) are the
+same change's genuine cost — marks that never painted before now paint — but that
+arm was **not** A/B'd, so it is reasoning rather than measurement, and it is
+recorded here as such. Results in
+`perf/results/pass-b66da19-20260730-161849.json`. `perf/baseline.json` untouched.
+
+**Left open, and it is the important one: the GUI itself is unverified.**
+`ui-check` asserts what the page knows, not what it paints. Nobody has looked at
+the conversation log, the tool ticker or a permission card in a real window —
+that needs `cargo tauri dev` and human eyes, and until it happens the visual half
+of this session is a claim, not a result.
+
+Also unbuilt, deliberately: `--resume` (the `session_id` is captured and stored
+against it), thinking blocks, tool payloads and diffs, and reading the MCP strip
+off `system/init`'s `mcp_servers[]` instead of polling.
+
 ## 2026-07-29 — the bottom of the window, and what a mark is allowed to say
 
 Four complaints, all from reading with the thing: content at the foot of the

@@ -84,11 +84,17 @@ The Rust side is seven small modules, each with one job:
   logic that picks which half to show.
 - **`cli`** — the `dreamd theme …` and `dreamd config …` commands you can run from
   a terminal without opening the window.
-- **`pty`** — the embedded terminal pane (press `Ctrl+T`) that runs Claude Code
-  inside dreamd's own window, docked at the bottom or the right. It can now be
-  told which **permission mode** to start Claude Code in — how much it's allowed
-  to do without asking you first, from "ask before every edit" up to "don't ask
-  at all" — from a dropdown in the pane's own header.
+- **`agent`** — the pane (press `Ctrl+T`) where you talk to Claude, docked at
+  the bottom or the right. Claude's replies are laid out here by dreamd itself,
+  in the same typography and colours as the document, with a quiet list of what
+  it did beneath them. When it wants to do something it hasn't been pre-approved
+  for, a card appears in this pane with Allow / Always allow / Deny — and if
+  nobody answers, the answer is no. The pane's header also chooses a
+  **permission mode**: how much Claude may do before asking, from "ask before
+  every edit" up to "don't ask at all".
+- **`pty`** — the older version of that pane, which embedded Claude Code's own
+  terminal interface instead. Kept as a fallback (Settings → Window) for
+  anything the pane above cannot draw yet, and due to be removed.
 - **`mcp`** — the private channel (no network port, just a file only your account
   can read) that lets the Claude Code running in that pane ask dreamd for your
   highlight queue and mark items answered as it works through them.
@@ -244,6 +250,42 @@ causes were wrong.
   that is where its users look.
 
 ## Recent updates
+
+- **2026-07-30** — **The agent stopped being a terminal.** Until now, asking
+  Claude a question inside dreamd meant a real terminal embedded in the window:
+  Claude Code's own interface, with its own colours, its own typeface, and a
+  text box dreamd could not see into. You read a beautifully typeset document,
+  highlighted a sentence, asked a question about it — and the answer came back
+  looking like a terminal.
+
+  The conversation is now dreamd's. The reply is laid out with the same
+  typography, the same colours and the same code highlighting as the document
+  you asked about, because it goes through exactly the same machinery. Beneath
+  the words there is a quiet one-line-per-step list of what Claude actually did
+  — which files it read, which commands it ran, each ticked when it finished —
+  so you can see the work without it filling the pane.
+
+  The bigger change is **permission cards**. Before, if Claude wanted to do
+  something it had not been pre-approved for, it asked in a terminal nobody was
+  watching, and the request simply sat there looking like nothing had happened.
+  That is why the old pane pre-approved a small fixed set of harmless things and
+  could never safely offer more. Now the request appears as a card in the window
+  you are already reading in, saying what Claude wants to do, with Allow, Always
+  allow, and Deny. "Always" lasts for that conversation only and is never written
+  to your settings.
+
+  Everything about this refuses in the safe direction: if the window is closed,
+  if you never answer, if anything at all goes wrong, the answer is no. There is
+  no way for it to accidentally say yes.
+
+  Two smaller things came with it. **Escape now stops Claude mid-answer** — the
+  old terminal claimed that key, so stopping a reply meant Ctrl+C. And the
+  terminal pane is still there as a fallback, in Settings → Window, for anything
+  the new one cannot draw yet; it will be removed once nobody needs it.
+
+  **Not yet checked by a human:** the new pane has been verified by automated
+  tests down to what the page *knows*, but nobody has yet looked at it in a real
+  window. How it actually looks is still an open question.
 
 - **2026-07-30** — **dreamd 0.2.0 released.** The first release since 0.1.0
   (2026-07-26) — 91 commits behind it, and a minor version bump rather than a
