@@ -119,14 +119,15 @@ async function init() {
   } catch (e) { console.error(e); }
   perf.at("ipc_repo_info");
 
-  // One round trip, two answers: the tree cannot lay itself out at the
-  // persisted width without `[ui]`, and asking for it after the keymap would
-  // put a second serial IPC in front of the first paint. `get_ui` is a lock
-  // read — `get_settings`, which also carries it, walks the themes directory.
+  // One round trip, two answers: the tree, the stack panel and the agent pane
+  // cannot lay themselves out at their persisted sizes without `[ui]`, and
+  // asking for it after the keymap would put a second serial IPC in front of
+  // the first paint. `get_ui` is a lock read — `get_settings`, which also
+  // carries it, walks the themes directory.
   try {
     const [km, ui] = await Promise.all([invoke("get_keymap"), invoke("get_ui")]);
     if (km) keymap = km;
-    applyTreeWidth(ui && ui.tree_width);
+    applyPanelSizes(ui);
   } catch (e) {}
   $("search-hint").textContent = `Press ${keymap.palette} to search`;
   perf.at("ipc_keymap");
@@ -424,65 +425,143 @@ function commonPrefix(a, b) {
   return a.slice(0, i);
 }
 
-// ---- tree width ----------------------------------------------------------
-// The handle on the sidebar's right border and `config.ui.tree_width` are the
-// same number. Rust clamps it to this range on the way in, so a stale or
-// hand-typed value costs the nearest usable tree rather than a rejected config
-// file; these constants mirror `config::TREE_WIDTH_*` and exist so the drag
-// never *sends* something out of range in the first place.
-const TREE_MIN = 140;
-const TREE_MAX = 600;
-const TREE_DEFAULT = 260;
-let treeWidth = TREE_DEFAULT;
+// ---- panel sizes ---------------------------------------------------------
+// Four numbers and one gesture. The handle on the sidebar's right border, the
+// one on the stack panel's left, and the one on whichever edge the agent pane
+// is docked to all do the same three things: clamp, write a CSS variable, and
+// debounce a `set_config`. They are one mechanism rather than three copies
+// because the only thing that actually differs between them is which fixed
+// edge the pointer is being measured from.
+//
+// Rust clamps every one of these on the way in, so a stale or hand-typed value
+// costs the nearest usable panel rather than a rejected config file; the ranges
+// here mirror `config::TREE_WIDTH_*` / `STACK_WIDTH_*` / `PANE_WIDTH_*` /
+// `PANE_HEIGHT_*` and exist so a drag never *sends* something out of range in
+// the first place. The fallbacks in index.html mirror the defaults.
+const SIZES = {
+  tree:  { key: "tree_width",  css: "--tree-width",  min: 140, max: 600,  def: 260 },
+  stack: { key: "stack_width", css: "--stack-width", min: 200, max: 720,  def: 280 },
+  paneW: { key: "pane_width",  css: "--pane-width",  min: 240, max: 1200, def: 380 },
+  paneH: { key: "pane_height", css: "--pane-height", min: 120, max: 1200, def: 240 },
+};
+
+// The last value applied for each, which is what gets persisted — never the
+// raw pointer position, so the file can only ever hold something in range.
+const sized = {};
 
 // Written as an inline style on <html>, which outranks any `:root` rule a
 // palette might carry.
-function applyTreeWidth(px) {
-  const want = Number(px) || TREE_DEFAULT;
-  treeWidth = Math.round(Math.min(TREE_MAX, Math.max(TREE_MIN, want)));
-  document.documentElement.style.setProperty("--tree-width", `${treeWidth}px`);
+function applySize(name, px) {
+  const s = SIZES[name];
+  const want = Number(px) || s.def;
+  sized[name] = Math.round(Math.min(s.max, Math.max(s.min, want)));
+  document.documentElement.style.setProperty(s.css, `${sized[name]}px`);
 }
 
-// Debounced: a drag across the window is one config write, not forty.
-let treeWidthTimer = null;
-function persistTreeWidth() {
-  clearTimeout(treeWidthTimer);
-  treeWidthTimer = setTimeout(() => {
-    invoke("set_config", { patch: { ui: { tree_width: treeWidth } } })
-      .catch((e) => console.error(e));
+// Every persisted size at once, from the one `get_ui` the boot already does.
+// `undefined` is fine at each of them — `applySize` falls back to the default,
+// which is the same number index.html's `var()` fallback already painted, so a
+// config that has never mentioned `[ui]` costs no reflow.
+function applyPanelSizes(ui) {
+  applySize("tree", ui && ui.tree_width);
+  applySize("stack", ui && ui.stack_width);
+  applySize("paneW", ui && ui.pane_width);
+  applySize("paneH", ui && ui.pane_height);
+}
+
+// Debounced: a drag across the window is one config write, not forty. One
+// timer and one accumulating patch across all four, so resizing two panels in
+// quick succession is still a single write rather than two racing ones — the
+// global table is patched and renamed over, and the loser of that race would
+// take the winner's key with it.
+let sizeTimer = null;
+let sizePatch = {};
+function persistSize(name) {
+  sizePatch[SIZES[name].key] = sized[name];
+  clearTimeout(sizeTimer);
+  sizeTimer = setTimeout(() => {
+    const ui = sizePatch;
+    sizePatch = {};
+    invoke("set_config", { patch: { ui } }).catch((e) => console.error(e));
   }, 400);
 }
 
-function wireTreeDrag() {
-  const handle = $("tree-resize");
-  const sidebar = $("sidebar");
-  handle.addEventListener("pointerdown", (e) => {
-    // No `setPointerCapture`: dragging past the minimum collapses the tree,
-    // which hides this element, and a capture held by a `display: none`
-    // element is not something to rely on. Window listeners for the length of
-    // the drag do the same job and cannot be lost that way.
+// `begin` is handed the pointerdown and answers what *this* press is dragging:
+// the size it writes, the class that holds the cursor for its duration, and the
+// function turning each subsequent move into a number. Resolved per press
+// rather than per handle for two reasons — the pane has to pick its axis at
+// press time, because `agent.position` is a live setting and the panel can
+// change it under a wired handler; and every measurement is taken from a fixed
+// edge that has to be read *before* the box starts moving underneath the drag.
+//
+// `atMinimum` is the tree's alone: only it has somewhere to go past its own
+// minimum. Returning true from it means "this move sets no size".
+function wireDrag(handleId, begin) {
+  $(handleId).addEventListener("pointerdown", (e) => {
+    // No `setPointerCapture`: dragging the tree past its minimum collapses it,
+    // which hides that handle, and a capture held by a `display: none` element
+    // is not something to rely on. Window listeners for the length of the drag
+    // do the same job and cannot be lost that way.
     e.preventDefault();
-    const left = sidebar.getBoundingClientRect().left;
-    document.body.classList.add("dragging-tree");
+    const { name, cls, sizeOf, atMinimum } = begin(e);
+    document.body.classList.add(cls);
     const onMove = (ev) => {
-      const raw = ev.clientX - left;
-      // D20: at the extreme the drag *is* `toggle_tree`. The width is left at
-      // the last usable one, so expanding again restores what you had rather
-      // than snapping back to the default.
-      if (raw < TREE_MIN) { document.body.classList.add("nav-collapsed"); return; }
-      document.body.classList.remove("nav-collapsed");
-      applyTreeWidth(raw);
+      const raw = sizeOf(ev);
+      if (atMinimum && atMinimum(raw)) return;
+      applySize(name, raw);
     };
     const onUp = () => {
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
       window.removeEventListener("pointercancel", onUp);
-      document.body.classList.remove("dragging-tree");
-      persistTreeWidth();
+      document.body.classList.remove(cls);
+      persistSize(name);
     };
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
     window.addEventListener("pointercancel", onUp);
+  });
+}
+
+function wireResizeHandles() {
+  // The tree grows rightwards from the window's left edge.
+  wireDrag("tree-resize", () => {
+    const left = $("sidebar").getBoundingClientRect().left;
+    return {
+      name: "tree", cls: "dragging-tree",
+      sizeOf: (ev) => ev.clientX - left,
+      atMinimum: (raw) => {
+        // D20: at the extreme the drag *is* `toggle_tree`. The width is left
+        // at the last usable one, so expanding again restores what you had
+        // rather than snapping back to the default.
+        if (raw >= SIZES.tree.min) { document.body.classList.remove("nav-collapsed"); return false; }
+        document.body.classList.add("nav-collapsed");
+        return true;
+      },
+    };
+  });
+
+  // The stack panel grows leftwards from its own right edge — the window's
+  // right edge, or the agent pane's left one when that is docked right.
+  wireDrag("stack-resize", () => {
+    const right = $("stack-panel").getBoundingClientRect().right;
+    return { name: "stack", cls: "dragging-stack", sizeOf: (ev) => right - ev.clientX };
+  });
+
+  // The pane grows from whichever edge it is *not* docked against, so the dock
+  // decides both the axis and which of the two keys the drag writes.
+  //
+  // No collapse at the minimum here, deliberately: a pane dragged shut would
+  // read as having taken the running child with it while the process carried
+  // on, and `toggle_pane` — which hides it and says the process is still there
+  // — is already the gesture that means this.
+  wireDrag("pane-resize", () => {
+    const right = document.body.classList.contains("agent-right");
+    const box = $("pty-pane").getBoundingClientRect();
+    return {
+      name: right ? "paneW" : "paneH", cls: "dragging-pane",
+      sizeOf: right ? (ev) => box.right - ev.clientX : (ev) => box.bottom - ev.clientY,
+    };
   });
 }
 
@@ -2890,8 +2969,9 @@ function buildTerminal() {
     invoke("pty_write", { data: toB64(d) }).catch((e) => setPaneStatus(String(e)));
   });
 
-  // The pane's height is a percentage of the window, so an OS window resize
-  // changes the terminal's geometry with no keystroke involved.
+  // Observing the box rather than the window: the pane's own drag handle
+  // changes the terminal's geometry with no window resize involved, and a
+  // dock switch changes it with neither. All three arrive here.
   new ResizeObserver(() => fitPane()).observe($("pty-term"));
   if (!pty.listening) {
     pty.listening = true;
@@ -3837,7 +3917,7 @@ function wireUi() {
   wireFind();
   wireSettings();
   wireRootField();
-  wireTreeDrag();
+  wireResizeHandles();
   wireOutline();
 }
 

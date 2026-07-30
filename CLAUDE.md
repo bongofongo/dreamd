@@ -282,9 +282,13 @@ the upgrade procedure.
   `config_check` reaches. `ui.titlebar` is the one preference whose *default* is
   per-platform (`TITLEBAR_DEFAULT`, true only on macOS, where the bar is an
   overlay); that is a value rather than a `cfg` arm precisely so `apply_chrome`
-  stays one code path on both. `ui.tree_width` is *clamped* on deserialize (140–600) rather than
+  stays one code path on both. The four panel sizes — `ui.tree_width` (140–600),
+  `stack_width` (200–720), `pane_width` (240–1200) and `pane_height` (120–1200) —
+  are *clamped* on deserialize rather than
   validated — a drag persists without a round trip through a validator, and a stale
-  number costs a nearest-usable tree, not the rest of the file.
+  number costs a nearest-usable panel, not the rest of the file. The pane keeps a
+  width *and* a height because its drag handle changes axis with `agent.position`:
+  one shared key would reinterpret a tall bottom pane as a wide right one.
 - `theme` — the palette registry: `BUNDLED` (`include_str!`'d), user palettes in
   `~/.config/dreamd/themes/`, and the `--bg` / `--syntax-theme` values parsed back out of
   the CSS for the native window and syntect. Those two lookups take a `Scheme`, because

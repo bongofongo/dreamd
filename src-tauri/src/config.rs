@@ -164,6 +164,26 @@ pub struct Ui {
     #[serde(deserialize_with = "de_tree_width")]
     pub tree_width: u32,
 
+    /// Stack panel width in CSS pixels, as left by its drag handle. Clamped on
+    /// the way in for the same reason [`Ui::tree_width`] is.
+    #[serde(deserialize_with = "de_stack_width")]
+    pub stack_width: u32,
+
+    /// The agent pane's width when it is docked right (`agent.position =
+    /// "right"`), in CSS pixels.
+    ///
+    /// Two numbers rather than one because the pane's drag handle changes
+    /// orientation with the dock: the width you left it at on the right is not
+    /// a height, and switching position should restore the size you last chose
+    /// *there* rather than reinterpret the other one.
+    #[serde(deserialize_with = "de_pane_width")]
+    pub pane_width: u32,
+
+    /// The agent pane's height when it is docked below the reader, in CSS
+    /// pixels. See [`Ui::pane_width`] for why it is its own key.
+    #[serde(deserialize_with = "de_pane_height")]
+    pub pane_height: u32,
+
     /// Whether the window draws the native menubar — File / Edit / Help on
     /// Linux, and nothing at all on macOS, where the bar belongs to the
     /// application rather than to the window and cannot be hidden per-window.
@@ -191,6 +211,26 @@ pub const TREE_WIDTH_DEFAULT: u32 = 260;
 pub const TREE_WIDTH_MIN: u32 = 140;
 pub const TREE_WIDTH_MAX: u32 = 600;
 
+/// The stack panel and the agent pane, same arrangement as the tree above.
+///
+/// The three defaults are deliberately modest: all three surfaces open *over*
+/// or *beside* the document, and a reader that has to be dismissed before you
+/// can read is the failure these sizes are set against. They were 340px, 38% of
+/// the window and 40% of it respectively — a right-docked pane on a wide screen
+/// took 720px of a document that renders at 700. Every one of them is now a
+/// drag away from whatever the reader actually wants, and the drag persists.
+pub const STACK_WIDTH_DEFAULT: u32 = 280;
+pub const STACK_WIDTH_MIN: u32 = 200;
+pub const STACK_WIDTH_MAX: u32 = 720;
+
+pub const PANE_WIDTH_DEFAULT: u32 = 380;
+pub const PANE_WIDTH_MIN: u32 = 240;
+pub const PANE_WIDTH_MAX: u32 = 1200;
+
+pub const PANE_HEIGHT_DEFAULT: u32 = 240;
+pub const PANE_HEIGHT_MIN: u32 = 120;
+pub const PANE_HEIGHT_MAX: u32 = 1200;
+
 /// macOS keeps its titlebar; nothing else does.
 ///
 /// This is the one platform difference in the window-chrome settings, and it is
@@ -214,6 +254,9 @@ impl Default for Ui {
     fn default() -> Self {
         Self {
             tree_width: TREE_WIDTH_DEFAULT,
+            stack_width: STACK_WIDTH_DEFAULT,
+            pane_width: PANE_WIDTH_DEFAULT,
+            pane_height: PANE_HEIGHT_DEFAULT,
             menubar: false,
             titlebar: TITLEBAR_DEFAULT,
         }
@@ -225,6 +268,27 @@ where
     D: serde::Deserializer<'de>,
 {
     Ok(u32::deserialize(de)?.clamp(TREE_WIDTH_MIN, TREE_WIDTH_MAX))
+}
+
+fn de_stack_width<'de, D>(de: D) -> Result<u32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(u32::deserialize(de)?.clamp(STACK_WIDTH_MIN, STACK_WIDTH_MAX))
+}
+
+fn de_pane_width<'de, D>(de: D) -> Result<u32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(u32::deserialize(de)?.clamp(PANE_WIDTH_MIN, PANE_WIDTH_MAX))
+}
+
+fn de_pane_height<'de, D>(de: D) -> Result<u32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(u32::deserialize(de)?.clamp(PANE_HEIGHT_MIN, PANE_HEIGHT_MAX))
 }
 
 /// The user's appearance preference. [`Mode::System`] is not a thing CSS can be
@@ -467,8 +531,9 @@ impl Config {
 ///   settings panel to get the frame back. The pair travels together: one key
 ///   deciding your chrome is the shape of the problem, not the direction.
 ///
-/// `agent.position`, `agent.surface` and `ui.tree_width` are left alone: they
-/// move furniture *inside* the window and read nothing. `surface` in particular
+/// `agent.position`, `agent.surface` and the four `ui` sizes — `tree_width`,
+/// `stack_width`, `pane_width`, `pane_height` — are left alone: they move
+/// furniture *inside* the window and read nothing. `surface` in particular
 /// only chooses how a conversation is *drawn* — neither of its two values
 /// widens what the agent may do, because the permission gate is a hook and
 /// outranks the surface entirely.
@@ -965,6 +1030,41 @@ mod tests {
         assert_eq!(config_of("[ui]\ntree_width = 0\n").ui.tree_width, 140);
         assert_eq!(config_of("[ui]\ntree_width = 99999\n").ui.tree_width, 600);
         assert_eq!(config_of("[ui]\ntree_width = 320\n").ui.tree_width, 320);
+    }
+
+    #[test]
+    fn the_pane_and_stack_sizes_are_clamped_the_same_way() {
+        // Same rule as the tree, and pinned separately because each one has its
+        // own deserializer: a range copied onto the wrong key is exactly the
+        // kind of mistake a shared test would not catch.
+        let ui = |s: &str| config_of(s).ui;
+        assert_eq!(ui("[ui]\nstack_width = 1\n").stack_width, STACK_WIDTH_MIN);
+        assert_eq!(
+            ui("[ui]\nstack_width = 99999\n").stack_width,
+            STACK_WIDTH_MAX
+        );
+        assert_eq!(ui("[ui]\nstack_width = 300\n").stack_width, 300);
+
+        assert_eq!(ui("[ui]\npane_width = 1\n").pane_width, PANE_WIDTH_MIN);
+        assert_eq!(ui("[ui]\npane_width = 99999\n").pane_width, PANE_WIDTH_MAX);
+        assert_eq!(ui("[ui]\npane_width = 500\n").pane_width, 500);
+
+        assert_eq!(ui("[ui]\npane_height = 1\n").pane_height, PANE_HEIGHT_MIN);
+        assert_eq!(
+            ui("[ui]\npane_height = 99999\n").pane_height,
+            PANE_HEIGHT_MAX
+        );
+        assert_eq!(ui("[ui]\npane_height = 300\n").pane_height, 300);
+    }
+
+    #[test]
+    fn the_pane_keeps_a_width_and_a_height_rather_than_one_size() {
+        // The dock decides which of the two a drag writes, so switching
+        // `agent.position` has to find the size last left on *that* edge. One
+        // shared key would make a tall bottom pane into a wide right one.
+        let cfg = config_of("[ui]\npane_width = 500\npane_height = 300\n");
+        assert_eq!(cfg.ui.pane_width, 500);
+        assert_eq!(cfg.ui.pane_height, 300);
     }
 
     #[test]

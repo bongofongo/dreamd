@@ -188,18 +188,23 @@
       }
       body.nav-collapsed #btn-expand { display: inline-flex; }
 
-      /* The pane's two docked sizes, declared once because two unrelated boxes
-         have to agree on them: `#pty-pane` sizes itself from them, and
+      /* The pane's two docked sizes, declared once because three unrelated
+         boxes have to agree on them: `#pty-pane` sizes itself from them,
          `#stack-panel` — which is `position: absolute` against this element and
          so does not know the pane exists — insets itself by them to stop
-         covering the pane. Both percentages resolve against `#main-wrap` at
-         either use site (a flex basis against the container's main size, an
-         inset against the containing block), so the two agree exactly rather
-         than approximately. */
+         covering the pane, and `#pane-resize` sits on whichever of the two
+         edges is the live one.
+
+         The indirection through `--pane-width` / `--pane-height` is what lets
+         the drag handle write them: those are set as an inline style on
+         `<html>`, and a bare `--pane-h` here would outrank an inherited value
+         for this element and everything under it. The fallbacks are the same
+         numbers `config::PANE_*_DEFAULT` carries, and are what shows before
+         `get_ui` lands. */
       #main-wrap {
         position: relative; min-width: 0; min-height: 0; display: flex; flex-direction: column;
-        --pane-h: max(40%, 140px);
-        --pane-w: clamp(320px, 38%, 720px);
+        --pane-h: var(--pane-height, 240px);
+        --pane-w: var(--pane-width, 380px);
       }
       body.hl-mode #content { cursor: crosshair; }
       body.hl-mode #content-scroll { box-shadow: inset 0 3px 0 var(--hl, #f2d16b); }
@@ -340,8 +345,14 @@
          from the palette, so the terminal reads as part of the app in both
          appearances — xterm paints its own foreground/background from the
          `theme` object app.js builds out of the same CSS variables. */
+      /* `min-height: 0` because a flex item defaults to `min-height: auto`, and
+         the header plus the composer are taller than the smallest height the
+         drag handle may ask for — without it the bottom of the range is not a
+         size the pane can actually take, and the last part of the drag would
+         simply do nothing. The right dock has always carried the pair for the
+         same reason on the other axis. */
       #pty-pane {
-        display: none; flex: 0 0 var(--pane-h);
+        display: none; flex: 0 0 var(--pane-h); min-height: 0;
         flex-direction: column; overflow: hidden;
         border-top: 1px solid var(--border, #2e2940);
         background: var(--sidebar-bg, #100e17);
@@ -383,6 +394,35 @@
         border-top: none;
         border-left: 1px solid var(--border, #2e2940);
       }
+
+      /* The pane's drag handle, the same gesture as `#tree-resize` and
+         deliberately not a child of what it resizes: `#pty-pane` is `overflow:
+         hidden`, so a strip straddling its outer border from the inside would
+         be clipped to nothing. Positioned against `#main-wrap` off the same two
+         variables `#stack-panel` insets by, which is what lets one element
+         follow the pane from the bottom edge to the right one — the pane is a
+         flex item in one layout and a grid item in the other, and neither can
+         be asked where it is.
+
+         Above `#stack-panel`'s z-index on purpose: when both are open they meet
+         along the pane's edge, and the 3px of overlap there is still the pane's
+         edge to drag. Gated on `:not(.view-mode)` for the reason the grid above
+         is — view mode hides the pane while `pane-open` is still true. */
+      #pane-resize {
+        display: none; position: absolute; z-index: 21;
+        touch-action: none; user-select: none; -webkit-user-select: none;
+      }
+      body.pane-open:not(.view-mode) #pane-resize { display: block; }
+      body.pane-open:not(.agent-right) #pane-resize {
+        left: 0; right: 0; bottom: calc(var(--pane-h) - 3px); height: 7px; cursor: row-resize;
+      }
+      body.pane-open.agent-right #pane-resize {
+        top: 0; bottom: 0; right: calc(var(--pane-w) - 3px); width: 7px; cursor: col-resize;
+      }
+      #pane-resize:hover, body.dragging-pane #pane-resize { background: var(--accent, #a48cf5); opacity: 0.5; }
+      body.dragging-pane { user-select: none; -webkit-user-select: none; }
+      body.dragging-pane:not(.agent-right) { cursor: row-resize; }
+      body.dragging-pane.agent-right { cursor: col-resize; }
 
       /* --- the header ------------------------------------------------------
          App chrome, not terminal chrome (D18/D19): the pane should read as a
@@ -491,7 +531,8 @@
 
       /* The terminal fills what is left. `min-height: 0` because a flex child
          defaults to `min-height: auto`, which lets xterm's own sizing push the
-         dock taller than its 40% instead of scrolling inside it.
+         dock past the size the reader dragged it to instead of scrolling
+         inside it.
 
          The padding is the single largest visual payoff per line here: xterm
          paints its grid flush to the element's edges, and a terminal whose
@@ -688,12 +729,25 @@
       #content :is(h1, h2, h3, h4, h5, h6) { scroll-margin-top: 16px; }
 
       /* stack panel */
+      /* Width is a variable for the same reason `--tree-width` is: the drag
+         handle writes it as an inline style on `<html>`, and the fallback is
+         `config::STACK_WIDTH_DEFAULT` for the frames before `get_ui` lands. */
       #stack-panel {
-        position: absolute; top: 0; right: 0; bottom: 0; width: 340px;
+        position: absolute; top: 0; right: 0; bottom: 0; width: var(--stack-width, 280px);
         background: var(--sidebar-bg, #100e17); border-left: 1px solid var(--border, #2e2940);
         display: none; flex-direction: column; z-index: 20;
       }
       #stack-panel.open { display: flex; }
+      /* On the panel's own left border, straddling it — the mirror image of
+         `#tree-resize`, and a child rather than a sibling because unlike the
+         pane this box does not clip its overflow. */
+      #stack-resize {
+        position: absolute; top: 0; bottom: 0; left: -3px; width: 7px;
+        cursor: col-resize; z-index: 1;
+        touch-action: none; user-select: none; -webkit-user-select: none;
+      }
+      #stack-resize:hover, body.dragging-stack #stack-resize { background: var(--accent, #a48cf5); opacity: 0.5; }
+      body.dragging-stack { cursor: col-resize; user-select: none; -webkit-user-select: none; }
       /* Unlike `#outline-panel`, which is transient and allowed to overlap what
          is under it, the stack and the pane are read *together* — the queue is
          what the agent below is working through. So the panel stops at the
@@ -1104,6 +1158,7 @@
            a small empty box over each one. */
         #titlebar, #drag-strip, #sidebar, #btn-expand,
         #outline-panel, #stack-panel, #stale-rail, #find-bar, #pty-pane,
+        #pane-resize,
         #file-menu, #tooltip, #toast,
         #palette-overlay, .modal-overlay,
         button.code-copy { display: none !important; }
@@ -1345,7 +1400,14 @@
           <div id="outline-list"></div>
         </div>
 
+        <!-- A sibling of the pane, not a child: see `#pane-resize` in the
+             stylesheet for why `#pty-pane`'s `overflow: hidden` rules that
+             out, and why it carries a z-index rather than relying on where it
+             sits here. -->
+        <div id="pane-resize" role="separator" aria-label="Resize agent pane"></div>
+
         <div id="stack-panel">
+          <div id="stack-resize" role="separator" aria-label="Resize stack panel"></div>
           <h3>Send stack <button id="stack-close" class="icon" data-tip="Close stack panel" data-tip-key="toggle_stack">✕</button></h3>
           <div id="stack-list"></div>
           <div id="stack-actions">

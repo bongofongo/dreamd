@@ -63,10 +63,13 @@ await page.addInitScript(({ base, palettes }) => {
     config: {
       theme: "dreamd", mode: "system",
       tmux_autodetect: true, extra_ignores: [], keymap: { ...KEYMAP },
-      // `config::Ui` is a plain struct, so Rust always sends all three —
+      // `config::Ui` is a plain struct, so Rust always sends all six —
       // spelling them out here is what keeps the Window tab's checks below
       // asserting on the payload the real backend produces.
-      ui: { tree_width: 260, menubar: false, titlebar: false },
+      ui: {
+        tree_width: 260, stack_width: 280, pane_width: 380, pane_height: 240,
+        menubar: false, titlebar: false,
+      },
     },
     // What `mode: "system"` resolves to. The page is opened with
     // `colorScheme: "dark"`, so this is what Rust would have answered.
@@ -2014,6 +2017,26 @@ check(
 await right.evaluate(() => applyPanePosition("right"));
 await right.waitForTimeout(400);
 
+// The drag handle picks its axis at press time, not at wiring time — which is
+// exactly what the flip above would break if it did not. So this runs *after*
+// a round trip through the other dock, and asserts on the key it wrote as much
+// as on the size: a right dock that persisted `pane_height` would look correct
+// until the reader switched back.
+const paneWidthPx = () =>
+  right.evaluate(() => Math.round(document.getElementById("pty-pane").getBoundingClientRect().width));
+const paneRight = await right.evaluate(() =>
+  Math.round(document.getElementById("pty-pane").getBoundingClientRect().right));
+await dragHandleTo(right, "pane-resize", { x: paneRight - 460 });
+check("dragging the right-docked pane sets its width", (await paneWidthPx()) === 460, `${await paneWidthPx()}`);
+await right.waitForTimeout(600);
+const rightPatch = await right.evaluate(() =>
+  window.__CALLS__.filter((c) => c.cmd === "set_config" && c.args.patch.ui).map((c) => c.args.patch.ui));
+check("and writes the pane's width, not its height",
+  rightPatch.length >= 1 &&
+    rightPatch[rightPatch.length - 1].pane_width === 460 &&
+    rightPatch.every((p) => p.pane_height == null),
+  JSON.stringify(rightPatch));
+
 // Escape is the same rule in the other dock (D12), and still not a kill.
 await right.keyboard.press("Escape");
 await right.waitForTimeout(150);
@@ -2081,7 +2104,10 @@ await chrome.addInitScript(({ base }) => {
     children: [{ name: "doc.md", is_dir: false, path: "/repo/doc.md", rel: "doc.md", children: [] }],
   };
   const settings = () => ({
-    config: { theme: "dreamd", mode: "system", extra_ignores: [], keymap: KEYMAP, ui: { tree_width: 320 } },
+    config: {
+      theme: "dreamd", mode: "system", extra_ignores: [], keymap: KEYMAP,
+      ui: { tree_width: 320, stack_width: 360, pane_width: 500, pane_height: 300 },
+    },
     theme: "dreamd", scheme: "dark", themes: [], syntax_themes: [],
     config_path: "/tmp/xdg/dreamd/config.toml", themes_dir: "/tmp/xdg/dreamd/themes",
     local_overrides: [],
@@ -2099,9 +2125,10 @@ await chrome.addInitScript(({ base }) => {
           case "repo_info":
             return { root: state.root, name: state.root.split("/").pop(), display: state.root };
           case "get_keymap": return KEYMAP;
-          // The persisted width, deliberately not the default: a boot that
-          // never asked would still be sitting at 260 and look correct.
-          case "get_ui": return { tree_width: 320 };
+          // Persisted sizes, deliberately none of them the default: a boot
+          // that never asked would still be sitting at 260/280/240 and look
+          // correct.
+          case "get_ui": return { tree_width: 320, stack_width: 360, pane_width: 500, pane_height: 300 };
           case "get_theme": return { css: base, mode: "system", scheme: "dark", syntax_theme: null };
           // Null, so the sidebar is open on boot — the tree drag is what this
           // page exists for and a collapsed one has no width to assert on.
@@ -2175,17 +2202,26 @@ check("the persisted tree width is applied on boot", (await treeWidthPx()) === 3
 
 // Dragged well past the maximum: the clamp is the frontend's, so the config
 // file never has to reject what the handle sent.
-const dragTo = async (x, steps = 6) => {
-  const from = await chrome.evaluate(() => {
-    const r = document.getElementById("tree-resize").getBoundingClientRect();
-    return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + 40) };
-  });
-  await chrome.mouse.move(from.x, from.y);
-  await chrome.mouse.down();
-  await chrome.mouse.move(x, from.y, { steps });
-  await chrome.mouse.up();
-  await chrome.waitForTimeout(80);
-};
+//
+// Takes the handle by id, because the tree is not the only thing with one:
+// `grab` picks a point on it that is *on* the element in both axes, and the
+// caller says where to release. All three handles share `wireDrag`, so what
+// each of these checks is really pinning is the one thing that differs — which
+// fixed edge the pointer is measured from.
+// A declaration rather than a `const`: the right-dock page above drags too, and
+// it runs several hundred lines before this point.
+async function dragHandleTo(page, id, to, steps = 6) {
+  const from = await page.evaluate((h) => {
+    const r = document.getElementById(h).getBoundingClientRect();
+    return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+  }, id);
+  await page.mouse.move(from.x, from.y);
+  await page.mouse.down();
+  await page.mouse.move(to.x ?? from.x, to.y ?? from.y, { steps });
+  await page.mouse.up();
+  await page.waitForTimeout(80);
+}
+const dragTo = (x, steps = 6) => dragHandleTo(chrome, "tree-resize", { x }, steps);
 
 await dragTo(1100);
 check("dragging past the maximum stops at 600", (await treeWidthPx()) === 600, `${await treeWidthPx()}`);
@@ -2222,6 +2258,90 @@ check("the drag persists the width", patched.length >= 1 && patched[patched.leng
   JSON.stringify(patched));
 check("and never sends a width outside the clamp",
   patched.every((n) => n >= 140 && n <= 600), JSON.stringify(patched));
+
+// --- 4a-bis. the stack and pane drags ---
+// The same mechanism on two more edges. Each check pins the one thing that
+// differs between the three handles and the one thing a shared `wireDrag`
+// could get backwards: which fixed edge the pointer is measured from, and so
+// which way the panel grows under it.
+const stackWidthPx = () =>
+  chrome.evaluate(() => Math.round(document.getElementById("stack-panel").getBoundingClientRect().width));
+const paneHeightPx = () =>
+  chrome.evaluate(() => Math.round(document.getElementById("pty-pane").getBoundingClientRect().height));
+const uiPatches = (key) =>
+  chrome.evaluate((k) => window.__STATE__.patches.map((p) => p.ui && p.ui[k]).filter((n) => n != null), key);
+
+await chrome.keyboard.press("Control+o");
+await chrome.waitForTimeout(120);
+check("the persisted stack width is applied on boot", (await stackWidthPx()) === 360, `${await stackWidthPx()}`);
+
+await dragHandleTo(chrome, "stack-resize", { x: 980 });
+check("the stack panel grows leftwards from its own right edge",
+  (await stackWidthPx()) === 300, `${await stackWidthPx()}`);
+// One move, so the width the drag last applied is not whatever the pointer
+// happened to cross on the way — the same reason the tree's collapse drag
+// above uses a single step.
+await dragHandleTo(chrome, "stack-resize", { x: 1260 }, 1);
+check("and stops at its minimum rather than collapsing",
+  (await stackWidthPx()) === 200 && (await chrome.locator("#stack-panel.open").isVisible()),
+  `${await stackWidthPx()}`);
+await dragHandleTo(chrome, "stack-resize", { x: 300 });
+check("and at its maximum going the other way", (await stackWidthPx()) === 720, `${await stackWidthPx()}`);
+await dragHandleTo(chrome, "stack-resize", { x: 980 });
+
+await chrome.keyboard.press("Control+t");
+await chrome.waitForTimeout(500);
+check("the persisted pane height is applied on its first open",
+  (await paneHeightPx()) === 300, `${await paneHeightPx()}`);
+// The stack panel stops at the pane rather than covering it, and it is
+// `--pane-height` that tells it where the pane now ends — the one thing the
+// indirection through `#main-wrap`'s `--pane-h` exists to keep true.
+check("and the stack panel comes up short of it",
+  await chrome.evaluate(() => {
+    const s = document.getElementById("stack-panel").getBoundingClientRect();
+    const p = document.getElementById("pty-pane").getBoundingClientRect();
+    return Math.abs(s.bottom - p.top) <= 1;
+  }));
+
+const paneBottom = await chrome.evaluate(() =>
+  Math.round(document.getElementById("pty-pane").getBoundingClientRect().bottom));
+await dragHandleTo(chrome, "pane-resize", { y: paneBottom - 420 });
+check("the pane grows upwards from the bottom edge it is docked against",
+  (await paneHeightPx()) === 420, `${await paneHeightPx()}`);
+check("and the stack panel follows it up",
+  await chrome.evaluate(() => {
+    const s = document.getElementById("stack-panel").getBoundingClientRect();
+    const p = document.getElementById("pty-pane").getBoundingClientRect();
+    return Math.abs(s.bottom - p.top) <= 1;
+  }));
+await dragHandleTo(chrome, "pane-resize", { y: paneBottom - 20 }, 1);
+check("and stops at its minimum rather than closing",
+  (await paneHeightPx()) === 120 && (await chrome.locator("#pty-pane.open").isVisible()),
+  `${await paneHeightPx()}`);
+
+// Debounced like the tree's, and into the same accumulating patch — so what
+// reaches `set_config` is one write per drag, never a raw pointer position.
+await chrome.waitForTimeout(600);
+const stackPatched = await uiPatches("stack_width");
+const panePatched = await uiPatches("pane_height");
+check("the stack drag persists its width",
+  stackPatched.length >= 1 && stackPatched[stackPatched.length - 1] === 300,
+  JSON.stringify(stackPatched));
+check("and never sends one outside the clamp",
+  stackPatched.every((n) => n >= 200 && n <= 720), JSON.stringify(stackPatched));
+check("the pane drag persists its height",
+  panePatched.length >= 1 && panePatched[panePatched.length - 1] === 120,
+  JSON.stringify(panePatched));
+check("and never sends one outside the clamp",
+  panePatched.every((n) => n >= 120 && n <= 1200), JSON.stringify(panePatched));
+// A bottom-docked pane is a height. Writing the width from this drag would be
+// invisible until the reader switched docks and found the pane the wrong size.
+check("a bottom dock never writes the pane's width",
+  (await uiPatches("pane_width")).length === 0);
+
+await chrome.keyboard.press("Control+t");
+await chrome.keyboard.press("Control+o");
+await chrome.waitForTimeout(150);
 
 // --- 4b. the floating outline ---
 const outlineOpen = () => chrome.locator("#outline-panel.open").isVisible();
