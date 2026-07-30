@@ -224,8 +224,31 @@ check("Esc cancels recording, panel stays open", await page.locator("#settings-o
 // disappears is `apply_chrome`'s, and a hand-check.
 await page.locator('.st-tab[data-pane="window"]').click();
 await page.waitForTimeout(120);
-const chromeRows = await page.locator("#st-window .st-row").count();
-check("both chrome toggles listed off macOS", chromeRows === 2, `got ${chromeRows}`);
+// Asserted by *label*, not by counting rows. A count was the original check and
+// it silently became meaningless the moment the tab grew a third row for the
+// agent surface: on macOS the menubar row is absent, so titlebar + surface came
+// to 2 and the check passed for entirely the wrong reason — while on Linux the
+// same three rows would have failed it. Naming what must be there says the
+// thing the count was trying to say and cannot drift with the tab's length.
+const chromeLabels = await page.evaluate(() =>
+  [...document.querySelectorAll("#st-window .st-row .lbl")].map((l) => l.childNodes[0].textContent.trim()),
+);
+const isMacPage = await page.evaluate(() => document.body.classList.contains("mac"));
+check(
+  "the titlebar toggle is always listed",
+  chromeLabels.includes("Native titlebar"),
+  `got ${JSON.stringify(chromeLabels)}`,
+);
+check(
+  "the menubar toggle is listed exactly off macOS",
+  chromeLabels.includes("Native menubar") === !isMacPage,
+  `mac=${isMacPage} got ${JSON.stringify(chromeLabels)}`,
+);
+check(
+  "and the agent surface is a window-level choice",
+  chromeLabels.includes("Terminal agent pane"),
+  `got ${JSON.stringify(chromeLabels)}`,
+);
 const titlebarBox = page.locator("#st-window .st-row", { hasText: "Native titlebar" })
   .locator('input[type="checkbox"]');
 check("titlebar starts from the config payload", !(await titlebarBox.isChecked()));

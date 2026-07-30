@@ -36,6 +36,7 @@ cargo run --example config_check             # config layering + write-back
 cargo run --example theme_check              # bundled palettes: vars, --bg, --syntax-theme
 cargo run --example mcp_check                # the MCP socket: mode, lock, wire, retirement
 cargo run --example marks_check              # the marks file: modes, caps, crash artifacts, the lock
+cargo run --example agent_check              # the permission gate: the real `dreamd approve` over a real socket
 node perf/harness/ui-check.mjs               # settings panel in Chromium (needs harness setup)
 ```
 
@@ -44,6 +45,7 @@ dreamd theme list|set <name>|show [name]|new <name> [--from <base>]
 dreamd config path|edit|get <key>|set <key> <value>
 dreamd marks path|prune [--stale] [--older-than 30d]   # bare `prune` is a dry run
 dreamd mcp                           # the stdio MCP shim; `claude mcp add dreamd -- dreamd mcp`
+dreamd approve --socket <path>       # the PreToolUse permission hook. dreamd installs it; not for typing
 dreamd --theme nord [path]           # one run, no config write
 ```
 
@@ -189,6 +191,13 @@ to the crate version, verified.
    `--allowed-tools` grant and the `/model` lines are both written that way.
    What the user then *types* into that terminal is theirs — they are
    at a prompt, not having content interpolated on their behalf.
+   The native surface has **no shell at all**: `agent::claude` resolves where
+   `claude` is once, through a login shell, then spawns that path with one
+   `Command::arg` per argument, and a turn crosses as a `serde_json`-built
+   string rather than as typed keystrokes. The one place a shell survives is
+   Claude Code's own hook runner, which is why `gate_server::settings_json`
+   single-quotes the two dreamd-minted paths it embeds and **refuses to launch**
+   rather than escaping if either could break out.
 4. **Escape, don't execute.** Raw HTML in markdown is escaped. External links are
    restricted to `http`/`https`/`mailto`; relative images must resolve inside the repo
    root.
@@ -324,7 +333,37 @@ the upgrade procedure.
   events, and the exception that proves the rule: terminal output arrives when
   the child feels like producing it, so there is no command return value to
   carry it.)
-- `pty` — the embedded Claude Code pane's pseudo-terminal, one per window,
+- `agent` — the **native** agent surface, and the default one: `claude -p
+  --output-format stream-json --input-format stream-json`, whose output is
+  structure rather than pixels, so the conversation is drawn by dreamd. Laid
+  out like `mcp/` and Tauri-free for the same reason — `Sink` is a closure, not
+  an `AppHandle`. `wire::digest` is the whole of dreamd's knowledge of another
+  program's schema and is **lenient by contract**: it returns a `Vec`, never a
+  `Result`, so an unknown message kind costs a ticker row and never the pane
+  (`fixtures/edges.ndjson` carries invented kinds and a line of prose to keep
+  that true). Text is read twice — deltas paint plain, the closing `assistant`
+  block is re-rendered through `markdown::render_with` — which is what makes an
+  answer about typeset prose itself typeset, and what makes tenet 4 cover it
+  for free. `gate` is the permission policy: **`--permission-prompt-tool` no
+  longer exists**, so the gate is a `PreToolUse` hook, which measured against
+  2.1.220 fires *even under `bypassPermissions`* and outranks the mode. That
+  makes the six pre-granted tools a fast path rather than the whole policy, and
+  **deny is the answer to every kind of silence** — closed pane, retired
+  server, unparseable payload, elapsed wait. `gate_server` is a **per-session**
+  socket, not the per-repo MCP one: a secondary window's agent must not raise
+  its cards in the primary's. Its name is `g<12hex>.sock`, deliberately shorter
+  than MCP's `<16hex>.sock`, because that one already spends the ~104-byte
+  `sun_path` budget down to 102 under `$TMPDIR` — a `gate-` prefix did not bind
+  at all, and a test pins the inequality. `hook` is `dreamd approve`, shaped
+  like `mcp::shim` and inverted where it counts: that one answers locally so a
+  closed dreamd cannot blank an agent's tool list, this one has no local
+  answers and fails closed. **Never pass `--bare`** — it skips hooks, and the
+  gate is a hook. `--verbose` is not decoration; `-p` will not stream without
+  it. A slash command sent as ordinary user text *is* honoured, which is why
+  the model chips still cost no restart.
+- `pty` — the **fallback** surface, kept undocumented behind `agent.surface =
+  "terminal"` and removed when nobody reports needing it. The embedded Claude
+  Code pane's pseudo-terminal, one per window,
   created on **first open** and never at boot. Output crosses to the frontend
   **base64-encoded**: a 4 KiB read splits multi-byte characters, and only
   `Terminal.write`'s stateful decoder is in a position to reassemble them.
@@ -456,7 +495,7 @@ highlights from a corpus fixture.
 - `cargo build` must pass before any commit touching `src-tauri/`.
 - `.github/workflows/ci.yml` runs fmt + clippy (`-D warnings`) + test + build on
   a **macos-14 / ubuntu-22.04 matrix** for every push and PR, then `config_check`,
-  `theme_check`, `mcp_check`, `marks_check` and `locate_check` (the last against a
+  `theme_check`, `mcp_check`, `marks_check`, `agent_check` and `locate_check` (the last against a
   cached corpus) on both, plus `node --test ui/paths.test.mjs` and `ui-check.mjs`
   in a separate ubuntu job, plus a `launch` job that runs `packaging/smoke.sh`
   against a `--features perf` build under Xvfb — the only thing in CI that starts

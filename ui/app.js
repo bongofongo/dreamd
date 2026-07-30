@@ -4243,6 +4243,32 @@ function renderWindow() {
     row.appendChild(cb);
     box.appendChild(row);
   }
+
+  // The agent surface. A checkbox rather than a two-value select because there
+  // is a supported answer and a fallback, not a preference between equals — and
+  // it is phrased as the fallback ("use the terminal instead") so that leaving
+  // it alone is the native surface, which is what it is.
+  //
+  // It takes effect on the pane's *next* open: `agent_prefs` is read once, and
+  // swapping bodies under a live conversation would throw away the one the
+  // reader is reading.
+  const row = document.createElement("div");
+  row.className = "st-row";
+  row.innerHTML =
+    `<span class="lbl">Terminal agent pane` +
+    `<span class="sub">Run Claude Code's own terminal interface instead of dreamd's. ` +
+    `A fallback for anything the native pane cannot draw yet; takes effect the next time the pane opens.</span></span>`;
+  const term = document.createElement("input");
+  term.type = "checkbox";
+  term.checked = (settings.config.agent?.surface ?? "native") === "terminal";
+  term.onchange = async () => {
+    const surface = term.checked ? "terminal" : "native";
+    if (!(await applyPatch({ agent: { surface } }))) term.checked = !term.checked;
+    // So the next open reads the new value rather than the cached one.
+    else if (pty.prefs) pty.prefs.surface = surface;
+  };
+  row.appendChild(term);
+  box.appendChild(row);
 }
 
 // ---- themes tab ----
