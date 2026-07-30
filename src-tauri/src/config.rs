@@ -121,14 +121,21 @@ pub enum Surface {
     Terminal,
 }
 
-/// Which edge the agent pane docks to. `bottom` is how the pane has always
-/// worked; `right` is the tall-window shape.
+/// Which edge the agent pane docks to.
+///
+/// `right` is the default, and the reason is the stack: the queue panel is also
+/// a right-edge dock, and the send flow hands one straight to the other — the
+/// stack closes, the pane opens in the space it was occupying. Docked bottom
+/// that hand-off is a jump across the window rather than a substitution.
+///
+/// `bottom` is how the pane has always worked and stays a supported layout, for
+/// a wide window where the document would rather keep its width than its height.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Position {
     #[default]
-    Bottom,
     Right,
+    Bottom,
 }
 
 /// Claude Code's four permission modes, spelled the way a config file wants to
@@ -879,20 +886,23 @@ mod tests {
     #[test]
     fn the_agent_and_ui_keys_default_without_being_written() {
         let cfg = config_of("");
-        assert_eq!(cfg.agent.position, Position::Bottom);
+        assert_eq!(cfg.agent.position, Position::Right);
         assert_eq!(cfg.agent.permission_mode, PermissionMode::AcceptEdits);
         assert_eq!(cfg.ui.tree_width, TREE_WIDTH_DEFAULT);
     }
 
     #[test]
     fn the_new_keys_layer_global_under_local_like_every_other_key() {
+        // `bottom` is the local value throughout these tests because it is the
+        // one `Position` that is *not* the default: asserting the merge landed
+        // on `right` would pass just as well if the merge had dropped the key.
         let mut base = table(
-            "[agent]\nposition = \"bottom\"\npermission_mode = \"plan\"\n\
+            "[agent]\nposition = \"right\"\npermission_mode = \"plan\"\n\
              [ui]\ntree_width = 300\n",
         );
-        deep_merge(&mut base, table("[agent]\nposition = \"right\"\n"));
+        deep_merge(&mut base, table("[agent]\nposition = \"bottom\"\n"));
         let cfg = Config::deserialize(Value::Table(base)).expect("merged config");
-        assert_eq!(cfg.agent.position, Position::Right, "local value applies");
+        assert_eq!(cfg.agent.position, Position::Bottom, "local value applies");
         assert_eq!(
             cfg.agent.permission_mode,
             PermissionMode::Plan,
@@ -907,16 +917,16 @@ mod tests {
         // sub-table arriving from the local file must not replace a sibling
         // sub-table it never mentioned.
         let mut base = table("[keymap]\npalette = \"Ctrl+Space\"\n");
-        deep_merge(&mut base, table("[agent]\nposition = \"right\"\n"));
+        deep_merge(&mut base, table("[agent]\nposition = \"bottom\"\n"));
         let cfg = Config::deserialize(Value::Table(base)).expect("merged config");
         assert_eq!(cfg.keymap.palette, "Ctrl+Space");
-        assert_eq!(cfg.agent.position, Position::Right);
+        assert_eq!(cfg.agent.position, Position::Bottom);
     }
 
     #[test]
     fn a_repo_may_move_the_pane_but_not_choose_its_permissions() {
         let mut local = table(
-            "[agent]\nposition = \"right\"\npermission_mode = \"bypass-permissions\"\n\
+            "[agent]\nposition = \"bottom\"\npermission_mode = \"bypass-permissions\"\n\
              [ui]\ntree_width = 200\n",
         );
         let warnings = strip_untrusted(&mut local);
@@ -929,7 +939,7 @@ mod tests {
             PermissionMode::AcceptEdits,
             "a repo chose the permission mode"
         );
-        assert_eq!(cfg.agent.position, Position::Right, "position is harmless");
+        assert_eq!(cfg.agent.position, Position::Bottom, "position is harmless");
         assert_eq!(cfg.ui.tree_width, 200, "tree_width is harmless");
     }
 

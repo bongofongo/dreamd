@@ -153,11 +153,7 @@ fn main() {
     write_global("");
     write_local(&repo, None);
     let cfg = Config::load(&repo);
-    checks.eq(
-        "default pane position",
-        cfg.agent.position,
-        Position::Bottom,
-    );
+    checks.eq("default pane position", cfg.agent.position, Position::Right);
     checks.eq(
         "default permission mode",
         cfg.agent.permission_mode,

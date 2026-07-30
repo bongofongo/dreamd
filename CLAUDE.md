@@ -289,6 +289,11 @@ the upgrade procedure.
   number costs a nearest-usable panel, not the rest of the file. The pane keeps a
   width *and* a height because its drag handle changes axis with `agent.position`:
   one shared key would reinterpret a tall bottom pane as a wide right one.
+  `agent.position` defaults to `right`, and the reason is the stack: both panels
+  dock to the same edge, so sending from the stack panel is a *substitution* —
+  the queue closes, the pane opens where it was — rather than a jump across the
+  window. `bottom` stays a supported layout and is the one value a test should
+  use when it means "not the default".
 - `theme` — the palette registry: `BUNDLED` (`include_str!`'d), user palettes in
   `~/.config/dreamd/themes/`, and the `--bg` / `--syntax-theme` values parsed back out of
   the CSS for the native window and syntect. Those two lookups take a `Scheme`, because

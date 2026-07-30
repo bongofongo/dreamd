@@ -1588,6 +1588,31 @@ function exitPair(el, animate) {
 function toggleTree() { document.body.classList.toggle("nav-collapsed"); }
 
 function toggleStack() { $("stack-panel").classList.toggle("open"); refreshStack(); }
+function closeStack() { $("stack-panel").classList.remove("open"); }
+
+/// Send from inside the stack panel, which is the one send that also *closes*
+/// the panel.
+///
+/// The two docks are the same strip of window — the stack panel is docked right
+/// and so, by default, is the pane — so the queue giving way to the conversation
+/// it just produced is a substitution rather than a second panel piling up
+/// beside the first. It is also what the reader means: the point of pressing
+/// Send here is to go and read the answer, and the queue that produced it is
+/// about to be empty anyway.
+///
+/// Deliberately not what `#btn-send` in the titlebar does. That button is
+/// reachable with the panel closed and is the same verb Ctrl+Enter is; closing a
+/// panel the reader did not open from is a side effect, not a hand-off.
+///
+/// Closing first, and without awaiting: `runStack` opens the pane, and doing it
+/// in this order means one reflow where the pane takes the space the stack was
+/// holding, rather than a frame of both. Neither toggle is disabled by this —
+/// `toggle_stack` brings the queue back with the pane still up, and
+/// `toggle_pane` puts the pane away with the queue still up.
+function sendFromStack(ids) {
+  closeStack();
+  return runStack(ids);
+}
 
 // Distraction-free reading: `body.view-mode` hides the titlebar, the sidebar
 // and both side panels together. Same shape as `toggleTree` — one class, no
@@ -2883,7 +2908,7 @@ async function loadAgentPrefs() {
     pty.prefs = await invoke("agent_prefs");
   } catch (e) {
     console.error(e);
-    pty.prefs = { position: "bottom", permission_mode: "accept-edits" };
+    pty.prefs = { position: "right", permission_mode: "accept-edits" };
   }
   applyPanePosition(pty.prefs.position);
   $("pty-mode").value = pty.prefs.permission_mode;
@@ -3329,7 +3354,12 @@ async function openNativeAgent() {
     setPaneStatus("starting");
     await invoke("agent_spawn");
     agent.running = true;
-    setPaneStatus("ready");
+    // Empty, not "ready". An idle pane says nothing — the lit dot beside the
+    // title is already the answer to "is it alive", and a word that is true
+    // almost all of the time is a word nobody reads. What is left in here is
+    // only ever transient or bad news: "starting", "thinking", "stopped",
+    // "exited (1)", an error.
+    setPaneStatus("");
     $("pty-pane").classList.remove("dead");
   }
 }
@@ -3479,7 +3509,9 @@ function endTurn(ev) {
   agent.tools.clear();
   agent.turn = null;
   agent.busy = false;
-  setPaneStatus(ev.interrupted ? "stopped" : "ready");
+  // Blank on a clean finish, for the reason `openNativeAgent` blanks it: back to
+  // idle is not news. An interrupt is.
+  setPaneStatus(ev.interrupted ? "stopped" : "");
   if (ev.denials > 0) {
     addNote(
       ev.denials === 1
@@ -3863,18 +3895,18 @@ function wireUi() {
     if (m && contentEl.contains(m)) { e.preventDefault(); openEditHighlight(m.dataset.id); }
   });
 
-  $("btn-print").onclick = printDocument;
   $("btn-outline").onclick = toggleOutline;
   $("outline-close").onclick = closeOutline;
   $("btn-stack").onclick = toggleStack;
-  $("stack-close").onclick = () => $("stack-panel").classList.remove("open");
+  $("stack-close").onclick = () => closeStack();
   // Rightmost in the titlebar, and the primary action: the same verb Ctrl+Enter
-  // is. Its neighbour `#btn-copy` is the clipboard, which is what a clipboard
-  // icon should always have meant.
+  // is. It leaves the stack panel exactly as it found it — the reader pressing
+  // this one did not ask to stop looking at the queue.
   $("btn-send").onclick = () => runStack([]);
   $("btn-copy").onclick = () => copyStack();
-  $("btn-send-all").onclick = () => runStack([]);
-  $("btn-send-selected").onclick = () => runStack(checkedIds());
+  // The panel's own two buttons hand over instead: see `sendFromStack`.
+  $("btn-send-all").onclick = () => sendFromStack([]);
+  $("btn-send-selected").onclick = () => sendFromStack(checkedIds());
   $("annot-save").onclick = saveAnnot;
   $("annot-cancel").onclick = cancelAnnot;
   $("annot-delete").onclick = deleteHighlight;
@@ -4156,7 +4188,7 @@ const KEY_ACTIONS = [
   { id: "toggle_tree", label: "Toggle file tree", sub: "Collapse or restore the sidebar" },
   { id: "toggle_view", label: "Toggle view mode", sub: "Hide the titlebar, sidebar and panels — Esc also exits" },
   { id: "toggle_stack", label: "Toggle stack panel" },
-  { id: "toggle_pane", label: "Toggle Claude Code pane", sub: "A terminal docked under the document, running claude in this repo — the same key gets you back out of it" },
+  { id: "toggle_pane", label: "Toggle Claude Code pane", sub: "Claude Code in this repo, docked beside the document — the same key gets you back out of it" },
   { id: "jump_top", label: "Jump to top", sub: "Scroll the open document to the start" },
   { id: "jump_bottom", label: "Jump to bottom" },
   { id: "next_file", label: "Next file", sub: "Move through the sidebar's order without touching the tree — wraps at the ends" },
@@ -4387,6 +4419,7 @@ function renderWindow() {
   const isMac = document.body.classList.contains("mac");
   box.innerHTML = "";
 
+  box.appendChild(sectionHeader("Window chrome"));
   for (const t of WINDOW_TOGGLES) {
     if (isMac && !t.mac) continue;
     const row = document.createElement("div");
@@ -4412,6 +4445,7 @@ function renderWindow() {
   // It takes effect on the pane's *next* open: `agent_prefs` is read once, and
   // swapping bodies under a live conversation would throw away the one the
   // reader is reading.
+  box.appendChild(sectionHeader("Agent pane"));
   const row = document.createElement("div");
   row.className = "st-row";
   row.innerHTML =
@@ -4429,6 +4463,44 @@ function renderWindow() {
   };
   row.appendChild(term);
   box.appendChild(row);
+
+  // Print, which is an action rather than a preference and the only one in this
+  // panel. It lived in the titlebar and moved here because it is rare and
+  // deliberate — a keybind was never worth spending on it (`Ctrl+P` is
+  // `palette_prev`), and a permanent slot on the bar was the same bet in
+  // pixels. This tab is where it does least harm: the panel is already the
+  // place you go for the things you do once.
+  box.appendChild(sectionHeader("Document"));
+  const printRow = document.createElement("div");
+  printRow.className = "st-row";
+  printRow.innerHTML =
+    `<span class="lbl">Print or save as PDF` +
+    `<span class="sub">Opens your system print dialog for the open document. ` +
+    `Choose “Save as PDF” there to export — dreamd picks no path and writes no file.</span></span>`;
+  const printBtn = document.createElement("button");
+  printBtn.textContent = "Print…";
+  // Settings gets out of the way first: the dialog is the OS's and belongs over
+  // the document it is about to print, not over the panel that asked for it.
+  // (The `@media print` sheet hides `.modal-overlay` regardless, so this is
+  // about what the reader is left looking at, not about what comes out.)
+  //
+  // Guarded on there being a document, which is `printDocument`'s own refusal
+  // read a second time rather than trusted: closing the panel to deliver a
+  // "Nothing open to print" toast is the wrong half of the gesture.
+  printBtn.onclick = () => {
+    if (currentFile) closeSettings();
+    printDocument();
+  };
+  printRow.appendChild(printBtn);
+  box.appendChild(printRow);
+}
+
+/// An uppercase divider, the same one the Themes and Custom tabs write inline.
+function sectionHeader(label) {
+  const el = document.createElement("div");
+  el.className = "st-sect";
+  el.textContent = label;
+  return el;
 }
 
 // ---- themes tab ----

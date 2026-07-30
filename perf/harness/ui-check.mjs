@@ -115,6 +115,7 @@ await page.addInitScript(({ base, palettes }) => {
     }
   };
 
+  window.__PRINTS__ = 0;
   window.__TAURI__ = {
     core: {
       async invoke(cmd, args) {
@@ -153,6 +154,10 @@ await page.addInitScript(({ base, palettes }) => {
             delete state.userThemes[args.name];
             return null;
           case "render_markdown": return "<h1>doc</h1>";
+          // The settings panel's one *action*. Counted rather than recorded
+          // because this stub keeps no call log — the pane's does, and this page
+          // has one thing worth counting.
+          case "print_document": window.__PRINTS__++; return null;
           default: return null;
         }
       },
@@ -262,6 +267,43 @@ check(
   (await page.evaluate(() => window.__STATE__.config.ui.titlebar)) === true,
 );
 check("and the box stays checked", await titlebarBox.isChecked());
+
+// Print, the tab's one action rather than a preference — it moved off the
+// titlebar and this row is now the only way to reach it. Chromium cannot open an
+// OS print dialog, so what is checked is that the click reaches `print_document`
+// and that the panel gets out of the way first.
+check(
+  "print is listed here now that it has left the titlebar",
+  chromeLabels.includes("Print or save as PDF"),
+  `got ${JSON.stringify(chromeLabels)}`,
+);
+// A file has to be open or `printDocument` refuses before it reaches IPC, which
+// is a check of its own: nothing is stubbed here, so this page has opened
+// nothing.
+const printRow = page.locator("#st-window .st-row", { hasText: "Print or save as PDF" })
+  .locator("button");
+await printRow.click();
+await page.waitForTimeout(200);
+check(
+  "printing with nothing open reaches no IPC",
+  (await page.evaluate(() => window.__PRINTS__)) === 0,
+);
+check(
+  "and leaves the panel up rather than closing it to say so",
+  await page.locator("#settings-overlay.open").isVisible(),
+);
+await page.evaluate(() => { currentFile = "/repo/doc.md"; });
+await printRow.click();
+await page.waitForTimeout(200);
+check(
+  "and with one open it asks Rust to print",
+  (await page.evaluate(() => window.__PRINTS__)) === 1,
+);
+check("and closes settings first", !(await page.locator("#settings-overlay.open").isVisible()));
+await page.locator("#btn-settings").click();
+await page.waitForTimeout(150);
+await page.locator('.st-tab[data-pane="window"]').click();
+await page.waitForTimeout(120);
 
 // --- themes tab ---
 await page.locator('.st-tab[data-pane="themes"]').click();
@@ -1715,6 +1757,55 @@ await pane.locator("#btn-send").click();
 await pane.waitForTimeout(400);
 check("clicking it sends the stack", (await sent()) === sentBeforeButtons + 1, `${await sent()}`);
 
+// --- the stack panel hands over to the pane -------------------------------
+// Stack and send are adjacent because they are two halves of one gesture, and
+// print is gone from the bar entirely — it is a Settings → Window row now.
+check(
+  "the stack toggle sits immediately left of send",
+  await pane.evaluate(() =>
+    document.getElementById("btn-send").previousElementSibling.id === "btn-stack"),
+);
+check(
+  "and print has left the titlebar",
+  await pane.evaluate(() => !document.getElementById("btn-print")),
+);
+
+// Sending from *inside* the panel is a substitution rather than a second panel:
+// docked right the two occupy the same strip of window, so the queue closes and
+// the conversation it produced opens where it was. The titlebar's send above is
+// deliberately not this, which is why both are checked.
+await seedPair(6);
+await pane.evaluate(() => { closePane(); toggleStack(); });
+await pane.waitForTimeout(200);
+const sentBeforeHandoff = await sent();
+await nudgeFlow(60_000);
+await pane.locator("#btn-send-all").click();
+await pane.waitForTimeout(400);
+check("sending from the stack panel closes the panel", !(await pane.locator("#stack-panel.open").isVisible()));
+check("and opens the pane", await pane.locator("#pty-pane.open").isVisible());
+check("and still sends", (await sent()) === sentBeforeHandoff + 1, `${await sent()}`);
+
+// Neither toggle is spent by the hand-off: the queue comes back with the pane
+// up, and the pane goes away with the queue up. That independence is the whole
+// reason this is a close rather than a mode.
+await pane.evaluate(() => toggleStack());
+await pane.waitForTimeout(200);
+check(
+  "the stack toggles back on with the pane still open",
+  (await pane.locator("#stack-panel.open").isVisible()) &&
+    (await pane.locator("#pty-pane.open").isVisible()),
+);
+await pane.evaluate(() => togglePane());
+await pane.waitForTimeout(200);
+check(
+  "and the pane toggles off with the stack still open",
+  !(await pane.locator("#pty-pane.open").isVisible()) &&
+    (await pane.locator("#stack-panel.open").isVisible()),
+);
+// Back to what the next block expects: pane open, panel closed.
+await pane.evaluate(() => closeStack());
+await ensurePaneOpen();
+
 // --- the model chips ------------------------------------------------------
 // Live, not staged: unlike the permission mode beside them nothing restarts, so
 // the check is that the child is neither killed nor respawned.
@@ -2036,6 +2127,72 @@ check("and writes the pane's width, not its height",
     rightPatch[rightPatch.length - 1].pane_width === 460 &&
     rightPatch.every((p) => p.pane_height == null),
   JSON.stringify(rightPatch));
+
+// --- the header folds instead of being cut off ----------------------------
+// `#pty-pane` is `overflow: hidden`, so a header row wider than the dock loses
+// its right end silently — and the right end is ✕. Dragged to the 240px minimum
+// the row is far wider than the dock, so this is the size that proves it wraps.
+// Measured against the head's *content* box, because the padding is not room.
+await dragHandleTo(right, "pane-resize", { x: paneRight - 240 });
+await right.waitForTimeout(400);
+const folded = await right.evaluate(() => {
+  const head = document.getElementById("pty-head");
+  const box = head.getBoundingClientRect();
+  const cs = getComputedStyle(head);
+  const limit = box.right - parseFloat(cs.paddingRight);
+  const rows = new Set();
+  let worst = 0;
+  for (const el of head.children) {
+    const r = el.getBoundingClientRect();
+    if (!r.width && !r.height) continue;      // an empty #pty-status
+    worst = Math.max(worst, r.right - limit);
+    rows.add(Math.round(r.top));
+  }
+  return { worst: Math.round(worst), rows: rows.size, h: Math.round(box.height) };
+});
+check(
+  "at the minimum dock width nothing in the pane header overhangs it",
+  folded.worst <= 1,
+  JSON.stringify(folded),
+);
+check(
+  "because the header folded onto more than one row",
+  folded.rows > 1,
+  JSON.stringify(folded),
+);
+// Right-justified, not ragged: every folded row's last item ends at the same
+// edge. The title's row is exempt — it grows to fill, which is what keeps the
+// unwrapped header looking exactly as it always did.
+const ragged = await right.evaluate(() => {
+  const head = document.getElementById("pty-head");
+  const limit = head.getBoundingClientRect().right - parseFloat(getComputedStyle(head).paddingRight);
+  const items = [...head.children]
+    .map((el) => ({ el, r: el.getBoundingClientRect() }))
+    .filter((i) => i.r.width || i.r.height);
+  // Grouped by vertical *overlap*, not by `top`. `align-items: center` centres
+  // a 7px dot against a 17px title, so two items on one flex line do not share
+  // a top — grouping by that number splits the row the dot is on and reports it
+  // as a line 212px short of the edge.
+  const lines = [];
+  for (const { el, r } of items) {
+    const line = lines.find((l) => r.top < l.bottom && r.bottom > l.top);
+    if (line) {
+      line.top = Math.min(line.top, r.top);
+      line.bottom = Math.max(line.bottom, r.bottom);
+      line.right = Math.max(line.right, r.right);
+      line.els.push(el);
+    } else lines.push({ top: r.top, bottom: r.bottom, right: r.right, els: [el] });
+  }
+  const title = document.getElementById("pty-title");
+  return lines.filter((l) => !l.els.includes(title)).map((l) => Math.round(limit - l.right));
+});
+check(
+  "and every folded row is flush with the right edge",
+  ragged.length > 0 && ragged.every((gap) => gap <= 1),
+  JSON.stringify(ragged),
+);
+await dragHandleTo(right, "pane-resize", { x: paneRight - 460 });
+await right.waitForTimeout(400);
 
 // Escape is the same rule in the other dock (D12), and still not a kill.
 await right.keyboard.press("Escape");
