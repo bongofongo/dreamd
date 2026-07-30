@@ -1106,7 +1106,7 @@ check("but the passage is still painted", (await priorAttr(STACKED)) !== null);
 // The stub is a named function rather than an inline arrow because it is
 // installed on two pages: one docked bottom and one docked right, which is the
 // only way to assert `agent.position` actually reaches the layout.
-const paneStub = ({ base, position }) => {
+const paneStub = ({ base, position, surface }) => {
   const calls = [];
   window.__CALLS__ = calls;
   // T6's send stack and the queue behind it, mirroring `src-tauri/src/flow.rs`
@@ -1121,11 +1121,20 @@ const paneStub = ({ base, position }) => {
   let nextToken = 0;
   // What `agent_prefs` answers, and what `set_config` writes into — the two
   // halves of the mode control's round trip.
-  window.__AGENT__ = { position, permission_mode: "accept-edits" };
+  //
+  // `surface` is settable per page because the pane has two bodies and the
+  // checks below are split between them: the fit-addon geometry belongs to the
+  // terminal, which is now the *fallback* surface, and the conversation log
+  // belongs to the native one, which is the default. A page that wants the
+  // terminal has to say so, exactly as a reader would.
+  window.__AGENT__ = { position, permission_mode: "accept-edits", surface };
   // What `mcp_status` answers. Healthy, so the strip is hidden on boot and the
   // checks that want it have to say what is wrong.
   window.__MCP__ = { armed: true, serving: true, clients: 1 };
   window.__MODEL__ = null;
+  /// What `agent_decide` was called with, so a card's three buttons can be told
+  /// apart by what they *sent* rather than by what they look like.
+  window.__DECIDED__ = [];
   const listeners = new Map();
   window.__EMIT__ = (name, payload) => {
     for (const fn of listeners.get(name) || []) fn({ payload });
@@ -1204,6 +1213,19 @@ const paneStub = ({ base, position }) => {
           // is only that the chip reached IPC carrying a word Rust's closed
           // enum will accept. `pty.rs` owns what that word becomes.
           case "pty_model": window.__MODEL__ = args.model; return null;
+          // The native surface. No child either: `agent/wire.rs` owns turning
+          // Claude Code's JSON into events, and this page owns turning events
+          // into DOM. The seam between them is `__EMIT__("agent-event", …)`,
+          // which is exactly what `main.rs` emits.
+          case "agent_spawn": return true;
+          case "agent_send": case "agent_interrupt": case "agent_kill": return null;
+          case "agent_decide": window.__DECIDED__.push({ ...args }); return true;
+          // Stands in for `markdown::render_with`. Deliberately *not* a real
+          // markdown renderer: what this page can honestly assert is that the
+          // settled text goes through the command and the result lands in the
+          // log, not that pulldown-cmark works — which `markdown.rs`'s own
+          // tests cover, escaping included.
+          case "render_agent_text": return `<p data-rendered="1">${args.text}</p>`;
           // Healthy by default, so the strip stays hidden unless a check makes
           // it otherwise — which is also the real answer once an agent has
           // connected.
@@ -1224,13 +1246,13 @@ const paneStub = ({ base, position }) => {
 
 /// A page with the pane stub installed, docked to `position`, booted as far as
 /// the document.
-async function newPanePage(position) {
+async function newPanePage(position, surface = "terminal") {
   const p = await newPage();
   p.on("pageerror", (e) => results.push(`FAIL pageerror (pane/${position}): ` + e.message));
   p.on("console", (m) => {
     if (m.type() === "error") results.push(`FAIL console.error (pane/${position}): ` + m.text());
   });
-  await p.addInitScript(paneStub, { base, position });
+  await p.addInitScript(paneStub, { base, position, surface });
   await p.goto(pathToFileURL(join(UI, "index.html")).href);
   await p.waitForFunction(() => document.getElementById("content").textContent.includes("alpha bravo"));
   return p;
@@ -1725,6 +1747,128 @@ check("and so does a window with no repo", (await pane.locator("#pty-pane.mcp-wa
 await mcp({ armed: true, serving: true, clients: 2 });
 check("and it goes quiet again once an agent connects", !(await pane.locator("#pty-pane.mcp-warn").count()));
 
+// --- the native agent surface ----------------------------------------------
+// A page booted into `surface: "native"`, which is the default a reader gets.
+// Everything above this belongs to the terminal, which is now the fallback.
+//
+// The seam being asserted is `agent-event` → DOM. Rust owns the half that turns
+// Claude Code's stream-json into those events (`agent/wire.rs`, against
+// committed fixtures) and this owns the half that turns them into a log. The
+// events emitted below are the exact shapes `wire::AgentEvent` serializes to,
+// which is what makes the two halves meet here rather than nowhere.
+//
+// As everywhere in this harness: what the page *knows*, not what it paints.
+const nat = await newPanePage("bottom", "native");
+await nat.keyboard.press("Control+t");
+await nat.waitForFunction(() => typeof agent !== "undefined" && agent.running, null, { timeout: 15000 })
+  .catch(() => {});
+
+check("the native body is the one shown", await nat.locator("#pty-pane.native #agent-body").isVisible());
+check("and xterm was never loaded for it", await nat.evaluate(() => !window.Terminal));
+
+// A turn: streaming deltas, then the settled block that replaces them.
+await nat.evaluate(() => {
+  window.__EMIT__("agent-event", { kind: "ready", sessionId: "s1", model: "claude-haiku-4-5-20251001" });
+  window.__EMIT__("agent-event", { kind: "status", status: "requesting" });
+  window.__EMIT__("agent-event", { kind: "textDelta", index: 0, text: "The whitespace tier " });
+  window.__EMIT__("agent-event", { kind: "textDelta", index: 0, text: "scans the whole source." });
+});
+check(
+  "deltas stream in as plain text",
+  (await nat.locator("#agent-log .agent-said.streaming").innerText()).includes("scans the whole source"),
+);
+check(
+  "and the model chip lights from the session, not from a click",
+  await nat.evaluate(() => !!document.querySelector('#pty-models .pty-model[data-model="haiku"].sel'),
+));
+
+await nat.evaluate(() => {
+  window.__EMIT__("agent-event", { kind: "toolStart", id: "t1", name: "Read", target: "src/markdown.rs" });
+  window.__EMIT__("agent-event", { kind: "toolEnd", id: "t1", ok: true });
+  window.__EMIT__("agent-event", { kind: "toolStart", id: "t2", name: "Bash", target: "cargo build" });
+  window.__EMIT__("agent-event", { kind: "toolEnd", id: "t2", ok: false });
+});
+check("a tool call ticks when it returns", await nat.evaluate(() =>
+  [...document.querySelectorAll(".agent-tool")].some(
+    (r) => r.querySelector(".t-name").textContent === "Read" && r.querySelector(".t-mark").textContent === "✓")));
+check("and a refused one is crossed", await nat.evaluate(() =>
+  [...document.querySelectorAll(".agent-tool.failed")].some(
+    (r) => r.querySelector(".t-mark").textContent === "✗")));
+
+// The settled block goes through `render_agent_text`.
+await nat.evaluate(() =>
+  window.__EMIT__("agent-event", { kind: "text", index: 0, text: "The whitespace tier scans the whole source." }));
+await nat.waitForFunction(() => !!document.querySelector("#agent-log [data-rendered]"), null, { timeout: 5000 })
+  .catch(() => {});
+check(
+  "the settled block is replaced by the rendered markdown",
+  await nat.evaluate(() => !!document.querySelector("#agent-log [data-rendered]")),
+);
+check(
+  "and it stops being a streaming node",
+  await nat.evaluate(() => !document.querySelector("#agent-log .agent-said.streaming")),
+);
+
+// A permission card, and the three answers it can carry.
+await nat.evaluate(() =>
+  window.__EMIT__("agent-ask", { id: "t3", tool: "Bash", input: { command: "rm -rf build" } }));
+check("a card names the tool", (await nat.locator(".agent-card .c-what").innerText()).includes("Bash"));
+check(
+  "and shows the call rather than its JSON",
+  (await nat.locator(".agent-card .c-detail").innerText()).trim() === "rm -rf build",
+);
+await nat.locator(".agent-card button", { hasText: "Always allow" }).click();
+check("“always” sends allow and always", await nat.evaluate(() => {
+  const d = window.__DECIDED__.at(-1);
+  return d && d.id === "t3" && d.allow === true && d.always === true;
+}));
+check(
+  "and the answered card settles rather than vanishing",
+  await nat.locator(".agent-card.settled").count() === 1,
+);
+
+// The turn ends, and everything scoped to it goes with it — otherwise the next
+// answer's block 0 would overwrite this one's.
+await nat.evaluate(() =>
+  window.__EMIT__("agent-event", { kind: "turn", ok: true, interrupted: false, costUsd: 0.01, durationMs: 10, denials: 1 }));
+check("a turn's block map is cleared with it", await nat.evaluate(() => agent.blocks.size === 0));
+check("and a denial is reported to the reader", await nat.evaluate(() =>
+  [...document.querySelectorAll(".agent-note")].some((n) => n.textContent.includes("not allowed"))));
+
+// The composer. Enter sends, Shift+Enter does not.
+await nat.locator("#agent-input").fill("why is locate slow here?");
+await nat.keyboard.press("Shift+Enter");
+check("Shift+Enter does not send", await nat.evaluate(() =>
+  window.__CALLS__.filter((c) => c.cmd === "agent_send").length === 0));
+await nat.locator("#agent-input").fill("why is locate slow here?");
+await nat.keyboard.press("Enter");
+check("Enter sends the composer", await nat.evaluate(() => {
+  const sent = window.__CALLS__.filter((c) => c.cmd === "agent_send");
+  return sent.length === 1 && sent[0].args.text === "why is locate slow here?";
+}));
+check("and the composer is cleared", await nat.evaluate(() => document.getElementById("agent-input").value === ""));
+check("and the reader's turn is in the log", await nat.evaluate(() =>
+  [...document.querySelectorAll(".agent-turn.you .agent-said")].some((n) => n.textContent.includes("locate slow"))));
+
+// Escape interrupts a running turn instead of closing the pane — the thing the
+// terminal surface could not do, because xterm claimed the key.
+await nat.evaluate(() => window.__EMIT__("agent-event", { kind: "status", status: "requesting" }));
+await nat.locator("#agent-input").focus();
+await nat.keyboard.press("Escape");
+check("Escape interrupts a running turn", await nat.evaluate(() =>
+  window.__CALLS__.some((c) => c.cmd === "agent_interrupt")));
+check("and leaves the pane open", await nat.locator("#pty-pane.open").isVisible());
+
+// A model chip is a turn natively, not a separate command.
+await nat.evaluate(() => window.__EMIT__("agent-event", { kind: "turn", ok: true, interrupted: true, costUsd: 0, durationMs: 1, denials: 0 }));
+await nat.locator('#pty-models .pty-model[data-model="opus"]').click();
+check("a model chip sends a slash command as a turn", await nat.evaluate(() =>
+  window.__CALLS__.some((c) => c.cmd === "agent_send" && c.args.text === "/model opus")));
+check("and never reaches the pty command", await nat.evaluate(() =>
+  !window.__CALLS__.some((c) => c.cmd === "pty_model")));
+
+await nat.close();
+
 // --- docked right (`agent.position`) --------------------------------------
 // A second page, because position is read once on the pane's first open — the
 // only honest way to check the other value is to boot into it.
@@ -1889,7 +2033,9 @@ await chrome.addInitScript(({ base }) => {
           // This page presses every keymap entry, `toggle_pane` among them, so
           // it opens the pane even though the pane is not what it asserts on.
           // Without this the pane's first-open fetch reads `position` off null.
-          case "agent_prefs": return { position: "bottom", permission_mode: "accept-edits" };
+          case "agent_prefs": return { position: "bottom", permission_mode: "accept-edits", surface: "native" };
+          case "agent_spawn": return true;
+          case "agent_send": case "agent_interrupt": case "agent_kill": return null;
           case "pty_spawn": return true;
           case "pty_write": case "pty_resize": case "pty_kill": case "pty_model": return null;
           // This page opens the pane as a side effect of pressing every

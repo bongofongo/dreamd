@@ -349,6 +349,23 @@ fn render_markdown(state: State<AppState>, path: String) -> Result<String, Strin
     Ok(markdown::render_with(&source, &code_theme))
 }
 
+/// The agent's prose, through the document pipeline.
+///
+/// The same `render_with` the reader's markdown goes through, deliberately: the
+/// point of the native surface is that an answer about a typeset document is
+/// itself typeset, in the same palette, with fenced code in the same syntect
+/// theme. It also means the agent's output inherits tenet 4 rather than needing
+/// its own escaping — raw HTML in a reply is re-emitted as text, and a link it
+/// invents is subject to the same scheme allowlist as one in a file.
+///
+/// Separate from [`render_markdown`] only because that one reads a path and
+/// this one is handed a string that never touched the disk.
+#[tauri::command]
+fn render_agent_text(state: State<AppState>, text: String) -> String {
+    let code_theme = state.syntax_theme();
+    markdown::render_with(&text, &code_theme)
+}
+
 #[tauri::command]
 async fn fuzzy_search(state: State<'_, AppState>, query: String) -> Result<Vec<FileNode>, String> {
     let catalog = state.catalog.clone();
@@ -1732,6 +1749,7 @@ fn main() {
             pty_resize,
             pty_kill,
             pty_model,
+            render_agent_text,
             agent_spawn,
             agent_send,
             agent_interrupt,

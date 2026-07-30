@@ -2291,7 +2291,17 @@ function noteBootQuiet() {
 }
 
 /// Can the pane take a line right now?
+///
+/// The terminal has to *look* settled before it can be typed at: `pty_spawn`
+/// returns as soon as the shell exists, and a prompt written into Claude Code's
+/// composer before it has drawn one goes nowhere. Hence `BOOT_QUIET_MS` and the
+/// whole boot-quiet dance above.
+///
+/// The native surface has no such gap. `agent_spawn` returns with a child whose
+/// stdin is a pipe, and a turn written to a pipe before the model is ready waits
+/// in the pipe. There is nothing to guess at, so nothing here guesses.
 function paneReady() {
+  if (agent.running) return true;
   return !!(pty.running && pty.settled);
 }
 
@@ -2743,15 +2753,21 @@ async function openPane() {
   document.body.classList.add("pane-open");
   pty.opening = true;
   try {
-    // Ahead of the vendor load, because it decides the pane's geometry and a
-    // terminal built into the wrong box would `fit()` to it. One round trip on
-    // first open only; nothing here runs at boot.
+    // Ahead of everything, because it decides both the pane's geometry and
+    // which of the two bodies it has. One round trip on first open only;
+    // nothing here runs at boot.
     await loadAgentPrefs();
-    await loadTerminalVendor();
-    if (!pty.term) buildTerminal();
-    fitPane();
-    if (!pty.running) await startPaneProcess();
-    pty.term.focus();
+    if (nativeSurface()) {
+      pane.classList.add("native");
+      await openNativeAgent();
+    } else {
+      pane.classList.remove("native");
+      await loadTerminalVendor();
+      if (!pty.term) buildTerminal();
+      fitPane();
+      if (!pty.running) await startPaneProcess();
+      pty.term.focus();
+    }
   } catch (e) {
     console.error(e);
     setPaneStatus(String(e.message || e));
@@ -2949,6 +2965,21 @@ function setPaneStatus(text) {
 /// outside dreamd and then wants to retry without reopening anything.
 async function restartPane() {
   try {
+    if (nativeSurface()) {
+      await invoke("agent_kill");
+      agent.running = false;
+      agent.busy = false;
+      agent.turn = null;
+      agent.blocks.clear();
+      agent.tools.clear();
+      // Cards belonging to the session that just died: their hooks are gone
+      // and dreamd denied them on the way out, so leave them settled in the
+      // log as the record of what was asked, and stop tracking them.
+      agent.cards.clear();
+      $("agent-log").replaceChildren();
+      await openNativeAgent();
+      return;
+    }
     await invoke("pty_kill");
     pty.running = false;
     if (pty.term) pty.term.reset();
@@ -2976,6 +3007,20 @@ async function restartPane() {
 /// enum and comes back out as one of three compiled-in lines (tenet 3) — see
 /// `pty::model_line`.
 async function setModel(model) {
+  // Natively the slash command *is* a turn: verified against claude 2.1.220,
+  // `/model haiku` sent as ordinary user-message text is honoured and the next
+  // turn's init reports the new model. So the chips cost exactly what they cost
+  // in the terminal — nothing — and the chip lights from that init rather than
+  // from this click, which is the more honest of the two.
+  if (agent.running) {
+    try {
+      await invoke("agent_send", { text: `/model ${model}` });
+      $("agent-input").focus();
+    } catch (e) {
+      setPaneStatus(String(e.message || e));
+    }
+    return;
+  }
   if (!pty.running) { setPaneStatus("the pane is not running"); return; }
   try {
     await invoke("pty_model", { model });
@@ -3069,6 +3114,389 @@ function paintMcpStatus(s) {
   }
 }
 
+// ---- the native agent surface ---------------------------------------------
+// The same pane, the same agent, drawn by dreamd. Where the terminal above is
+// handed bytes and paints them itself, this is handed *events* — `wire::digest`
+// has already turned Claude Code's stream-json into the few things worth
+// showing — and turns them into DOM.
+//
+// **The prose goes through `markdown::to_html`**, the same pulldown-cmark and
+// syntect the reader's documents go through. That one decision is what makes
+// the answer look native rather than merely look different: same typeface, same
+// palette, same syntax theme for fenced code, and it inherits tenet 4's
+// escaping instead of needing its own.
+//
+// Text arrives twice and both are used. Deltas stream in as plain text so the
+// reader sees prose move; the settled block then replaces that node wholesale
+// with the rendered version. Rendering mid-stream would flicker between block
+// types as fences and list markers arrive, and not rendering until the end
+// would make a long answer look like nothing was happening.
+//
+// Blocks are keyed by the `index` the wire carries, and the key is scoped to the
+// turn: indices restart at 0 for each assistant message, so a map that outlived
+// a turn would have the second answer overwrite the first.
+
+const agent = {
+  /// The turn currently being written into, or null between turns.
+  turn: null,
+  /// index -> the element holding that block's text, for this turn only.
+  blocks: new Map(),
+  /// tool_use_id -> its ticker row.
+  tools: new Map(),
+  /// tool_use_id -> its permission card.
+  cards: new Map(),
+  running: false,
+  listening: false,
+  /// True while a turn is in flight, which is what the composer's Escape and
+  /// the send button's disabled state both read.
+  busy: false,
+};
+
+/// Whether the pane draws itself or hands the box to xterm.
+///
+/// Reads the prefs the pane already loads. Defaults to native when prefs failed
+/// to load: that is the supported surface, and falling back to the terminal on
+/// a config read error would be answering a question nobody asked.
+function nativeSurface() {
+  return (pty.prefs?.surface ?? "native") !== "terminal";
+}
+
+/// Show the native body, starting the session the first time.
+async function openNativeAgent() {
+  attachAgentListeners();
+  if (!agent.running) {
+    setPaneStatus("starting");
+    await invoke("agent_spawn");
+    agent.running = true;
+    setPaneStatus("ready");
+    $("pty-pane").classList.remove("dead");
+  }
+  $("agent-input").focus();
+}
+
+/// Attached once per process, guarded the way the pty listeners are: `listen`
+/// returns an unlisten function nobody calls, so a second attach would double
+/// every event.
+function attachAgentListeners() {
+  if (agent.listening) return;
+  agent.listening = true;
+  listen("agent-event", (e) => onAgentEvent(e.payload));
+  listen("agent-ask", (e) => onAgentAsk(e.payload));
+}
+
+/// One digested event. The `kind` values are `wire::AgentEvent`'s variants —
+/// change one, change the other.
+function onAgentEvent(ev) {
+  switch (ev.kind) {
+    case "ready":
+      // Emitted once per *turn*, not once per process, so this is "still here,
+      // this is the model now" rather than "start a conversation". It is what
+      // makes the model chips work without a restart.
+      agent.model = ev.model;
+      paintModelChipsFrom(ev.model);
+      break;
+    case "status":
+      agent.busy = true;
+      setPaneStatus(ev.status === "requesting" ? "thinking" : ev.status);
+      paintComposer();
+      break;
+    case "textDelta":
+      appendDelta(ev.index, ev.text);
+      break;
+    case "text":
+      settleBlock(ev.index, ev.text);
+      break;
+    case "notice":
+      addNote(ev.text);
+      break;
+    case "toolStart":
+      addToolRow(ev.id, ev.name, ev.target);
+      break;
+    case "toolEnd":
+      finishToolRow(ev.id, ev.ok);
+      break;
+    case "turn":
+      endTurn(ev);
+      break;
+  }
+}
+
+/// The element a turn's content goes into, created on first use.
+function turnEl() {
+  if (agent.turn) return agent.turn;
+  const wrap = document.createElement("div");
+  wrap.className = "agent-turn agent";
+  const who = document.createElement("div");
+  who.className = "agent-who";
+  who.textContent = "Claude";
+  wrap.appendChild(who);
+  $("agent-log").appendChild(wrap);
+  agent.turn = wrap;
+  return wrap;
+}
+
+function appendDelta(index, text) {
+  let el = agent.blocks.get(index);
+  if (!el) {
+    el = document.createElement("div");
+    el.className = "agent-said streaming";
+    turnEl().appendChild(el);
+    agent.blocks.set(index, el);
+  }
+  el.textContent += text;
+  scrollLog();
+}
+
+/// Replace a streamed block with the rendered markdown of its settled text.
+///
+/// `render_agent_text` is the document pipeline, so this is where the agent's
+/// answer stops being a terminal transcript and becomes a typeset one.
+async function settleBlock(index, text) {
+  let el = agent.blocks.get(index);
+  if (!el) {
+    el = document.createElement("div");
+    turnEl().appendChild(el);
+    agent.blocks.set(index, el);
+  }
+  // Hold on to the node: another turn may start before this round trip
+  // returns, and `agent.blocks` will have been cleared by then.
+  const node = el;
+  try {
+    // `innerHTML` of markdown::render_with's output — the same pipeline, and
+    // therefore the same escaping, as every document in the reading pane: raw
+    // HTML in the agent's reply is re-emitted as text and a link it invents
+    // meets `paths.js` exactly as one in a file does. Tenet 4 covers this
+    // string because it is the same string.
+    node.innerHTML = await invoke("render_agent_text", { text });
+    node.className = "agent-said";
+  } catch (e) {
+    console.error(e);
+    // The text is the thing that matters; a render failure costs the
+    // typesetting, not the answer.
+    node.textContent = text;
+    node.className = "agent-said streaming";
+  }
+  scrollLog();
+}
+
+function addNote(text) {
+  const el = document.createElement("div");
+  el.className = "agent-note";
+  el.textContent = text;
+  $("agent-log").appendChild(el);
+  scrollLog();
+}
+
+function addToolRow(id, name, target) {
+  const row = document.createElement("div");
+  row.className = "agent-tool";
+  const n = document.createElement("span");
+  n.className = "t-name";
+  n.textContent = name;
+  const t = document.createElement("span");
+  t.className = "t-target";
+  t.textContent = target || "";
+  const m = document.createElement("span");
+  m.className = "t-mark";
+  m.textContent = "…";
+  row.append(n, t, m);
+  turnEl().appendChild(row);
+  agent.tools.set(id, row);
+  scrollLog();
+}
+
+function finishToolRow(id, ok) {
+  const row = agent.tools.get(id);
+  if (!row) return;
+  row.querySelector(".t-mark").textContent = ok ? "✓" : "✗";
+  if (!ok) row.classList.add("failed");
+}
+
+/// A turn ended. Everything keyed by block index or tool id is scoped to the
+/// turn and has to go with it — see the section header.
+function endTurn(ev) {
+  agent.blocks.clear();
+  agent.tools.clear();
+  agent.turn = null;
+  agent.busy = false;
+  setPaneStatus(ev.interrupted ? "stopped" : "ready");
+  if (ev.denials > 0) {
+    addNote(
+      ev.denials === 1
+        ? "1 tool call was not allowed."
+        : `${ev.denials} tool calls were not allowed.`,
+    );
+  }
+  paintComposer();
+  scrollLog();
+}
+
+/// A tool call waiting on the reader.
+///
+/// Its own event rather than a variant of the firehose above: it arrives rarely,
+/// it is the only thing the reader has to *answer*, and routing it through the
+/// same channel would mean filtering a hot path for a message that must never be
+/// dropped.
+function onAgentAsk(ask) {
+  const card = document.createElement("div");
+  card.className = "agent-card";
+
+  const what = document.createElement("div");
+  what.className = "c-what";
+  what.textContent = `Claude wants to use ${ask.tool}`;
+
+  const detail = document.createElement("div");
+  detail.className = "c-detail";
+  // textContent, not innerHTML: this is a tool's arguments, which for a Bash
+  // call is a command line and for an Edit is file content. It is shown to the
+  // reader as evidence, and evidence is never markup.
+  detail.textContent = describeCall(ask.input);
+
+  const buttons = document.createElement("div");
+  buttons.className = "c-buttons";
+  const allow = document.createElement("button");
+  allow.className = "primary";
+  allow.textContent = "Allow";
+  allow.onclick = () => answerCard(ask.id, true, false);
+  const always = document.createElement("button");
+  always.textContent = `Always allow ${ask.tool}`;
+  always.title = "For this conversation only — nothing is written to your config";
+  always.onclick = () => answerCard(ask.id, true, true);
+  const deny = document.createElement("button");
+  deny.textContent = "Deny";
+  deny.onclick = () => answerCard(ask.id, false, false);
+  buttons.append(allow, always, deny);
+
+  card.append(what, detail, buttons);
+  $("agent-log").appendChild(card);
+  agent.cards.set(ask.id, card);
+  scrollLog();
+}
+
+/// The one line of a tool call worth putting on a card.
+///
+/// The whole input as pretty JSON is unreadable for the calls that matter most
+/// — a Bash command is a string, and seeing it as `{"command": "..."}` is worse
+/// than seeing it. So the conventional fields are shown bare and anything else
+/// falls back to JSON.
+function describeCall(input) {
+  if (!input || typeof input !== "object") return String(input ?? "");
+  for (const key of ["command", "file_path", "path", "pattern", "url", "query"]) {
+    if (typeof input[key] === "string") return input[key];
+  }
+  try {
+    return JSON.stringify(input, null, 2);
+  } catch {
+    return String(input);
+  }
+}
+
+async function answerCard(id, allow, always) {
+  const card = agent.cards.get(id);
+  // Settle the card before the round trip: the reader has answered, and a
+  // button that stays live for another 50ms invites a second click on a
+  // decision they have already made.
+  if (card) {
+    card.classList.add("settled");
+    const what = card.querySelector(".c-what");
+    if (what) what.textContent += allow ? " — allowed" : " — denied";
+  }
+  agent.cards.delete(id);
+  try {
+    await invoke("agent_decide", { id, allow, always });
+  } catch (e) {
+    console.error(e);
+  }
+}
+
+/// Send what is in the composer.
+async function sendComposer() {
+  const input = $("agent-input");
+  const text = input.value.trim();
+  if (!text || !agent.running) return;
+  input.value = "";
+  autoGrowComposer();
+  addYourTurn(text);
+  try {
+    await invoke("agent_send", { text });
+    agent.busy = true;
+    paintComposer();
+  } catch (e) {
+    console.error(e);
+    addNote(String(e.message || e));
+  }
+}
+
+function addYourTurn(text) {
+  const wrap = document.createElement("div");
+  wrap.className = "agent-turn you";
+  const who = document.createElement("div");
+  who.className = "agent-who";
+  who.textContent = "You";
+  const said = document.createElement("div");
+  said.className = "agent-said";
+  said.textContent = text;
+  wrap.append(who, said);
+  $("agent-log").appendChild(wrap);
+  // A new turn starts a new agent bubble.
+  agent.turn = null;
+  scrollLog();
+}
+
+/// Stop the turn without ending the conversation.
+///
+/// The terminal surface could not offer this: xterm.js claims every key it
+/// handles and D12 spent Escape on "close the pane", leaving Ctrl+C as the only
+/// way to stop a turn. Here dreamd owns the keyboard, so Escape interrupts while
+/// a turn is running and closes the pane when one is not — the key does the more
+/// urgent of its two jobs first.
+async function interruptAgent() {
+  try {
+    await invoke("agent_interrupt");
+  } catch (e) {
+    console.error(e);
+  }
+}
+
+function paintComposer() {
+  const send = $("agent-send");
+  if (send) send.disabled = !agent.running;
+  setPaneDot(agent.busy);
+}
+
+function setPaneDot(busy) {
+  const dot = $("pty-dot");
+  if (dot) dot.style.opacity = busy ? "1" : "";
+}
+
+/// Follow the tail only when the reader is already at it. Someone scrolled up
+/// reading an earlier answer is *reading*, and yanking them down mid-sentence
+/// is the rudest thing a log can do.
+function scrollLog() {
+  const log = $("agent-log");
+  if (!log) return;
+  const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 60;
+  if (atBottom) log.scrollTop = log.scrollHeight;
+}
+
+function autoGrowComposer() {
+  const input = $("agent-input");
+  if (!input) return;
+  input.style.height = "auto";
+  input.style.height = `${input.scrollHeight}px`;
+}
+
+/// Light the chip matching whatever model the session reports.
+///
+/// The wire says `claude-haiku-4-5-20251001`; the chips say `haiku`. Substring
+/// rather than a table, so a model renamed within its family still lights up.
+function paintModelChipsFrom(model) {
+  const name = String(model || "").toLowerCase();
+  for (const chip of document.querySelectorAll("#pty-models .pty-model")) {
+    chip.classList.toggle("sel", name.includes(chip.dataset.model));
+  }
+}
+
 // ---- permission mode ------------------------------------------------------
 // Claude Code reads its permission mode once, at launch, so changing it here is
 // necessarily a restart — and a restart is a new session, which means the
@@ -3087,8 +3515,9 @@ function stageModeChange() {
   if (next === current) { cancelModeChange(); return; }
   pty.staged = next;
   // A pane with no live child has no conversation to lose, so there is nothing
-  // to warn about — write it and let the next start pick it up.
-  if (!pty.running) { commitModeChange(); return; }
+  // to warn about — write it and let the next start pick it up. True of either
+  // surface: the mode is a launch flag both times.
+  if (!pty.running && !agent.running) { commitModeChange(); return; }
   $("pty-confirm-text").textContent =
     `Switch to “${MODE_LABELS[next] || next}”? Claude Code reads the mode at launch, ` +
     `so this restarts the session and the conversation above is lost.`;
@@ -3241,6 +3670,27 @@ function wireUi() {
   $("pty-mode").onchange = () => stageModeChange();
   $("pty-mode-go").onclick = () => commitModeChange();
   $("pty-mode-cancel").onclick = () => cancelModeChange();
+  // The native composer. Enter sends and Shift+Enter newlines, which is why the
+  // markup is not a <form>: that pairing is the opposite of a form's, and
+  // intercepting the default is more code than owning the keydown.
+  $("agent-send").onclick = () => sendComposer();
+  $("agent-input").addEventListener("input", autoGrowComposer);
+  $("agent-input").addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      sendComposer();
+      return;
+    }
+    // Escape does the more urgent of its two jobs: stop a running turn, or —
+    // when nothing is running — close the pane, which is what it does
+    // everywhere else. `stopPropagation` only in the first case, so the global
+    // handler still sees the second.
+    if (e.key === "Escape" && agent.busy) {
+      e.preventDefault();
+      e.stopPropagation();
+      interruptAgent();
+    }
+  });
   // In highlight mode, finishing a text selection auto-starts the flow.
   contentEl.addEventListener("mouseup", () => {
     if (!highlightMode || pending) return;
