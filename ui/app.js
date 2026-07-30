@@ -1331,7 +1331,9 @@ function openAnnot({ mode, quote, id, text }) {
   annotCtx = { mode, id, quote };
   $("annot-title").textContent = mode === "edit" ? "Edit annotation" : "Add annotation";
   $("annot-save").textContent =
-    (mode === "edit" ? "Save" : "Add to stack") + "  " + displayCombo(keymap.save_annotation);
+    // `displayField`: this button sits under the textarea it is a shortcut for,
+    // so it must name the key that works *there*, modifier and all.
+    (mode === "edit" ? "Save" : "Add to stack") + "  " + displayField(keymap.save_annotation);
   $("annot-delete").style.display = mode === "edit" ? "" : "none";
   $("annot-ev").textContent = quote;
   $("annot-text").value = text || "";
@@ -4474,8 +4476,10 @@ function wireUi() {
   $("annot-delete").onclick = deleteHighlight;
   // Submits the annotation straight from the textarea (keyboard-only flow).
   // The global handler can't do this: it bails on editable targets.
+  // `matchField` for the reason the palette's next/prev use it: this is the box
+  // the annotation is typed into, and `y` is a letter people write.
   $("annot-text").addEventListener("keydown", (e) => {
-    if (matchCombo(e, keymap.save_annotation)) {
+    if (matchField(e, keymap.save_annotation)) {
       e.preventDefault();
       saveAnnot();
     }
@@ -4493,8 +4497,12 @@ function wireUi() {
   const pin = $("palette-input");
   pin.oninput = () => runPalette(pin.value);
   pin.onkeydown = (e) => {
-    if (matchCombo(e, keymap.palette_next) || e.key === "ArrowDown") { e.preventDefault(); movePalette(1); }
-    else if (matchCombo(e, keymap.palette_prev) || e.key === "ArrowUp") { e.preventDefault(); movePalette(-1); }
+    // `matchField`, because this handler *is* a text field: the reader is
+    // typing a query, and `n` and `p` are letters that belong in it. So these
+    // two are Ctrl+N and Ctrl+P in every key mode, vim included — the arrows
+    // beside them are the other way to say the same thing.
+    if (matchField(e, keymap.palette_next) || e.key === "ArrowDown") { e.preventDefault(); movePalette(1); }
+    else if (matchField(e, keymap.palette_prev) || e.key === "ArrowUp") { e.preventDefault(); movePalette(-1); }
     else if (e.key === "Enter") {
       e.preventDefault();
       const n = paletteResults[paletteSel];
@@ -4593,37 +4601,31 @@ function wireKeys() {
         $("confirm-overlay").classList.contains("open") ||
         $("settings-overlay").classList.contains("open")) return;
 
-    // Palette works from anywhere.
+    // ---- inside a text field ------------------------------------------
+    // A focused field owns its letters, full stop. Only these five actions
+    // survive one, and only in their *modified* spelling — `matchField` rather
+    // than `matchCombo`, so `vim` mode's bare forms cannot reach in here and
+    // turn `f`, `t` and `,` into commands while the reader is typing them.
+    //
+    // They survive because each is a place you go to rather than something you
+    // do to the document: the palette, the settings panel, the agent pane, and
+    // the two pane keys. Pane navigation in particular has to work from here or
+    // it is a one-way door — focusing a pane usually means focusing the thing
+    // in it you type into, and there would be no way back out.
+    if (isEditable(e.target)) {
+      if (matchField(e, keymap.palette)) { e.preventDefault(); openPalette(); return; }
+      if (matchField(e, keymap.settings)) { e.preventDefault(); openSettings(); return; }
+      if (matchField(e, keymap.toggle_pane)) { e.preventDefault(); togglePane(); return; }
+      if (matchField(e, keymap.pane_left)) { e.preventDefault(); focusPane(-1); return; }
+      if (matchField(e, keymap.pane_right)) { e.preventDefault(); focusPane(1); return; }
+      return;
+    }
+
+    // ---- the document --------------------------------------------------
+    // Everything below is the reader's key mode, bare letters included.
     if (matchCombo(e, keymap.palette)) { e.preventDefault(); openPalette(); return; }
     if (matchCombo(e, keymap.settings)) { e.preventDefault(); openSettings(); return; }
-    // Above `isEditable`, like those two, and for the same reason: the pane is
-    // a place you go to, not something you do to the document, so it must open
-    // from the find bar and the annotation box as well as from the reader. It
-    // is also the counterpart of the branch at the top of this handler — one
-    // key, both directions.
     if (matchCombo(e, keymap.toggle_pane)) { e.preventDefault(); togglePane(); return; }
-
-    // Pane navigation is above `isEditable` too, and has to be: focusing a pane
-    // usually means focusing the thing in it you would type into, so a reader
-    // who navigated *into* the composer with these keys must be able to
-    // navigate back out with them. A binding checked only below the guard would
-    // be a one-way door.
-    //
-    // Only while it carries a modifier, though. In `vim` mode these strip to
-    // bare `h`/`j`, and a bare key claimed out of a text field is a key the
-    // reader cannot type — so there the check falls through to the bare-letter
-    // block below the guard, with every other bare binding, and the composer
-    // keeps its letters. The cost is honest and local: in `vim` mode you leave
-    // a text field the way you always could, with Escape.
-    if (hasModifier(keymap.pane_left) && matchCombo(e, keymap.pane_left)) {
-      e.preventDefault(); focusPane(-1); return;
-    }
-    if (hasModifier(keymap.pane_right) && matchCombo(e, keymap.pane_right)) {
-      e.preventDefault(); focusPane(1); return;
-    }
-
-    // Bare-letter shortcuts must not fire while typing in a field.
-    if (isEditable(e.target)) return;
 
     // The pop-out's own keys, and they exist only while it has focus and is
     // read-only — with the composer up the guard above has already returned,
@@ -4676,16 +4678,10 @@ function wireKeys() {
     if (matchCombo(e, keymap.scroll_up)) { e.preventDefault(); scrollLine(-1); return; }
     if (matchCombo(e, keymap.scroll_half_down)) { e.preventDefault(); scrollHalf(1); return; }
     if (matchCombo(e, keymap.scroll_half_up)) { e.preventDefault(); scrollHalf(-1); return; }
-    // The other half of the pane keys: the bare case the guard above skipped.
-    // Both branches are needed and neither is dead — `hasModifier` decides which
-    // one a given mode uses, and it is false for exactly the modes where these
-    // must not be claimed out of a text field.
-    if (!hasModifier(keymap.pane_left) && matchCombo(e, keymap.pane_left)) {
-      e.preventDefault(); focusPane(-1); return;
-    }
-    if (!hasModifier(keymap.pane_right) && matchCombo(e, keymap.pane_right)) {
-      e.preventDefault(); focusPane(1); return;
-    }
+    // Pane navigation in the reader's own spelling. Below the scroll keys, not
+    // above them, because that is the only ordering `vim` mode survives.
+    if (matchCombo(e, keymap.pane_left)) { e.preventDefault(); focusPane(-1); return; }
+    if (matchCombo(e, keymap.pane_right)) { e.preventDefault(); focusPane(1); return; }
     if (matchCombo(e, keymap.next_file)) { e.preventDefault(); stepFile(1); return; }
     if (matchCombo(e, keymap.prev_file)) { e.preventDefault(); stepFile(-1); return; }
     if (matchCombo(e, keymap.find)) { e.preventDefault(); openFind(); return; }
@@ -4812,8 +4808,28 @@ async function copyStack() {
 /// respell modifiers, they never add one. That is the whole reason `linux` can
 /// be the default and still be byte-for-byte the old behaviour.
 function resolveCombo(combo) {
+  return resolveComboIn(combo, keyMode());
+}
+
+function keyMode() {
+  return (keymap && keymap.mode) || "linux";
+}
+
+/// The mode that applies while a text field has focus — the twin of
+/// `KeyMode::in_field`.
+///
+/// `vim`'s premise is that the document is not a text field, so the letters are
+/// free. Inside one that premise is false: a bare `f` is an `f` being typed,
+/// and a binding claiming it makes the field unusable. So vim gives the
+/// modifier back and `mac` does not have to, a modified binding being safe to
+/// claim from a field either way. This is what keeps the palette's next and
+/// previous on Ctrl+N and Ctrl+P however the rest of the map reads.
+function fieldCombo(combo) {
+  return resolveComboIn(combo, keyMode() === "vim" ? "linux" : keyMode());
+}
+
+function resolveComboIn(combo, mode) {
   if (!combo) return combo;
-  const mode = (keymap && keymap.mode) || "linux";
   if (mode === "linux") return combo;
   const parts = combo.split("+");
   // Pop the key first: `Ctrl++` is the literal plus key and splits to a
@@ -4830,17 +4846,15 @@ function resolveCombo(combo) {
   return out.join("+");
 }
 
-/// Does this binding, *as the current mode spells it*, need a modifier held?
+/// `matchCombo` for a handler that runs while a text field has focus: the
+/// binding is matched in its *field* spelling, which always keeps a modifier.
 ///
-/// The question the dispatcher asks before deciding whether a binding may be
-/// claimed out of a text field. Asked of the resolved form, because that is the
-/// one the reader presses: `Ctrl+H` is modified in `linux` and `mac` and bare in
-/// `vim`, and the answer has to change with it.
-function hasModifier(combo) {
-  if (!combo) return false;
-  const parts = resolveCombo(combo).split("+");
-  parts.pop(); // the key, which may itself be `+` and leave an empty segment
-  return parts.some((p) => p !== "");
+/// Every keydown handler attached to an input or textarea uses this, and so
+/// does the branch of the global handler that runs before a focused field takes
+/// over. A field that could be typed into and commanded with the same keypress
+/// is a field with no way to type those letters.
+function matchField(e, combo) {
+  return matchResolved(e, fieldCombo(combo));
 }
 
 /// The identity of a binding: two combos with the same key are the same
@@ -4851,15 +4865,32 @@ function hasModifier(combo) {
 ///
 /// Modifiers are sorted as well as lowercased. `comboFromEvent` always writes
 /// them in one order, but a hand-edited `config.toml` need not.
-function comboKey(combo) {
-  const parts = resolveCombo(combo).toLowerCase().split("+");
+/// Takes a combo already in its pressed spelling — callers pick that with
+/// `actionCombo`, because a field binding and a document one are spelled
+/// differently in `vim` mode and comparing the stored form would miss both.
+function comboKey(spelled) {
+  if (!spelled) return "";
+  const parts = spelled.toLowerCase().split("+");
   const key = parts.pop();
   return [...parts.sort(), key].join("+");
 }
 
+/// The spelling an action is actually pressed in: a `field` action never loses
+/// its modifier, everything else follows the reader's key mode.
+function actionCombo(action, combo) {
+  return action.field ? fieldCombo(combo) : resolveCombo(combo);
+}
+
 function matchCombo(e, combo) {
+  return matchResolved(e, resolveCombo(combo));
+}
+
+/// The comparison itself, against a combo already in the spelling to be
+/// pressed. `matchCombo` and `matchField` differ only in which spelling they
+/// hand it.
+function matchResolved(e, combo) {
   if (!combo) return false;
-  const parts = resolveCombo(combo).toLowerCase().split("+");
+  const parts = combo.toLowerCase().split("+");
   const key = parts.pop();
   if (e.ctrlKey !== parts.includes("ctrl")) return false;
   if (e.shiftKey !== parts.includes("shift")) return false;
@@ -4874,8 +4905,17 @@ function matchCombo(e, combo) {
 /// canonical `Ctrl+Shift+X` form.
 const MAC_SYMBOLS = { ctrl: "⌃", shift: "⇧", alt: "⌥", meta: "⌘" };
 function displayCombo(combo) {
-  if (!combo) return "—";
-  const resolved = resolveCombo(combo);
+  return displayResolved(resolveCombo(combo));
+}
+
+/// How a field binding reads — the counterpart of `matchField`, so a label
+/// beside one names the key that actually works there.
+function displayField(combo) {
+  return displayResolved(fieldCombo(combo));
+}
+
+function displayResolved(resolved) {
+  if (!resolved) return "—";
   if (!document.body.classList.contains("mac")) return resolved;
   const parts = resolved.split("+");
   const key = parts.pop();
@@ -4889,10 +4929,13 @@ function displayCombo(combo) {
 
 const KEY_ACTIONS = [
   { id: "palette", label: "Open file palette", sub: "Fuzzy find markdown files" },
-  { id: "palette_next", label: "Palette: next result" },
-  { id: "palette_prev", label: "Palette: previous result" },
+  // `field: true` — pressed while a text field has focus, so these keep their
+  // modifier in every key mode (see `fieldCombo`). The panel must render and
+  // clash-check them in that spelling or it names a key that does nothing.
+  { id: "palette_next", label: "Palette: next result", field: true, sub: "From inside the palette's query box, so it keeps its modifier even in vim mode" },
+  { id: "palette_prev", label: "Palette: previous result", field: true },
   { id: "highlight", label: "Highlight selection", sub: "Turn the selection into evidence and ask for an annotation" },
-  { id: "save_annotation", label: "Save annotation", sub: "From inside the annotation box" },
+  { id: "save_annotation", label: "Save annotation", field: true, sub: "From inside the annotation box, so it keeps its modifier even in vim mode" },
   { id: "toggle_outline", label: "Toggle contents panel", sub: "Outline of the open document's headings" },
   { id: "toggle_tree", label: "Toggle file tree", sub: "Collapse or restore the sidebar" },
   { id: "toggle_view", label: "Toggle view mode", sub: "Hide the titlebar, sidebar and panels — Esc also exits" },
@@ -5030,8 +5073,8 @@ function renderKeys() {
       (shadowed("keymap." + action.id) ? `<span class="sub shadowed">overridden by .dreamd.toml in this repo</span>` : "") +
       `</span>`;
     const btn = document.createElement("button");
-    btn.className = "combo" + (combo && clashes.has(comboKey(combo)) ? " clash" : "");
-    btn.textContent = displayCombo(combo);
+    btn.className = "combo" + (combo && clashes.has(comboKey(actionCombo(action, combo))) ? " clash" : "");
+    btn.textContent = action.field ? displayField(combo) : displayCombo(combo);
     // The stored form, which in a non-`linux` mode is not what the button says.
     btn.title = combo || "";
     btn.onclick = () => startRecording(action.id, btn);
@@ -5091,7 +5134,7 @@ function comboClashes() {
   for (const a of KEY_ACTIONS) {
     const c = keymap[a.id];
     if (!c) continue;
-    const k = comboKey(c);
+    const k = comboKey(actionCombo(a, c));
     if (seen.has(k)) dupes.add(k);
     seen.set(k, a.id);
   }
@@ -5099,7 +5142,7 @@ function comboClashes() {
   // pane-left. It is not in KEY_ACTIONS because it is a checkbox, not a combo.
   if (keymap.quick_highlight) {
     for (const a of KEY_ACTIONS) {
-      if (keymap[a.id] && comboKey(keymap[a.id]) === "h") dupes.add("h");
+      if (keymap[a.id] && comboKey(actionCombo(a, keymap[a.id])) === "h") dupes.add("h");
     }
   }
   return dupes;

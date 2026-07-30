@@ -396,6 +396,25 @@ pub enum KeyMode {
 }
 
 impl KeyMode {
+    /// The mode that applies while a text field has focus.
+    ///
+    /// [`KeyMode::Vim`]'s whole premise is that the document is not a text
+    /// field, so the letters are free. Inside one that premise is simply false:
+    /// a bare `f` there is an `f` being typed, and a binding that claimed it
+    /// would make the field unusable. So vim falls back to `Linux` in a field
+    /// and the modifier comes back — which is why the palette's next/previous
+    /// stay Ctrl+N and Ctrl+P however the rest of the map reads.
+    ///
+    /// `Mac` is unchanged: Cmd is a modifier, and a modified binding is
+    /// perfectly safe to claim from a field. Only the *unmodified* mode has to
+    /// give way.
+    pub fn in_field(self) -> Self {
+        match self {
+            KeyMode::Vim => KeyMode::Linux,
+            other => other,
+        }
+    }
+
     /// Rewrite one stored combo into the form this mode expects the reader to
     /// press. Pure, total, and mirrored by `resolveCombo` in `ui/app.js` —
     /// change one, change the other.
@@ -1379,6 +1398,35 @@ mod tests {
         assert_eq!(cfg.keymap.mode, KeyMode::Mac);
         // Switching mode rebinds nothing — the stored combos are canonical.
         assert_eq!(cfg.keymap.palette, "Ctrl+F");
+    }
+
+    #[test]
+    fn a_text_field_always_gets_a_modifier_back() {
+        // The one rule a field imposes: no mode may claim a bare key while the
+        // reader is typing. Vim gives way; the two modified modes do not have
+        // to, because a modifier is already unambiguous.
+        assert_eq!(KeyMode::Vim.in_field(), KeyMode::Linux);
+        assert_eq!(KeyMode::Linux.in_field(), KeyMode::Linux);
+        assert_eq!(KeyMode::Mac.in_field(), KeyMode::Mac);
+
+        // What the reader actually presses in the palette, per mode.
+        let next = Keymap::default().palette_next;
+        assert_eq!(KeyMode::Linux.in_field().resolve(&next), "Ctrl+N");
+        assert_eq!(KeyMode::Vim.in_field().resolve(&next), "Ctrl+N");
+        assert_eq!(KeyMode::Mac.in_field().resolve(&next), "Meta+N");
+
+        // Every field binding keeps a modifier in every mode. A bare one here
+        // would be a key the reader could not type.
+        let km = Keymap::default();
+        for combo in [&km.palette_next, &km.palette_prev, &km.save_annotation] {
+            for mode in [KeyMode::Linux, KeyMode::Mac, KeyMode::Vim] {
+                let resolved = mode.in_field().resolve(combo);
+                assert!(
+                    resolved.contains('+'),
+                    "{combo} went bare in a field under {mode:?}: {resolved}"
+                );
+            }
+        }
     }
 
     #[test]
