@@ -15,6 +15,8 @@
 //!
 //! - [`wire`] — pure. Another program's JSON, reduced to the events a pane
 //!   draws. Lenient by contract; the drift lands here and nowhere else.
+//! - [`claude`] — the child process: where `claude` is, what it is launched
+//!   with, the reader thread, and the two lines dreamd ever writes to it.
 //!
 //! [`Sink`] is shaped exactly like [`crate::pty::Sink`] and
 //! [`crate::notify::Notifier`], and for the third time for the same reason: a
@@ -22,6 +24,7 @@
 //! with no window and no event loop. `main.rs` supplies the one closure that
 //! knows a webview exists.
 
+pub mod claude;
 pub mod wire;
 
 use std::sync::Arc;
