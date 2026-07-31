@@ -221,7 +221,7 @@ mod tests {
     }
 
     #[test]
-    fn the_six_pre_granted_tools_never_raise_a_card() {
+    fn the_pre_granted_tools_never_raise_a_card() {
         let always = HashSet::new();
         for tool in GRANTS {
             assert_eq!(decide(tool, &always), Policy::Auto, "{tool} should be auto");

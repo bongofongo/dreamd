@@ -9,8 +9,10 @@
 //!
 //! They are also the choke point for [`crate::untrusted::delimit`]. Every path
 //! by which repo markdown reaches an agent runs through [`Mark::new`], so the
-//! labelling is applied in one constructor rather than remembered at five call
-//! sites in `tools.rs`. Adding a new tool cannot forget it.
+//! labelling is applied in one constructor rather than remembered at each call
+//! site in `tools.rs`. Adding a new tool cannot forget it. [`OpenDocument`] is
+//! the one DTO here carrying no delimited field, and deliberately: a path is
+//! dreamd's answer about its own state, not text lifted out of a document.
 
 use crate::annotations::{Highlight, HighlightState, Origin, Resolution};
 use crate::untrusted::delimit;
@@ -182,6 +184,39 @@ pub struct Marked {
     pub id: String,
 }
 
+/// What the human has on screen, as `get_open_document` answers it.
+///
+/// A struct with one nullable field rather than a bare string, for two reasons.
+/// It gives "nothing is open" a shape — `{"file": null}` is an answer, where a
+/// bare `null` reads like a tool that failed — and it leaves room to say more
+/// later without changing the result's type on a model that has already learned
+/// it.
+///
+/// **Nothing here is delimited, because nothing here is document text.** A path
+/// is dreamd's own answer about its own state, not content lifted out of a file
+/// the way [`Mark`]'s quote is. It is still repo-relative, and the tool that
+/// builds it has already refused anything outside the root.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenDocument {
+    pub file: Option<String>,
+}
+
+impl OpenDocument {
+    /// Nothing open — the honest answer for a window at its empty state, a
+    /// launch with no repo, and a document that has since been deleted or left
+    /// the root.
+    pub fn none() -> Self {
+        Self { file: None }
+    }
+
+    pub fn new(path: &Path, root: &Path) -> Self {
+        Self {
+            file: Some(relative(&path.to_string_lossy(), root)),
+        }
+    }
+}
+
 /// Render `path` relative to the repo root.
 ///
 /// A path outside the root is left absolute, matching what `send.rs` already
@@ -189,8 +224,8 @@ pub struct Marked {
 /// Truncating it to a basename would be worse than useless: it would *look*
 /// repo-relative while pointing somewhere else, and an agent would then try to
 /// read the wrong file. In practice the case does not arise — the store is
-/// filtered by `guard::inside_root` on load — so the honest fallback costs
-/// nothing.
+/// filtered by `guard::inside_root` on load, and `get_open_document` refuses
+/// anything outside it — so the honest fallback costs nothing.
 pub fn relative(path: &str, root: &Path) -> String {
     Path::new(path)
         .strip_prefix(root)

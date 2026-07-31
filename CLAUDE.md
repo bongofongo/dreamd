@@ -183,10 +183,11 @@ to the crate version, verified.
    `config.toml` and saved themes, written by the settings panel and the
    `config`/`theme` subcommands. Still no database, and still nothing written
    anywhere else — a third thing that wants to persist needs its own decision.
-   The one write *outside* it is `mcp::register`, and it is not dreamd's own
-   state: the Register button on the pane's MCP strip runs `claude mcp add`, so
-   Claude Code writes its own config through its own CLI. Reader-initiated,
-   never at startup — that is what keeps it a click rather than an exception.
+   **There is no longer any write outside it.** `mcp::register` used to run
+   `claude mcp add` from a button on the pane's MCP strip; that button is gone,
+   because `agent_spawn` hands the session `--mcp-config` and the surface dreamd
+   launches no longer needs a registration to exist. What the module still owns
+   is the *text* of that command, for the surfaces dreamd does not launch.
 3. **No shell interpolation of user content.** Sent queries go through a temp file and
    a fixed `read @<file>` prompt. Highlighted text never enters a command line.
    The pane's `$SHELL -l -c "exec claude"` is the second shell dreamd spawns and
@@ -324,7 +325,24 @@ the upgrade procedure.
   a flush on `RunEvent::ExitRequested`, and the flush + reload `adopt_root` does
   in the same block that swaps config. Only the primary writes: the second
   dreamd on a repo keeps its marks in memory and says so.
-- `mcp` — the agent surface. `jsonrpc`/`schema`/`tools`/`view` are pure and
+- `mcp` — the agent surface. Six tools: four read (`get_stack`,
+  `get_open_document`, `get_highlight`, `list_highlights`) and two write
+  (`resolve_highlight`, `mark_passage`), none of which writes a file byte.
+  **`schema::TOOLS`'s descriptions are product surface, not boilerplate** — they
+  are the only thing steering an agent to the queue rather than a sweep of the
+  repo, and getting one wrong fails no test. `get_open_document` is the one tool
+  answering about the *window* rather than the store: it reports the path the
+  human has on screen and nothing else, for a question that says "this file" or
+  "here". `main.rs` records that path in `render_markdown` rather than through a
+  command of its own — dreamd renders one document at a time, so the render *is*
+  the open document, and a `set_open_document` would be a third IPC on a path
+  that already costs two and is measured. The slot is **never cleared**; the
+  tool re-checks containment and existence on every call, so a File → Open, a
+  deletion and a repo swap each answer "nothing open" without anything having to
+  remember to blank it. It reaches the tool as an `OpenDoc` *closure*, the same
+  shape and for the same reason as `notify::Notifier`: `AppState` is a name this
+  module may not speak, so `main.rs` supplies a reader and `mcp_check` supplies
+  its own. `jsonrpc`/`schema`/`tools`/`view` are pure and
   Tauri-free; `server` is the Unix socket the GUI listens on
   (`~/.config/dreamd/run/<16hex>.sock`, mode 0600, the same FNV-1a root hash
   `marks_file` uses) and `shim` is `dreamd mcp`, the process Claude Code spawns.
@@ -339,21 +357,28 @@ the upgrade procedure.
   reads: `serving` (this process won the bind) and `clients` (connections
   accepted since it). Each `spawn` gets its own, so a retiring server on the
   previous root cannot write `serving = false` over its replacement. `clients`
-  is **not** liveness — the shim connects per call — so the only honest question
-  it answers is "has an agent ever reached this window", which is exactly the
-  failure worth naming: without it, an unregistered MCP server looks like an
-  agent that simply forgets to resolve marks. `register` is the button that
-  strip grows in that last case: `claude mcp add dreamd --scope user --
-  <launcher> mcp`, spawned through `agent::claude::resolve` with one
-  `Command::arg` each. **`--scope user`, because `shim` derives the root from
-  its own cwd** — one registration serves every repo, where the CLI's default
-  `local` scope would put the button back on screen in the next one. The
-  launcher is `$APPIMAGE` before `current_exe`: a registration outlives the
-  process, and an AppImage's `current_exe` is a `/tmp` mount that dies with the
-  window. Already-registered is settled by `claude mcp get`'s **exit status**,
-  not by reading its refusal, and it is the *common* answer — the strip is up
-  for every session until an agent first calls a dreamd tool, so a press that
-  changed nothing must not read as a failure.
+  is **not** liveness — the shim connects per call — and it is deliberately
+  **not on the wire**: a count of zero is equally true of a correctly-wired
+  agent that has not needed dreamd yet, so a strip keyed on it spent every
+  session accusing a healthy window and offered a Register button whose success
+  it could not observe, which is how pressing it led to a Restart that
+  repainted Register. It stays as a diagnostic `mcp_check` asserts on, never as
+  a verdict. `register` no longer runs anything: `config_json` is the
+  `--mcp-config` document `agent_spawn` hands the session, and `add_command` is
+  `claude mcp add dreamd --scope user -- <launcher> mcp` as *text*, for the
+  surfaces dreamd does not launch (a Claude Code in tmux, or the terminal pane,
+  whose command is four fixed literals with nowhere to put a path). Both come
+  off `add_args`, and a test pins the printed one to it — the last hand-written
+  copy dropped `--scope user`, named a bare `dreamd`, and put a second
+  registration on the development machine. **`--scope user`, because `shim`
+  derives the root from its own cwd** — one registration serves every repo,
+  where the CLI's default `local` scope would put the strip back on screen in
+  the next one. The launcher is `$APPIMAGE` before `current_exe`: a
+  registration outlives the process, and an AppImage's `current_exe` is a
+  `/tmp` mount that dies with the window. `registered` is `claude mcp get`'s
+  **exit status**, three-valued — a `claude` that could not be run at all is
+  not the same answer as one that ran and said no — cached per process, and
+  read only by the terminal surface.
 - `notify` — `marks-changed`, the only *store* change dreamd pushes unprompted.
   Emitted **only** from the MCP layer, never from a command: a command's return
   value is already the frontend's truth for its own mutation, and a second
@@ -388,8 +413,18 @@ the upgrade procedure.
   at all, and a test pins the inequality. `hook` is `dreamd approve`, shaped
   like `mcp::shim` and inverted where it counts: that one answers locally so a
   closed dreamd cannot blank an agent's tool list, this one has no local
-  answers and fails closed. **Never pass `--bare`** — it skips hooks, and the
-  gate is a hook. `--verbose` is not decoration; `-p` will not stream without
+  answers and fails closed. The launch carries **two** inline JSON documents,
+  one `Command::arg` each: `--settings` is the hook, and `--mcp-config` is
+  `mcp::register::config_json` — which is what makes the six pre-granted
+  `mcp__dreamd__*` tools refer to anything, and why the native surface needs no
+  `claude mcp add` and cannot inherit a registration naming a binary that has
+  moved. `spawn_args` is the whole vector, pure and separate, because a flag
+  that must never appear is a claim about the assembled argv rather than about
+  any one const: **never pass `--bare`** — it skips hooks, and the gate is a
+  hook — and **never pass `--strict-mcp-config`**, which would make dreamd's
+  document the only MCP config the session sees and drop every other server the
+  reader has, inside dreamd's pane and nowhere else. `--verbose` is not
+  decoration; `-p` will not stream without
   it. A slash command sent as ordinary user text *is* honoured, which is why
   the model chips still cost no restart.
 - `pty` — the **fallback** surface, kept undocumented behind `agent.surface =
@@ -410,11 +445,11 @@ the upgrade procedure.
   shape and for the same reason as `notify`'s. **A pty needs no entitlement**
   under dreamd's hardened runtime — measured against a signed bundle before the
   module was written; don't add an entitlements file for it.
-  Every launch carries `--allowed-tools Read` plus dreamd's five MCP tools and
+  Every launch carries `--allowed-tools Read` plus dreamd's six MCP tools and
   **nothing that writes** — highlighting a passage and attaching a question to
   it is already the consent, and a permission prompt for the stack lands in a
   terminal nobody is looking at. The list is spelled out rather than
-  wildcarded, and a test pins it at exactly six; a sixth MCP tool is a
+  wildcarded, and a test pins it at exactly seven; a seventh MCP tool is a
   deliberate line, not a silent grant. `Model` is the second closed enum here:
   three chips in the pane header become one of three fixed `/model` lines typed
   into the *running* child, so switching model costs no restart (the permission

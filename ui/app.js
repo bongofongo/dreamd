@@ -3062,7 +3062,6 @@ const pty = {
   // whatever Claude Code itself chose. dreamd passes no `--model`, so null is
   // "unknown", not "default".
   model: null,
-  mcpTimer: null,    // the status poll, running only while the pane is open
   // True across the whole of `openPane` — the vendor load and the spawn, not
   // just the spawn. Only the send bar reads it, and only so that a cold start
   // says "starting" rather than "not running", which is the same fact worded as
@@ -3214,7 +3213,7 @@ async function openPane() {
   // After the try, and outside it: a pane that failed to start is exactly the
   // pane whose MCP status is worth reading, and this must not be skipped by the
   // thing it explains.
-  startMcpWatch();
+  refreshMcpStatus();
 }
 
 /// Hide it. Deliberately *not* a kill: the scrollback and the conversation
@@ -3224,9 +3223,6 @@ async function openPane() {
 function closePane() {
   $("pty-pane").classList.remove("open");
   document.body.classList.remove("pane-open");
-  // Nothing to paint into, so nothing to poll for. The child keeps running;
-  // this is chrome, not state.
-  stopMcpWatch();
   contentEl.focus({ preventScroll: true });
 }
 
@@ -3497,22 +3493,12 @@ function paintModelChips() {
 // were in fact answered, and nothing anywhere says why. This is the strip that
 // says why.
 //
-// Polled rather than pushed, and only while the pane is open: the state changes
-// at most twice in a session (the bind, and the first agent to connect), so an
-// event for it would be a channel that fires twice and a listener that lives
-// forever. Five seconds is well inside the time it takes to read the failure.
-const MCP_POLL_MS = 5000;
-
-function startMcpWatch() {
-  if (pty.mcpTimer) return;
-  refreshMcpStatus();
-  pty.mcpTimer = setInterval(refreshMcpStatus, MCP_POLL_MS);
-}
-
-function stopMcpWatch() {
-  if (pty.mcpTimer) { clearInterval(pty.mcpTimer); pty.mcpTimer = null; }
-}
-
+// Read on open and on a repo change, and **not polled**. There used to be a
+// five-second interval here, because the strip keyed on the client count and
+// that could turn over at any moment. It no longer does — see `paintMcpStatus`
+// — and everything left is fixed for a given root: whether a socket was armed,
+// whether this window won the bind, and whether Claude Code's config names
+// dreamd. A timer would re-ask three settled questions forever.
 async function refreshMcpStatus() {
   let s = null;
   try {
@@ -3526,34 +3512,43 @@ async function refreshMcpStatus() {
   // socket of being unreachable on the strength of a missing reply.
   if (!s) return;
   paintMcpStatus(s);
-  // Nothing left to watch for: a socket that is serving and has been reached
-  // cannot go back to either, short of a File → Open, which re-opens the pane's
-  // watch through `openPane` anyway.
-  if (s.serving && s.clients > 0) stopMcpWatch();
 }
 
 /// Three failures, three sentences, and silence when there is nothing wrong.
 ///
-/// The distinction between them is worth the extra branches, because the fix
-/// for each is completely different: no repo is "open one", not serving is
-/// "this is the second window", and no client is "register the server".
+/// **The client count is deliberately not one of the inputs.** The shim connects
+/// per *tool call*, so a count of zero is equally true of a correctly-wired
+/// agent that simply has not needed dreamd yet — which is most of most sessions.
+/// The strip used to read that as "unregistered" and grow a Register button, and
+/// because registering changed nothing it could observe, pressing it led to a
+/// Restart that repainted Register. Whether an agent has got round to calling a
+/// tool changes nothing about what it can do, so there is nothing to say.
 ///
-/// Only the third has a button, because it is the only one dreamd can act on.
-/// A second window cannot take a socket it lost, and no repo is a File → Open;
-/// offering a control that cannot help would make the other two read as
-/// dreamd's fault rather than as statements about the session.
+/// **Nothing here has a button any more.** The native surface is handed
+/// `--mcp-config` at spawn (`agent_spawn`) and cannot be unregistered, so the
+/// third case below is unreachable for it. The surfaces that *can* be
+/// unregistered are ones dreamd does not launch — a Claude Code in tmux, or the
+/// terminal pane, whose command is four fixed literals with nowhere to put a
+/// path — so the honest offer is the command, not a control. The other two cases
+/// never had one: a second window cannot take a socket it lost, and no repo is a
+/// File → Open.
 function paintMcpStatus(s) {
   const el = $("pty-mcp");
   el.textContent = "";
   let text = null;
-  let register = false;
+  let command = null;
   if (!s.armed) {
     text = "No repository open, so dreamd is not serving MCP — this agent cannot see your stack.";
   } else if (!s.serving) {
     text = "Another dreamd window owns this repository's MCP socket. This agent will reach that window's stack, not this one's.";
-  } else if (s.clients === 0) {
-    text = "MCP not connected — no agent has reached dreamd yet. If marks stay pending after an answer, register dreamd with Claude Code.";
-    register = true;
+  } else if (!nativeSurface() && s.registered !== "yes") {
+    // "unknown" is a `claude` dreamd could not run, which is a different
+    // sentence: saying Claude Code does not know about dreamd would send the
+    // reader to fix a registration when the binary is what is missing.
+    text = s.registered === "unknown"
+      ? "dreamd could not ask Claude Code whether it is registered. If this pane's agent never resolves a mark, this is the command that registers it:"
+      : "Claude Code does not know about dreamd, so this pane's agent cannot see your stack. Run this once, for every repository:";
+    command = s.command;
   }
   // Both containers, because the strip is moved between them and the rule that
   // shows it is scoped to whichever one currently holds it. Toggling only the
@@ -3565,79 +3560,24 @@ function paintMcpStatus(s) {
   const span = document.createElement("span");
   span.textContent = text;
   el.appendChild(span);
-  if (register) {
-    const button = document.createElement("button");
-    button.className = "pty-cta";
-    button.textContent = "Register";
-    button.title = "claude mcp add dreamd -- dreamd mcp";
-    button.addEventListener("click", () => registerMcp(button));
-    el.appendChild(button);
-  }
-}
-
-/// Run `claude mcp add dreamd` for the reader.
-///
-/// The poll is stopped for the duration and *not* restarted on success, which
-/// looks wrong and is not: registering changes nothing dreamd can observe.
-/// Claude Code reads its MCP servers once at launch, so the running agent will
-/// never connect however long the strip waits, and the next poll would paint
-/// the same "not connected" over the sentence that just explained why. The
-/// restart is what makes the registration real, and the button that does it
-/// re-arms the watch on the far side.
-async function registerMcp(button) {
-  stopMcpWatch();
-  button.disabled = true;
-  button.textContent = "Registering…";
-  const say = (msg) => {
-    const strip = $("pty-mcp");
-    strip.textContent = "";
-    const span = document.createElement("span");
-    span.textContent = msg;
-    strip.appendChild(span);
-    return strip;
-  };
-  let done;
-  try {
-    done = await invoke("mcp_register");
-  } catch (e) {
-    // Verbatim: whatever claude said is more specific than anything dreamd
-    // could say on its behalf.
-    const strip = say(`Could not register: ${String(e.message || e)}`);
-    const retry = document.createElement("button");
-    retry.className = "pty-cta";
-    retry.textContent = "Try again";
-    retry.addEventListener("click", () => registerMcp(retry));
-    strip.appendChild(retry);
-    return;
-  }
-  // Already registered is an answer, not a failure — and the *likely* answer,
-  // since this strip is up for every session until an agent first calls a
-  // dreamd tool. Either way the next step is the same one.
-  const strip = say(done.added
-    ? `Registered ${done.launcher} with Claude Code, for all your projects. Restart the agent to connect it.`
-    : "Claude Code already knows dreamd — this agent started before the registration, or has not called a dreamd tool yet. Restarting it is the fix for the first.");
-  addRestartCta(strip);
-}
-
-/// The "Restart agent" button the strip offers after a registration.
-///
-/// Says what it costs. `restartPane` drops the transcript, and a reader who has
-/// just been told to press a button deserves to know that before rather than
-/// after — the same argument `#pty-confirm` exists for.
-///
-/// Re-arms the poll on the far side, which is the one place a restart should:
-/// the fresh session is the first one that can connect, and the strip clearing
-/// itself is how the reader learns that it did.
-function addRestartCta(strip) {
-  const go = document.createElement("button");
-  go.className = "pty-cta";
-  go.textContent = "Restart agent";
-  go.title = "Ends this conversation and starts a new one";
-  go.addEventListener("click", async () => {
-    await restartPane();
-    startMcpWatch();
+  if (!command) return;
+  // `textContent`, so a launcher path is text and never markup — the same rule
+  // tenet 4 applies to a document, applied to a path off the filesystem.
+  const code = document.createElement("code");
+  code.textContent = command;
+  el.appendChild(code);
+  const copy = document.createElement("button");
+  copy.className = "pty-cta";
+  copy.textContent = "Copy";
+  copy.addEventListener("click", async () => {
+    try {
+      await invoke("copy_to_clipboard", { text: command });
+      toast("Command copied");
+    } catch (e) {
+      setPaneStatus(String(e.message || e));
+    }
   });
-  strip.appendChild(go);
+  el.appendChild(copy);
 }
 
 // ---- the native agent surface ---------------------------------------------
@@ -4139,7 +4079,7 @@ async function raisePopout() {
   }
   // Outside the try for the reason `openPane`'s copy is: a session that failed
   // to start is exactly the one whose MCP status is worth reading.
-  startMcpWatch();
+  refreshMcpStatus();
 }
 
 /// Put the conversation back in the dock and hide the card.
@@ -4151,7 +4091,6 @@ function lowerPopout(refocus = true) {
   $("agent-popout").classList.remove("open");
   setEditing(false);
   dockAgentBody();
-  stopMcpWatch();
   if (refocus) contentEl.focus({ preventScroll: true });
 }
 
@@ -4383,6 +4322,12 @@ function wireEvents() {
         staleRail.innerHTML = "";
         refreshOutline();
       }
+      // `adopt_root` retired the old socket and bound one for the new root, so
+      // both `armed` and `serving` may have just changed — a repo whose socket
+      // another window already holds is the case that matters. The strip is not
+      // polled, so without this it would keep asserting the previous repo's
+      // answer for the rest of the session.
+      refreshMcpStatus();
     } catch (err) { console.error(err); }
   });
 

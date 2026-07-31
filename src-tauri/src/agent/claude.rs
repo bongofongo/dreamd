@@ -1,10 +1,15 @@
 //! Claude Code as a child process speaking NDJSON, rather than as a TUI in a
 //! pty.
 //!
-//! Same program, same account, same MCP registration as [`crate::pty`]'s pane —
-//! the difference is entirely in what comes back. `--output-format stream-json`
-//! emits the structure behind the terminal, which is what lets the reader's
-//! question be answered in the reader's own typeface.
+//! Same program and same account as [`crate::pty`]'s pane — the difference is
+//! entirely in what comes back. `--output-format stream-json` emits the
+//! structure behind the terminal, which is what lets the reader's question be
+//! answered in the reader's own typeface.
+//!
+//! The MCP wiring is **not** shared with the pane, and that is a deliberate
+//! divergence: the pane inherits whatever the reader registered with `claude mcp
+//! add`, while this module hands the session its own `--mcp-config`. See
+//! [`ClaudeSession::spawn`].
 //!
 //! # There is no shell here, and that is the point
 //!
@@ -45,15 +50,16 @@ use crate::config::PermissionMode;
 
 /// The tools that never raise a card.
 ///
-/// The same six the pane pre-grants, for the same reasons ([`crate::pty`] holds
+/// The same seven the pane pre-grants, for the same reasons ([`crate::pty`] holds
 /// the long argument), but they no longer do the whole job of the policy here —
 /// [`super::gate`] does, and this list is the half of it Claude Code can enforce
 /// on its own. Keeping the flag as well as the gate is deliberate: a tool on
 /// this list never even reaches the hook, so the common case costs no process
 /// spawn and no round trip to the window.
-pub const GRANTS: [&str; 6] = [
+pub const GRANTS: [&str; 7] = [
     "Read",
     "mcp__dreamd__get_stack",
+    "mcp__dreamd__get_open_document",
     "mcp__dreamd__get_highlight",
     "mcp__dreamd__list_highlights",
     "mcp__dreamd__resolve_highlight",
@@ -83,6 +89,37 @@ fn mode_args(mode: PermissionMode) -> &'static [&'static str] {
         PermissionMode::Plan => &["--permission-mode", "plan"],
         PermissionMode::BypassPermissions => &["--permission-mode", "bypassPermissions"],
     }
+}
+
+/// The whole argument vector for one session, without the environment.
+///
+/// Pure and separate from [`ClaudeSession::spawn`] for the reason
+/// [`crate::mcp::register::add_args`] is: the shape of a launch is worth
+/// asserting, and every earlier test here could only reach the *consts* it is
+/// built from. A flag that must never appear — `--bare`, `--strict-mcp-config` —
+/// is a claim about the assembled vector, not about any one const.
+///
+/// Every element is a whole argument. Nothing is joined, so nothing has to be
+/// quoted, and the two JSON documents are values rather than syntax (tenet 3).
+fn spawn_args(
+    mode: PermissionMode,
+    settings: Option<&str>,
+    mcp_config: Option<&str>,
+) -> Vec<String> {
+    let mut args = vec!["-p".to_string()];
+    args.extend(STREAM_ARGS.iter().map(|s| s.to_string()));
+    args.extend(mode_args(mode).iter().map(|s| s.to_string()));
+    args.push("--allowed-tools".to_string());
+    args.extend(GRANTS.iter().map(|s| s.to_string()));
+    if let Some(settings) = settings {
+        args.push("--settings".to_string());
+        args.push(settings.to_string());
+    }
+    if let Some(mcp_config) = mcp_config {
+        args.push("--mcp-config".to_string());
+        args.push(mcp_config.to_string());
+    }
+    args
 }
 
 /// Where `claude` actually is, asked once of a login shell.
@@ -130,22 +167,33 @@ impl ClaudeSession {
     /// `settings` is the `--settings` JSON document, which is where the
     /// permission hook is declared; `None` launches with no hook, which is what
     /// the harnesses want and what a build with the gate disabled would get.
+    ///
+    /// `mcp_config` is the `--mcp-config` document
+    /// ([`crate::mcp::register::config_json`]), and it is what makes the six
+    /// pre-granted `mcp__dreamd__*` tools in [`GRANTS`] refer to anything. Both
+    /// flags take an inline JSON *string* — verified against 2.1.220 — so this
+    /// is one `Command::arg` carrying a serde-built document rather than a path
+    /// to a file dreamd would have to write and clean up.
+    ///
+    /// Handing it here rather than relying on the reader's own `claude mcp add`
+    /// is the point: the path inside is the one *this* build resolved, so a
+    /// session cannot inherit a registration naming a binary that has moved,
+    /// and a reader who never registered anything still gets a pane whose agent
+    /// can see their stack.
+    ///
+    /// **`--strict-mcp-config` is never passed**, and a test over [`spawn_args`]
+    /// pins it: with the flag, this document becomes the only MCP config the
+    /// session sees, and every other server the reader has would vanish inside
+    /// dreamd's pane and nowhere else.
     pub fn spawn(
         cwd: &std::path::Path,
         mode: PermissionMode,
         settings: Option<&str>,
+        mcp_config: Option<&str>,
         sink: Sink,
     ) -> Result<Self, String> {
         let mut cmd = Command::new(resolve());
-        cmd.arg("-p");
-        cmd.args(STREAM_ARGS);
-        cmd.args(mode_args(mode));
-        cmd.arg("--allowed-tools");
-        cmd.args(GRANTS);
-        if let Some(settings) = settings {
-            cmd.arg("--settings");
-            cmd.arg(settings);
-        }
+        cmd.args(spawn_args(mode, settings, mcp_config));
         Self::spawn_command(cwd, cmd, sink)
     }
 
@@ -425,16 +473,66 @@ mod tests {
     }
 
     #[test]
-    fn exactly_six_tools_are_pre_granted_and_none_is_a_wildcard() {
-        // The pane's rule, restated where the native launch can break it: a
-        // seventh grant is a deliberate line, not a silent widening.
-        assert_eq!(GRANTS.len(), 6);
+    fn exactly_seven_tools_are_pre_granted_and_none_is_a_wildcard() {
+        // The pane's rule, restated where the native launch can break it: an
+        // eighth grant is a deliberate line, not a silent widening.
+        assert_eq!(GRANTS.len(), 7);
         assert_eq!(GRANTS[0], "Read");
         for g in GRANTS {
             assert!(!g.contains('*'), "{g} is a wildcard");
             assert!(!g.contains(' '), "{g} would split into two arguments");
         }
-        assert_eq!(GRANTS.iter().filter(|g| g.starts_with("mcp__")).count(), 5);
+        assert_eq!(GRANTS.iter().filter(|g| g.starts_with("mcp__")).count(), 6);
+    }
+
+    #[test]
+    fn strict_mcp_config_is_never_passed() {
+        // With it, dreamd's own document becomes the *only* MCP config the
+        // session sees, and every other server the reader has disappears inside
+        // dreamd's pane and nowhere else — a failure they would reasonably
+        // blame on the other server. The whole reason dreamd may inject itself
+        // at all is that the injection merges.
+        for mode in [
+            PermissionMode::Default,
+            PermissionMode::AcceptEdits,
+            PermissionMode::Plan,
+            PermissionMode::BypassPermissions,
+        ] {
+            let args = spawn_args(mode, Some("{}"), Some("{}"));
+            assert!(!args.iter().any(|a| a == "--strict-mcp-config"), "{args:?}");
+            // The sibling claim, where a whole vector can finally carry it:
+            // `--bare` skips hooks, and dreamd's permission gate is a hook.
+            assert!(!args.iter().any(|a| a == "--bare"), "{args:?}");
+        }
+    }
+
+    #[test]
+    fn the_two_json_documents_are_values_and_not_syntax() {
+        // Each crosses as one whole argument, so a document containing spaces,
+        // quotes or a semicolon is a string and never a second command. This is
+        // tenet 3 for the pair of `--settings` / `--mcp-config` flags.
+        let cfg = crate::mcp::register::config_json("/tmp/a b;c");
+        let args = spawn_args(PermissionMode::Default, Some(r#"{"hooks":{}}"#), Some(&cfg));
+        let at = |flag: &str| args.iter().position(|a| a == flag).expect(flag);
+        assert_eq!(args[at("--settings") + 1], r#"{"hooks":{}}"#);
+        assert_eq!(args[at("--mcp-config") + 1], cfg);
+        // And both are optional in the same way, which is what lets the
+        // harnesses drive a session with neither.
+        let bare = spawn_args(PermissionMode::Default, None, None);
+        assert!(!bare
+            .iter()
+            .any(|a| a == "--settings" || a == "--mcp-config"));
+    }
+
+    #[test]
+    fn the_grants_are_the_arguments_after_allowed_tools() {
+        // `--allowed-tools` takes them as separate arguments, so a grant that
+        // grew a space would silently become two — and one of the halves might
+        // be a tool. `exactly_six_tools_…` pins the consts; this pins the
+        // vector they land in.
+        let args = spawn_args(PermissionMode::Plan, None, None);
+        let at = args.iter().position(|a| a == "--allowed-tools").unwrap();
+        assert_eq!(args[at + 1..at + 1 + GRANTS.len()], GRANTS[..]);
     }
 
     #[test]

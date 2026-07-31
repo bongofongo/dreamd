@@ -66,6 +66,22 @@ pub const TOOLS: &str = r#"[
     }
   },
   {
+    "name": "get_open_document",
+    "description": "Returns the repo-relative path of the document the human currently has open in dreamd, or nothing if they have none. Reach for it when what they said depends on where they are: a question that says this file, this section or here, and a queue entry is not what is being pointed at. It answers with a path and nothing else, so read the file with your own tools once you have it. This is not a way to find work: the human's questions come from get_stack, and a document being open is not a request to do anything to it.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    },
+    "annotations": {
+      "title": "Get the document the human is reading",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
     "name": "get_highlight",
     "description": "Fetch one mark by id together with the text immediately before and after it, which get_stack leaves out for brevity. Use it when the quote alone is too little to act on: a fragment whose subject sits in the previous sentence, a list item whose heading is what makes it mean anything. It returns anchoring context only, never the file's contents. If you need more than that, read the file with your own tools.",
     "inputSchema": {
@@ -225,7 +241,7 @@ mod tests {
         // client at once.
         let tools = tools();
         let arr = tools.as_array().expect("an array");
-        assert_eq!(arr.len(), 5, "three read tools and two write tools");
+        assert_eq!(arr.len(), 6, "four read tools and two write tools");
     }
 
     #[test]
@@ -261,7 +277,12 @@ mod tests {
             .collect();
         assert_eq!(
             read_only,
-            vec!["get_stack", "get_highlight", "list_highlights"]
+            vec![
+                "get_stack",
+                "get_open_document",
+                "get_highlight",
+                "list_highlights"
+            ]
         );
     }
 
@@ -339,6 +360,6 @@ mod tests {
     fn tools_list_wraps_the_array_under_a_tools_key() {
         let result = tools_list_result();
         assert_eq!(result["tools"], tools());
-        assert_eq!(tool_names().len(), 5);
+        assert_eq!(tool_names().len(), 6);
     }
 }

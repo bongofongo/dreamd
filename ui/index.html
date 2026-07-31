@@ -572,6 +572,31 @@
          overflow and is worse than it. The floor is what the buttons wrap
          against, and `flex-wrap` above is what they wrap with. */
       #pty-mcp span { flex: 1 1 0; min-width: 16ch; }
+      /* The registration command, when the strip has one to offer.
+
+         `flex-basis: 100%` so it takes a whole row: it is the longest thing in
+         the strip by far — an absolute launcher path plus six flags — and
+         competing with the sentence for the same line would wrap both to
+         nonsense in a 240px-minimum dock.
+
+         `user-select: text` is **load-bearing**, not tidiness. `#pty-pane`
+         inherits `user-select: none` from the chrome around it, and a command
+         nobody can select is only copyable through the button beside it — which
+         leaves a reader who wants half the line, or who is reading it to type
+         somewhere else, with nothing. `-webkit-` too: this renders in WebKitGTK
+         and WKWebView, neither of which takes the unprefixed property alone. */
+      #pty-mcp code {
+        flex: 1 1 100%; min-width: 0;
+        font-family: var(--font-mono, ui-monospace, "SF Mono", Menlo, Consolas, monospace);
+        font-size: 10.5px; line-height: 1.5;
+        padding: 4px 7px; border-radius: 4px;
+        background: var(--btn-bg, #1f1c2b);
+        border: 1px solid var(--border, #2e2940);
+        /* A path can be one unbroken token longer than the dock is wide, so it
+           has to be allowed to break mid-word rather than push the strip out. */
+        overflow-wrap: anywhere; white-space: pre-wrap;
+        user-select: text; -webkit-user-select: text;
+      }
       /* The first `.pty-cta` here is the one that acts, and it is lit the way
          `#pty-mode-go` is: this strip is read once and then pressed. */
       #pty-mcp button.pty-cta:first-of-type {

@@ -234,14 +234,16 @@ mod tests {
         // body below could then talk *about* — "call the tool named above" is a
         // much shorter jump than naming one from scratch.
         assert!(!NOTICE.contains('`'), "no code spans in the notice");
-        for tool in [
-            "get_stack",
-            "get_highlight",
-            "resolve_highlight",
-            "list_highlights",
-            "mark_passage",
-            "tools/list",
-        ] {
+        // Read off `tools::NAMES` rather than copied, so a tool added there is
+        // covered here without anyone remembering to. The hand-written list
+        // this replaced was a fourth place the surface was spelled out, and the
+        // only one whose going stale would fail silently — a new tool's name
+        // could sit in the notice unnoticed.
+        for tool in crate::mcp::tools::NAMES
+            .iter()
+            .copied()
+            .chain(["tools/list"])
+        {
             assert!(!NOTICE.contains(tool), "the notice names {tool}");
         }
         // Nothing identifier-shaped at all, so a tool named later cannot

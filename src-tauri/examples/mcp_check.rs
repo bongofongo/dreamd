@@ -25,7 +25,7 @@ use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -74,7 +74,20 @@ fn main() {
 
     let (notifier, events) = notify::recording();
     let cancel = Arc::new(AtomicBool::new(false));
-    let status = server::spawn(store.clone(), repo.clone(), notifier, cancel.clone());
+    // The window's half of `get_open_document`, faked the way `notify::recording`
+    // fakes the window's half of an event. A slot the harness writes, read
+    // through the same closure `main.rs` builds — so what is exercised below is
+    // the real path from a tool call to whatever dreamd last rendered, with
+    // only the renderer replaced.
+    let open_doc: Arc<Mutex<Option<PathBuf>>> = Arc::new(Mutex::new(None));
+    let reading = open_doc.clone();
+    let status = server::spawn(
+        store.clone(),
+        repo.clone(),
+        notifier,
+        Arc::new(move || reading.lock().unwrap().clone()),
+        cancel.clone(),
+    );
 
     let path = server::socket_path(&repo);
     checks.ok("the socket appears", wait_for(&path, true));
@@ -190,6 +203,79 @@ fn main() {
         "paths leaving dreamd are repo-relative",
         !text_of(&stack).contains(&repo.to_string_lossy().to_string()),
     );
+
+    // ---- get_open_document ------------------------------------------------
+    // The one tool whose answer comes from the window rather than the store, so
+    // the one whose value can go stale behind dreamd's back. Every check below
+    // is about a way that happens.
+    let reads_doc = |v: &Value| -> Value { parsed(v)["file"].clone() };
+
+    checks.eq(
+        "with no document open, get_open_document says so",
+        reads_doc(&call("get_open_document", json!({}))),
+        Value::Null,
+    );
+    *open_doc.lock().unwrap() = Some(repo.join("docs/a.md"));
+    let open = call("get_open_document", json!({}));
+    checks.ok("it succeeds once one is open", !errored(&open));
+    checks.eq(
+        "and names it repo-relative, not absolute",
+        reads_doc(&open).as_str().unwrap_or_default().to_string(),
+        "docs/a.md".to_string(),
+    );
+    checks.ok(
+        "leaking no local path anywhere in the result",
+        !text_of(&open).contains(repo.to_string_lossy().as_ref()),
+    );
+    // A path is dreamd's own answer about its own state, not text lifted out of
+    // a document, so it is the one thing crossing this boundary that is *not*
+    // delimited. Asserted so a later "delimit everything" edit has to argue.
+    checks.ok(
+        "and is not wrapped as untrusted content",
+        !text_of(&open).contains("<untrusted-"),
+    );
+
+    // The three ways the slot outlives the truth. None may name a file.
+    *open_doc.lock().unwrap() = Some(repo.join("docs/gone.md"));
+    checks.eq(
+        "a document deleted under the window reads as nothing open",
+        reads_doc(&call("get_open_document", json!({}))),
+        Value::Null,
+    );
+    // Not a refusal, a null: the agent asked about the human's window and
+    // "there is nothing there" is a true answer, where an error would read as a
+    // tool that failed.
+    checks.ok(
+        "and says so as an answer rather than an error",
+        !errored(&call("get_open_document", json!({}))),
+    );
+    *open_doc.lock().unwrap() = Some(PathBuf::from("/etc/passwd"));
+    let outside = call("get_open_document", json!({}));
+    checks.eq(
+        "a document outside the root reads as nothing open",
+        reads_doc(&outside),
+        Value::Null,
+    );
+    checks.ok(
+        "and does not name it",
+        !text_of(&outside).contains("passwd"),
+    );
+    // The containment check has to be the *component-wise* one, or a sibling
+    // sharing the root's name prefix would pass a textual `starts_with`.
+    let sibling = repo.with_file_name(format!(
+        "{}-private",
+        repo.file_name().unwrap_or_default().to_string_lossy()
+    ));
+    let _ = std::fs::create_dir_all(&sibling);
+    let _ = std::fs::write(sibling.join("secret.md"), "# secret\n");
+    *open_doc.lock().unwrap() = Some(sibling.join("secret.md"));
+    checks.eq(
+        "a sibling directory sharing the root's prefix is outside too",
+        reads_doc(&call("get_open_document", json!({}))),
+        Value::Null,
+    );
+    let _ = std::fs::remove_dir_all(&sibling);
+    *open_doc.lock().unwrap() = None;
     checks.ok(
         "the quote crosses the wire delimited",
         text_of(&stack).contains("<untrusted-quote sentinel="),

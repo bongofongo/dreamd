@@ -1240,8 +1240,13 @@ const paneStub = ({ base, position, surface, popout }) => {
   // terminal has to say so, exactly as a reader would.
   window.__AGENT__ = { position, permission_mode: "accept-edits", surface, popout };
   // What `mcp_status` answers. Healthy, so the strip is hidden on boot and the
-  // checks that want it have to say what is wrong.
-  window.__MCP__ = { armed: true, serving: true, clients: 1 };
+  // checks that want it have to say what is wrong. `clients` is deliberately
+  // absent: the strip stopped reading it, because a count of zero is equally
+  // true of a correctly-wired agent that has not called a dreamd tool yet.
+  window.__MCP__ = {
+    armed: true, serving: true, registered: "yes",
+    command: "claude mcp add dreamd --scope user -- /usr/bin/dreamd mcp",
+  };
   window.__MODEL__ = null;
   /// What `agent_decide` was called with, so a card's three buttons can be told
   /// apart by what they *sent* rather than by what they look like.
@@ -1346,14 +1351,6 @@ const paneStub = ({ base, position, surface, popout }) => {
           // it otherwise — which is also the real answer once an agent has
           // connected.
           case "mcp_status": return { ...window.__MCP__ };
-          // Whatever the current check wants one press of Register to mean.
-          // A string is thrown rather than returned, which is how a `Result`'s
-          // `Err` reaches the frontend.
-          case "mcp_register": {
-            const next = window.__REGISTER__;
-            if (typeof next === "string") throw new Error(next);
-            return { ...next };
-          }
           default: return null;
         }
       },
@@ -1902,79 +1899,79 @@ check(
 
 // --- the MCP status strip -------------------------------------------------
 // Silent when healthy, which is the state the stub boots in.
+//
+// This page is `surface: "terminal"`, which matters: the registration branch
+// below is *only* reachable there. The native surface is handed `--mcp-config`
+// at spawn and cannot be unregistered, so a strip that told a native reader to
+// run `claude mcp add` would be describing a problem they do not have — and the
+// last check in this section is what holds that line.
+const CMD = "claude mcp add dreamd --scope user -- /usr/bin/dreamd mcp";
+const healthy = { armed: true, serving: true, registered: "yes", command: CMD };
 check("a healthy socket says nothing", !(await pane.locator("#pty-pane.mcp-warn").count()));
 const mcp = async (next) => {
   await pane.evaluate((m) => { window.__MCP__ = m; }, next);
   await pane.evaluate(() => refreshMcpStatus());
   await pane.waitForTimeout(150);
 };
-await mcp({ armed: true, serving: true, clients: 0 });
-check("an unreached socket warns", (await pane.locator("#pty-pane.mcp-warn").count()) === 1);
+const strip = () => pane.locator("#pty-mcp").textContent();
+
+await mcp({ ...healthy, registered: "no" });
+check("an unregistered claude warns", (await pane.locator("#pty-pane.mcp-warn").count()) === 1);
+check("and shows the command that fixes it", (await pane.locator("#pty-mcp code").textContent()) === CMD);
 check(
-  "and offers the button that fixes it",
-  (await pane.locator("#pty-mcp button").textContent()) === "Register",
+  "with the scope flag that keeps it to one registration",
+  (await strip()).includes("--scope user"),
 );
-await mcp({ armed: true, serving: false, clients: 0 });
+check(
+  "and a Copy button rather than one that runs it",
+  (await pane.locator("#pty-mcp button").allTextContents()).join() === "Copy",
+);
+const copiedBefore = (await called("copy_to_clipboard")).length;
+await pane.locator("#pty-mcp button").click();
+await pane.waitForTimeout(150);
+check(
+  "Copy sends the command through the same path every other copy takes",
+  (await called("copy_to_clipboard")).length === copiedBefore + 1
+    && (await called("copy_to_clipboard")).at(-1).args.text === CMD,
+);
+
+// A `claude` that could not be run at all is a different sentence from one that
+// ran and said no: reporting it as "not registered" sends the reader to fix a
+// registration when the binary is what is missing.
+await mcp({ ...healthy, registered: "unknown" });
+check("an unreachable claude is hedged, not asserted", (await strip()).includes("could not ask"));
+check("but the command is still offered", (await pane.locator("#pty-mcp code").textContent()) === CMD);
+
+await mcp({ ...healthy, serving: false });
 check("a secondary window warns too", (await pane.locator("#pty-pane.mcp-warn").count()) === 1);
 check(
-  "and offers no button, because none of them would help",
-  (await pane.locator("#pty-mcp button").count()) === 0,
+  "and offers no control, because none of them would help",
+  (await pane.locator("#pty-mcp button").count()) === 0
+    && (await pane.locator("#pty-mcp code").count()) === 0,
 );
-await mcp({ armed: false, serving: false, clients: 0 });
+await mcp({ ...healthy, armed: false, serving: false });
 check("and so does a window with no repo", (await pane.locator("#pty-pane.mcp-warn").count()) === 1);
 check(
   "also with nothing to press",
   (await pane.locator("#pty-mcp button").count()) === 0,
 );
-await mcp({ armed: true, serving: true, clients: 2 });
-check("and it goes quiet again once an agent connects", !(await pane.locator("#pty-pane.mcp-warn").count()));
 
-// --- Register: `claude mcp add dreamd`, from the strip ---------------------
-// The three answers one press can have, and the poll it stops in each: nothing
-// dreamd can observe changes at the moment of a registration, so a strip that
-// kept polling would paint "not connected" back over the sentence explaining
-// why it says that.
-const strip = () => pane.locator("#pty-mcp").textContent();
-const polling = () => pane.evaluate(() => pty.mcpTimer != null);
-const pressRegister = async (answer) => {
-  await mcp({ armed: true, serving: true, clients: 0 });
-  await pane.evaluate((a) => { window.__REGISTER__ = a; }, answer);
-  await pane.locator("#pty-mcp button").first().click();
-  await pane.waitForTimeout(200);
-};
-
-await pressRegister({ added: true, launcher: "/usr/bin/dreamd" });
-check("a registration names the launcher it wrote", (await strip()).includes("/usr/bin/dreamd"));
-check("and stops the poll that would overwrite it", !(await polling()));
-check(
-  "and offers the restart that makes it take effect",
-  (await pane.locator("#pty-mcp button").allTextContents()).includes("Restart agent"),
-);
-
-await pressRegister({ added: false, launcher: null });
-check(
-  "an existing registration is an answer, not a failure",
-  (await strip()).includes("already knows") && !(await strip()).includes("Could not"),
-);
-check("and still offers the restart", (await pane.locator("#pty-mcp button").count()) === 1);
-
-await pressRegister("claude: command not found");
-check("a failure is reported in claude's own words", (await strip()).includes("claude: command not found"));
-check(
-  "and offers a retry rather than a restart that would fix nothing",
-  (await pane.locator("#pty-mcp button").allTextContents()).join() === "Try again",
-);
-// The retry is the same handler, so pressing it again with a working answer
-// has to land where the first press would have.
-await pane.evaluate(() => { window.__REGISTER__ = { added: true, launcher: "/usr/bin/dreamd" }; });
-await pane.locator("#pty-mcp button").first().click();
-await pane.waitForTimeout(200);
-check("and the retry registers", (await strip()).includes("/usr/bin/dreamd"));
+// The regression this whole section exists for. The strip used to key on the
+// client count, which the shim only moves on a *tool call* — so a correctly
+// wired agent that had not needed dreamd yet was indistinguishable from an
+// unregistered one, and the Register button it grew led to a Restart that
+// repainted Register. A count is no longer an input at any value.
+for (const clients of [0, 1, 99]) {
+  await mcp({ ...healthy, clients });
+  check(
+    `a registered socket says nothing at clients=${clients}`,
+    !(await pane.locator("#pty-pane.mcp-warn").count()),
+  );
+}
 
 // Left as the boot state found it, because everything after this section
 // assumes a quiet strip.
-await pane.evaluate(() => startMcpWatch());
-await mcp({ armed: true, serving: true, clients: 1 });
+await mcp(healthy);
 
 // --- the native agent surface ----------------------------------------------
 // A page booted into `surface: "native"`, which is the default a reader gets.
@@ -2168,13 +2165,29 @@ check("but clicking the log itself is", await pop.locator("#agent-popout.editing
 
 // The MCP strip travels with the body. In `always` the dock never opens, so a
 // warning left behind in it is a warning nobody is ever shown.
+//
+// The losing-the-socket case rather than the registration one, deliberately:
+// this page is `native`, where the registration branch is unreachable by
+// construction, and a second window owning the socket is the failure that can
+// still befall it.
 await pop.evaluate(() => {
-  window.__MCP__ = { armed: true, serving: true, clients: 0 };
+  window.__MCP__ = { armed: true, serving: false, registered: "yes", command: "" };
   return refreshMcpStatus();
 });
 await pop.waitForTimeout(200);
 check("the MCP warning is visible in the card", await pop.locator("#agent-popout #pty-mcp").isVisible());
-await pop.evaluate(() => { window.__MCP__ = { armed: true, serving: true, clients: 1 }; });
+// The native surface's whole point: it is handed `--mcp-config` at spawn, so an
+// unregistered `claude` is not a thing it can be. A strip that told this reader
+// to run `claude mcp add` would be describing someone else's problem.
+await pop.evaluate(() => {
+  window.__MCP__ = { armed: true, serving: true, registered: "no", command: "claude mcp add …" };
+  return refreshMcpStatus();
+});
+await pop.waitForTimeout(200);
+check(
+  "but an unregistered claude is not the native surface's problem",
+  !(await pop.locator("#agent-popout.mcp-warn").count()),
+);
 await pop.close();
 
 // `send` is the middle answer and the reason the setting is not a bool: the
@@ -2480,7 +2493,8 @@ await chrome.addInitScript(({ base }) => {
           // This page opens the pane as a side effect of pressing every
           // binding, so it needs an answer here too: `refreshMcpStatus` runs on
           // every open, and a bare `null` would be one more pageerror to chase.
-          case "mcp_status": return { armed: true, serving: true, clients: 1 };
+          case "mcp_status":
+            return { armed: true, serving: true, registered: "yes", command: "" };
           case "send_stack": return { method: "stub", detail: "nothing to send" };
           case "add_highlight": return "h0123456789abcdef";
           case "set_config":

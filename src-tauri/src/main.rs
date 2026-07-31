@@ -58,6 +58,37 @@ struct AppState {
     /// retiring server on the previous root cannot write over its successor's
     /// answer. `None` for a repo that never armed a socket at all.
     mcp_status: Mutex<Option<Arc<mcp::server::Status>>>,
+    /// Whether Claude Code knows dreamd, asked once and remembered.
+    ///
+    /// The outer `Option` is "have we asked"; the inner is the answer, and it is
+    /// three-valued because a `claude` that cannot be run at all is not the same
+    /// as one that ran and said no. Cached because the question costs a process
+    /// spawn and the pane asks it on every open, while the answer can only
+    /// change if the reader edits Claude Code's config from outside dreamd —
+    /// which a restart picks up.
+    ///
+    /// **Only the terminal surface reads this.** The native session is handed
+    /// `--mcp-config` and cannot be unregistered.
+    mcp_registered: Mutex<Option<Option<bool>>>,
+    /// The document on screen, for `mcp::tools::get_open_document`.
+    ///
+    /// Written by [`render_markdown`] rather than by a command of its own, and
+    /// that is the whole design: dreamd renders exactly one document at a time,
+    /// so the render *is* the open document and there is nothing for the two to
+    /// disagree about. The alternative — a `set_open_document` the frontend
+    /// remembers to call — would be a third IPC on a path that already costs
+    /// two and is measured (`ipc_render_markdown`), and one more thing to
+    /// forget on a new code path.
+    ///
+    /// Absolute, and **never cleared**. A stale value cannot leak: the tool
+    /// re-checks containment and existence on every call, so a File ▸ Open, a
+    /// deletion and a repo swap each turn this into "nothing open" without
+    /// anything having to remember to blank it. See
+    /// [`mcp::tools`]'s `get_open_document`.
+    ///
+    /// `Arc` for the reason `store` and `dirty` are: the MCP socket thread
+    /// holds a reader over the same slot, and it outlives any one command.
+    open_doc: Arc<Mutex<Option<PathBuf>>>,
     /// A file to open on load (nvim-style `dreamd file.md`), if any.
     initial_file: Option<String>,
     /// Behind a lock because the settings panel rewrites it at runtime — the
@@ -223,6 +254,16 @@ fn files_with_marks(store: &Store) -> HashSet<String> {
         .collect()
 }
 
+/// A reader over the open-document slot, for the MCP server.
+///
+/// The mirror image of [`notify::to_window`]: that one is the only Tauri
+/// reaching *into* the server, this is the only `AppState` reaching *out* of it.
+/// Both are closures for the same reason — `mcp` may not name either type, and
+/// `mcp_check` supplies its own.
+fn open_doc_reader(slot: Arc<Mutex<Option<PathBuf>>>) -> mcp::OpenDoc {
+    Arc::new(move || slot.lock().unwrap().clone())
+}
+
 /// Wrap a notifier so an agent's mutation dirties the store on its way to the
 /// window.
 ///
@@ -343,6 +384,12 @@ fn initial_file(state: State<AppState>) -> Option<String> {
 #[tauri::command]
 fn render_markdown(state: State<AppState>, path: String) -> Result<String, String> {
     let source = read_source(&path)?;
+    // Recorded here because this is the one call that means "this document is
+    // now what the human is looking at" — see `AppState::open_doc`. Before the
+    // render rather than after, and regardless of what the render does next: a
+    // file that fails to parse is still the file they have open, and the
+    // frontend leaves it on screen with the error in place of the prose.
+    *state.open_doc.lock().unwrap() = Some(PathBuf::from(&path));
     // The palette names the syntect theme for fenced code, so switching themes
     // has to re-render: the code colours are baked into the HTML, not CSS.
     let code_theme = state.syntax_theme();
@@ -1117,6 +1164,7 @@ fn adopt_root(app: &tauri::AppHandle, path: PathBuf) {
             state.store.clone(),
             root.clone(),
             marking_dirty(state.dirty.clone(), notify::to_window(app.clone())),
+            open_doc_reader(state.open_doc.clone()),
             cancel.clone(),
         );
         *slot = Some(cancel);
@@ -1350,7 +1398,20 @@ fn agent_spawn(app: tauri::AppHandle, state: State<AppState>) -> Result<bool, St
     // the frontend's control still writes config and restarts, so by the time
     // it reaches here the preference *is* the config.
     let mode = state.config.lock().unwrap().agent.permission_mode;
-    let session = agent::claude::ClaudeSession::spawn(&state.root(), mode, Some(&settings), sink)?;
+    // dreamd wires its own agent to its own MCP server, rather than depending on
+    // the reader having run `claude mcp add`. Note the launcher rule differs
+    // from the `current_exe` above deliberately: the gate hook's path need only
+    // outlive the *session*, while this one is the same rule a registration
+    // would have used, so an AppImage names its bundle instead of the `/tmp`
+    // mount it is running from.
+    let mcp_config = mcp::register::config_json(&mcp::register::launcher());
+    let session = agent::claude::ClaudeSession::spawn(
+        &state.root(),
+        mode,
+        Some(&settings),
+        Some(&mcp_config),
+        sink,
+    )?;
 
     *slot = Some(NativeAgent {
         session: Box::new(session),
@@ -1430,7 +1491,29 @@ fn session_token() -> String {
     format!("{z:016x}")[..agent::gate_server::SESSION_HEX].to_string()
 }
 
+/// Whether Claude Code knows dreamd, as a word rather than a nullable bool.
+///
+/// Three states, and the frontend branches on all three: `Unknown` is a `claude`
+/// that could not be run, which must not be reported as "not registered" —
+/// that would send a reader to fix a registration when the problem is a missing
+/// binary.
+#[derive(serde::Serialize, Clone, Copy)]
+#[serde(rename_all = "lowercase")]
+enum Registered {
+    Yes,
+    No,
+    Unknown,
+}
+
 /// What the pane's status line reports about the agent half of dreamd.
+///
+/// `clients` used to be here and drove the strip's loudest sentence. It is gone
+/// on purpose: the shim connects *per tool call*, so a zero count is equally
+/// true of a correctly-wired agent that has not needed dreamd yet, which is most
+/// of most sessions. A strip that cannot tell that apart from a broken one
+/// spends every session accusing a healthy window. `Status::clients` still
+/// exists and `mcp_check` still asserts on it — it is a diagnostic, not a
+/// verdict.
 #[derive(serde::Serialize)]
 struct McpReport {
     /// A socket was armed at all. False for a launch with no repo, where there
@@ -1438,46 +1521,49 @@ struct McpReport {
     armed: bool,
     /// This window holds the lock and is answering MCP.
     serving: bool,
-    /// Connections accepted since the bind. Zero means no agent has ever
-    /// reached this window — the shim never ran, or `claude mcp add dreamd`
-    /// never did.
-    clients: usize,
+    /// Whether Claude Code's own config names dreamd. Only meaningful to the
+    /// terminal surface — see [`AppState::mcp_registered`].
+    registered: Registered,
+    /// The registration command, for the strip to show when it has to. Built
+    /// here rather than in the frontend so it cannot drift from `add_args` —
+    /// the last hand-written copy did, and cost a duplicate registration.
+    /// Display only; dreamd runs no part of it.
+    command: String,
 }
 
-/// Polled by the pane while it is open. Cheap by construction: two relaxed
-/// atomic loads behind one uncontended lock, and nothing that touches the
-/// socket — asking the transport whether it is healthy would mean connecting to
-/// ourselves on a UI thread.
+/// Read by the pane when it opens, and on a repo change. No longer polled:
+/// nothing it reports can change while the pane sits there.
+///
+/// The two socket fields are still two relaxed atomic loads. The third costs a
+/// `claude mcp get` on the **first** call of the process and nothing after it —
+/// and the probe is deliberately computed *outside* the lock, because holding
+/// the state mutex across a process spawn would stall every other command for
+/// the length of a shell startup.
 #[tauri::command]
 fn mcp_status(state: State<AppState>) -> McpReport {
-    match state.mcp_status.lock().unwrap().as_ref() {
-        Some(s) => McpReport {
-            armed: true,
-            serving: s.serving(),
-            clients: s.clients(),
+    let (armed, serving) = match state.mcp_status.lock().unwrap().as_ref() {
+        Some(s) => (true, s.serving()),
+        None => (false, false),
+    };
+    let cached = *state.mcp_registered.lock().unwrap();
+    let answer = match cached {
+        Some(a) => a,
+        None => {
+            let a = mcp::register::registered(&state.root());
+            *state.mcp_registered.lock().unwrap() = Some(a);
+            a
+        }
+    };
+    McpReport {
+        armed,
+        serving,
+        registered: match answer {
+            Some(true) => Registered::Yes,
+            Some(false) => Registered::No,
+            None => Registered::Unknown,
         },
-        None => McpReport {
-            armed: false,
-            serving: false,
-            clients: 0,
-        },
+        command: mcp::register::add_command(&mcp::register::launcher()),
     }
-}
-
-/// Register dreamd's MCP server with Claude Code, from the button on the strip
-/// above.
-///
-/// The one command here that writes outside `~/.config/dreamd` — and not to a
-/// file dreamd owns, but to Claude Code's, through Claude Code's own CLI. That
-/// is why it is a button the reader presses and never something startup does:
-/// tenet 2 is about what dreamd persists on its own initiative, and this is the
-/// reader asking another program to remember something.
-///
-/// Returns what the press turned out to mean, so the strip can say what it
-/// wrote — or that there was nothing to write — rather than merely that it ran.
-#[tauri::command]
-fn mcp_register(state: State<AppState>) -> Result<mcp::register::Registration, String> {
-    mcp::register::register(&state.root())
 }
 
 /// Frontend-side timing mark, forwarded into the same NDJSON stream as the Rust
@@ -1685,6 +1771,12 @@ fn main() {
     let mcp_cancel = has_repo.then(|| Arc::new(AtomicBool::new(false)));
     let store = Arc::new(Mutex::new(store));
     let dirty = Arc::new(AtomicBool::new(false));
+    // Seeded with the launch argument so `dreamd file.md` answers
+    // `get_open_document` before the reader has navigated anywhere. The
+    // frontend opens it on load, which would set this anyway — this is what
+    // makes the answer right in the window between the socket binding and that
+    // first render.
+    let open_doc = Arc::new(Mutex::new(initial.clone().map(PathBuf::from)));
     let menubar_pref = cfg.ui.clone();
     let state = AppState {
         repo_root: RwLock::new(repo_root.clone()),
@@ -1696,9 +1788,11 @@ fn main() {
         // socket was ever armed" stays distinguishable from "one was armed and
         // failed to bind".
         mcp_status: Mutex::new(None),
+        mcp_registered: Mutex::new(None),
         initial_file: initial,
         config: Mutex::new(cfg),
         store: store.clone(),
+        open_doc: open_doc.clone(),
         catalog,
         // Corrected in `.setup()`, which is the first place a window exists to
         // ask the OS. Dark is what dreamd has always painted before the theme
@@ -1772,7 +1866,6 @@ fn main() {
             agent_decide,
             agent_kill,
             mcp_status,
-            mcp_register,
             perf_mark,
             perf_enabled,
         ])
@@ -1840,6 +1933,7 @@ fn main() {
                     store.clone(),
                     repo_root.clone(),
                     marking_dirty(dirty.clone(), notify::to_window(app.handle().clone())),
+                    open_doc_reader(open_doc.clone()),
                     cancel,
                 );
                 // Handed to the state the builder is already managing rather

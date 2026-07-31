@@ -26,7 +26,7 @@
 //! whole transport with no window and no event loop.
 
 use crate::annotations::Store;
-use crate::mcp::{jsonrpc, schema, tools};
+use crate::mcp::{jsonrpc, schema, tools, OpenDoc};
 use crate::notify::{MarksChanged, Notifier};
 use crate::{config, marks_file};
 use serde_json::{json, Value};
@@ -152,11 +152,12 @@ pub fn spawn(
     store: Arc<Mutex<Store>>,
     root: PathBuf,
     notify: Notifier,
+    open_doc: OpenDoc,
     cancel: Arc<AtomicBool>,
 ) -> Arc<Status> {
     let status = Arc::new(Status::default());
     let mine = status.clone();
-    std::thread::spawn(move || serve(&store, &root, &notify, &cancel, &mine));
+    std::thread::spawn(move || serve(&store, &root, &notify, &open_doc, &cancel, &mine));
     status
 }
 
@@ -166,6 +167,7 @@ pub fn serve(
     store: &Arc<Mutex<Store>>,
     root: &Path,
     notify: &Notifier,
+    open_doc: &OpenDoc,
     cancel: &Arc<AtomicBool>,
     status: &Status,
 ) {
@@ -199,10 +201,11 @@ pub fn serve(
         match listener.accept() {
             Ok((stream, _)) => {
                 status.clients.fetch_add(1, Ordering::Relaxed);
-                let (store, root, notify, cancel) = (
+                let (store, root, notify, open_doc, cancel) = (
                     store.clone(),
                     root.to_path_buf(),
                     notify.clone(),
+                    open_doc.clone(),
                     cancel.clone(),
                 );
                 std::thread::spawn(move || {
@@ -210,7 +213,7 @@ pub fn serve(
                     // non-blocking flag on macOS, which would turn every read
                     // into a spin.
                     let _ = stream.set_nonblocking(false);
-                    serve_connection(stream, &store, &root, &notify, &cancel);
+                    serve_connection(stream, &store, &root, &notify, &open_doc, &cancel);
                 });
             }
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => std::thread::sleep(ACCEPT_POLL),
@@ -236,6 +239,7 @@ fn serve_connection(
     store: &Mutex<Store>,
     root: &Path,
     notify: &Notifier,
+    open_doc: &OpenDoc,
     cancel: &AtomicBool,
 ) {
     let Ok(read_half) = stream.try_clone() else {
@@ -272,7 +276,9 @@ fn serve_connection(
             }
         }
 
-        let reply = jsonrpc::handle_line(&line, |request| respond(store, root, notify, request));
+        let reply = jsonrpc::handle_line(&line, |request| {
+            respond(store, root, notify, open_doc, request)
+        });
         if let Some(reply) = reply {
             if writer.write_all(reply.as_bytes()).is_err() || writer.flush().is_err() {
                 return;
@@ -308,6 +314,7 @@ pub fn respond(
     store: &Mutex<Store>,
     root: &Path,
     notify: &Notifier,
+    open_doc: &OpenDoc,
     request: &jsonrpc::Request,
 ) -> Result<Value, jsonrpc::Error> {
     match request.method.as_str() {
@@ -317,7 +324,7 @@ pub fn respond(
         m if m.starts_with("notifications/") => Ok(Value::Null),
         "ping" => Ok(json!({})),
         "tools/list" => Ok(schema::tools_list_result()),
-        "tools/call" => tools_call(store, root, notify, request.params()),
+        "tools/call" => tools_call(store, root, notify, open_doc, request.params()),
         other => Err(jsonrpc::Error::method_not_found(other)),
     }
 }
@@ -326,14 +333,20 @@ fn tools_call(
     store: &Mutex<Store>,
     root: &Path,
     notify: &Notifier,
+    open_doc: &OpenDoc,
     params: &Value,
 ) -> Result<Value, jsonrpc::Error> {
     let call: tools::ToolCall = serde_json::from_value(params.clone())
         .map_err(|e| jsonrpc::Error::invalid_params(format!("not a tools/call: {e}")))?;
 
+    // Read *before* the store lock, never under it: the closure reaches into
+    // `AppState`, whose own commands take the store lock on their way past, and
+    // taking the two in the other order here would be the one place they could
+    // interleave.
+    let open = open_doc();
     let (result, change) = {
         let mut store = store.lock().unwrap();
-        let result = tools::call(&mut store, root, &call);
+        let result = tools::call(&mut store, root, open.as_deref(), &call);
         let change = change_after(&store, &call, &result);
         (result, change)
     };
@@ -425,10 +438,24 @@ mod tests {
         let notify = notify::discard();
         let root = Path::new("/repo");
 
-        let init = respond(&store, root, &notify, &request("initialize", Value::Null)).expect("ok");
+        let init = respond(
+            &store,
+            root,
+            &notify,
+            &crate::mcp::no_open_doc(),
+            &request("initialize", Value::Null),
+        )
+        .expect("ok");
         assert_eq!(init, schema::initialize_result());
 
-        let list = respond(&store, root, &notify, &request("tools/list", Value::Null)).expect("ok");
+        let list = respond(
+            &store,
+            root,
+            &notify,
+            &crate::mcp::no_open_doc(),
+            &request("tools/list", Value::Null),
+        )
+        .expect("ok");
         assert_eq!(list, schema::tools_list_result());
     }
 
@@ -439,6 +466,7 @@ mod tests {
             &store,
             Path::new("/repo"),
             &notify::discard(),
+            &crate::mcp::no_open_doc(),
             &request("tools/invoke", Value::Null),
         )
         .expect_err("an error");
@@ -452,6 +480,7 @@ mod tests {
             &store,
             Path::new("/repo"),
             &notify::discard(),
+            &crate::mcp::no_open_doc(),
             &request("tools/call", json!("not an object")),
         )
         .expect_err("an error");
@@ -468,6 +497,7 @@ mod tests {
             &store,
             Path::new("/repo"),
             &notify,
+            &crate::mcp::no_open_doc(),
             &request(
                 "tools/call",
                 json!({"name": "resolve_highlight",
@@ -495,6 +525,7 @@ mod tests {
                 &store,
                 Path::new("/repo"),
                 &notify,
+                &crate::mcp::no_open_doc(),
                 &request("tools/call", json!({"name": method, "arguments": {}})),
             )
             .expect("ok");
@@ -517,6 +548,7 @@ mod tests {
             &store,
             Path::new("/repo"),
             &notify,
+            &crate::mcp::no_open_doc(),
             &request(
                 "tools/call",
                 json!({"name": "mark_passage",
@@ -546,6 +578,7 @@ mod tests {
             &store,
             Path::new("/repo"),
             &notify,
+            &crate::mcp::no_open_doc(),
             &request(
                 "tools/call",
                 json!({"name": "resolve_highlight",
@@ -568,6 +601,7 @@ mod tests {
             &store,
             Path::new("/repo"),
             &notify,
+            &crate::mcp::no_open_doc(),
             &request(
                 "tools/call",
                 json!({"name": "resolve_highlight", "arguments": {"id": "h0000000000000000"}}),
@@ -582,7 +616,13 @@ mod tests {
         let (store, _) = store_with_a_question();
         let line = r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#;
         let reply = jsonrpc::handle_line(line, |r| {
-            respond(&store, Path::new("/repo"), &notify::discard(), r)
+            respond(
+                &store,
+                Path::new("/repo"),
+                &notify::discard(),
+                &crate::mcp::no_open_doc(),
+                r,
+            )
         });
         assert!(reply.is_none(), "a notification gets silence");
     }

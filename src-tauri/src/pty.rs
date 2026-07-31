@@ -62,10 +62,10 @@ pub struct Pty {
 /// and it lands in a terminal they may not be looking at, so the send appears to
 /// have gone nowhere.
 ///
-/// So exactly two things are pre-granted: dreamd's own five MCP tools, and
+/// So exactly two things are pre-granted: dreamd's own six MCP tools, and
 /// `Read`. Nothing that writes, nothing that runs a command — an edit is still a
-/// question the agent has to ask, in whatever mode the reader chose. The five
-/// are spelled out rather than wildcarded so that a sixth tool added to
+/// question the agent has to ask, in whatever mode the reader chose. The six
+/// are spelled out rather than wildcarded so that a seventh tool added to
 /// `mcp::schema` is a deliberate line here rather than a silent grant.
 ///
 /// Named `mcp__dreamd__*` because `dreamd mcp` is registered under the server
@@ -79,8 +79,9 @@ pub struct Pty {
 macro_rules! grants {
     () => {
         " --allowed-tools Read \
-mcp__dreamd__get_stack mcp__dreamd__get_highlight mcp__dreamd__list_highlights \
-mcp__dreamd__resolve_highlight mcp__dreamd__mark_passage"
+mcp__dreamd__get_stack mcp__dreamd__get_open_document mcp__dreamd__get_highlight \
+mcp__dreamd__list_highlights mcp__dreamd__resolve_highlight \
+mcp__dreamd__mark_passage"
     };
 }
 
@@ -597,6 +598,7 @@ mod tests {
             for tool in [
                 "Read",
                 "mcp__dreamd__get_stack",
+                "mcp__dreamd__get_open_document",
                 "mcp__dreamd__get_highlight",
                 "mcp__dreamd__list_highlights",
                 "mcp__dreamd__resolve_highlight",
@@ -604,10 +606,10 @@ mod tests {
             ] {
                 assert!(granted.contains(&tool), "{tool} missing from {granted:?}");
             }
-            // Exactly those six. An addition is a line in `grants!` and a line
-            // here, which is the point — a seventh tool must not be able to
-            // arrive as a side effect of anything.
-            assert_eq!(granted.len(), 6, "{granted:?}");
+            // Exactly those seven. An addition is a line in `grants!` and a
+            // line here, which is the point — an eighth tool must not be able
+            // to arrive as a side effect of anything.
+            assert_eq!(granted.len(), 7, "{granted:?}");
             // A wildcard would grant a tool nobody has reviewed the moment
             // `mcp::schema` grows one.
             assert!(!cmd.contains('*'), "{cmd:?} wildcards the grant");
