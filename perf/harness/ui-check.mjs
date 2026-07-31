@@ -200,19 +200,27 @@ await page.keyboard.press("Control+Comma");
 check("Ctrl+, opens settings", await page.locator("#settings-overlay.open").isVisible());
 
 // --- keys tab ---
-const rows = await page.locator("#st-keys .st-row").count();
-check("every action gets a row", rows === 25, `got ${rows}`);
+// Counted against the page's own KEY_ACTIONS rather than a literal: a hardcoded
+// 25 said nothing about the list once it grew past 25, and the row count also
+// carries the mode picker and the quick-highlight checkbox, which are not
+// actions. `KEY_ACTIONS` is a top-level `const` in a classic script, so it is
+// in the page's global lexical scope and readable by name here.
+const want = await page.evaluate(() => KEY_ACTIONS.length);
+const rows = await page.locator("#st-keys .st-row[data-action]").count();
+check("every action gets a row", rows === want, `got ${rows}, want ${want}`);
 check(
   "a repo-shadowed key is flagged",
   (await page.locator("#st-keys .shadowed").count()) === 1,
 );
-const firstCombo = page.locator("#st-keys .st-row").first().locator("button.combo");
-const shown = (await firstCombo.textContent()).trim();
+// By action, not by position: the mode picker is the first `.st-row` and has no
+// combo at all.
+const paletteCombo = page.locator('#st-keys .st-row[data-action="palette"] button.combo');
+const shown = (await paletteCombo.textContent()).trim();
 check("combo is rendered", shown === "\u2303F" || shown === "Ctrl+F", shown);
 
 // record a new binding for the palette
-await firstCombo.click();
-check("recording state shown", (await firstCombo.textContent()).includes("Press keys"));
+await paletteCombo.click();
+check("recording state shown", (await paletteCombo.textContent()).includes("Press keys"));
 await page.keyboard.press("Control+Shift+P");
 await page.waitForTimeout(120);
 check(
@@ -226,7 +234,7 @@ check(
 );
 
 // escape cancels a recording rather than closing the panel
-await firstCombo.click();
+await paletteCombo.click();
 await page.keyboard.press("Escape");
 await page.waitForTimeout(80);
 check("Esc cancels recording, panel stays open", await page.locator("#settings-overlay.open").isVisible());

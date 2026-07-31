@@ -5066,6 +5066,11 @@ function renderKeys() {
   for (const action of KEY_ACTIONS) {
     const row = document.createElement("div");
     row.className = "st-row";
+    // Names the row for anything selecting one. The mode picker above and the
+    // quick-highlight checkbox below are `.st-row` too and carry no combo, so
+    // position in the list is not an identity — `ui-check` asked for the first
+    // row's `button.combo` and got the picker's, which has none.
+    row.dataset.action = action.id;
     const combo = keymap[action.id];
     row.innerHTML =
       `<span class="lbl">${escapeHtml(action.label)}` +
