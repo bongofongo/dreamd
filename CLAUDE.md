@@ -220,7 +220,7 @@ to the crate version, verified.
 
 ## Architecture
 
-`src-tauri/src/main.rs` is a thin shell — CLI (clap), `AppState`, the ~48 `#[tauri::command]`
+`src-tauri/src/main.rs` is a thin shell — CLI (clap), `AppState`, the ~54 `#[tauri::command]`
 handlers, the builder. All logic lives in the `dreamd` **library** crate (`src/lib.rs` +
 modules) *because a `[[bin]]` target cannot be imported*: the split is what makes
 `src-tauri/benches/` possible. New logic goes in a module, not in `main.rs`.
