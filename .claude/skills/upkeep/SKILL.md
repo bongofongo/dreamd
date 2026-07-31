@@ -163,6 +163,16 @@ open one PR against `main`. The body names the area, the drift found (even when
 the fix was one word), what was simplified, the net line delta, and any measured
 path touched.
 
+**If no PR-creation tool is available, push anyway and report the link.** A
+scheduled session may hold neither the GitHub MCP tools nor `gh` — a fired
+Routine carries no connectors unless the session that created it had some to pass
+through. That is not a reason to abandon the sweep or, worse, to fall back to
+committing on `main`. Push the branch, put the compare URL
+(`https://github.com/bongofongo/dreamd/compare/main...claude/upkeep-<date>`) and
+the PR body you would have used in the final report, and record the branch name
+in the ledger's *Open PR* column so the next sweep still counts it against the
+three-PR backlog cap.
+
 **The ledger** goes straight to `main`, in its own commit, whether or not the
 sweep produced code:
 
