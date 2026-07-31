@@ -2,7 +2,7 @@
 
 *This page is the daily landing spot for everyone on the team. It's kept up to date
 automatically and written so that you can be away for a week, read this in five
-minutes, and know exactly where things stand. Last updated: 2026-07-30.*
+minutes, and know exactly where things stand. Last updated: 2026-07-31.*
 
 ## What we're building
 
@@ -85,19 +85,25 @@ The Rust side is seven small modules, each with one job:
 - **`cli`** — the `dreamd theme …` and `dreamd config …` commands you can run from
   a terminal without opening the window.
 - **`agent`** — the pane (press `Ctrl+T`) where you talk to Claude, docked at
-  the bottom or the right. Claude's replies are laid out here by dreamd itself,
-  in the same typography and colours as the document, with a quiet list of what
-  it did beneath them. When it wants to do something it hasn't been pre-approved
-  for, a card appears in this pane with Allow / Always allow / Deny — and if
-  nobody answers, the answer is no. The pane's header also chooses a
-  **permission mode**: how much Claude may do before asking, from "ask before
-  every edit" up to "don't ask at all".
+  the bottom or the right, and resizable by dragging its edge. Claude's replies
+  are laid out here by dreamd itself, in the same typography and colours as the
+  document, with a quiet list of what it did beneath them. When it wants to do
+  something it hasn't been pre-approved for, a card appears in this pane with
+  Allow / Always allow / Deny — and if nobody answers, the answer is no. The
+  pane's header also chooses a **permission mode**: how much Claude may do
+  before asking, from "ask before every edit" up to "don't ask at all". It can
+  also **pop out** into a card centred on the window instead of living in the
+  dock — useful for a quick answer you asked for in passing rather than a
+  conversation you're working alongside; the same conversation moves between
+  dock and card without losing anything mid-reply.
 - **`pty`** — the older version of that pane, which embedded Claude Code's own
   terminal interface instead. Kept as a fallback (Settings → Window) for
   anything the pane above cannot draw yet, and due to be removed.
 - **`mcp`** — the private channel (no network port, just a file only your account
   can read) that lets the Claude Code running in that pane ask dreamd for your
-  highlight queue and mark items answered as it works through them.
+  highlight queue and mark items answered as it works through them. If Claude
+  Code isn't registered to use it yet, the pane shows a **Register** button that
+  runs the one-time setup command for you, rather than making you type it.
 
 Two ideas that come up constantly:
 
@@ -132,7 +138,15 @@ margin rail, live reload that preserves your scroll position, an nvim-style CLI
 (`dreamd file.md`), a per-file `⋯` menu (copy path / delete to Trash),
 vim-flavored keybinds throughout, and a settings panel for changing those keybinds,
 the colour scheme, and which bars your desktop draws around the window — all
-without leaving the app.
+without leaving the app. Keybindings now come in three "spellings" — `linux`
+(the default, unchanged from before), `mac`, and `vim` — chosen once in
+settings; the underlying key combos are stored the same way regardless, so
+switching spelling or rebinding a key never rewrites anything but how it's
+shown. `vim` mode adds `j`/`k`/`d`/`u` to scroll the document (a line, or half
+a screen, at a time) and `Ctrl+H`/`Ctrl+J` to hop between panes, and scrolling
+with any of those keys **glides** to its target rather than jumping, still
+landing in the same place if you hold the key down or if a fast press and a
+slow one both queue up.
 
 Known limits, all deliberate for v1:
 
@@ -250,6 +264,45 @@ causes were wrong.
   that is where its users look.
 
 ## Recent updates
+
+- **2026-07-30** — **dreamd 0.2.1 released**, wrapping the keybinding and
+  agent-pane work below.
+
+- **2026-07-30** — **Keyboard shortcuts learned three spellings, and vim
+  motions came with the third one.** Settings now has a keymap **mode** —
+  `linux` (default, byte-for-byte how the app always behaved), `mac`, or
+  `vim` — that changes how a shortcut is *shown and pressed*, not what it
+  does: every binding is still stored the same way underneath, so switching
+  mode or rebinding a key never needs to touch two places. In `vim` mode,
+  `j`/`k`/`d`/`u` scroll the document (a line, or half a screen, measured
+  from the theme's own line spacing) and `Ctrl+H`/`Ctrl+J` move focus between
+  panes — both dispatched so they still work as ordinary letters inside a
+  text box like the find bar.
+
+  Scrolling with any of those keys now **glides** instead of jumping straight
+  there, easing toward a moving target rather than restarting with every
+  keypress — ten fast presses and ten slow ones land at exactly the same
+  place. A separate bug this surfaced: `vim` mode was stripping the modifier
+  off shortcuts even while you were typing in a text field, so a Ctrl+F search
+  or a comma in the annotation box could accidentally open the command
+  palette or settings instead of typing the character. Five shortcuts that
+  make sense to reach *from* a field (palette, settings, the agent pane, and
+  the two pane-switching keys) now keep their modifier there; everything else
+  behaves like an ordinary keystroke while a field has focus.
+
+- **2026-07-30** — **The agent pane learned to dock right, pop out as its own
+  card, and be dragged to a different size — and to register itself with
+  Claude Code.** The pane already drew Claude's replies natively (see the
+  entry below); this batch of sessions made it a real panel rather than a
+  fixed box. It can dock at the bottom or the **right** of the window, be
+  resized by dragging its edge, and **pop out** into a card centred on the
+  window for a quick question instead of a whole conversation — the same
+  live conversation moves between dock and card without losing anything
+  mid-reply, because it is one piece of the page being relocated rather than
+  redrawn. If dreamd's MCP connection (the private channel that lets Claude
+  read your highlight queue) was never set up, the pane now shows a
+  **Register** button that runs the one setup command for you, rather than
+  printing it and leaving you to type it into a terminal.
 
 - **2026-07-30** — **The agent stopped being a terminal.** Until now, asking
   Claude a question inside dreamd meant a real terminal embedded in the window:
@@ -417,81 +470,14 @@ causes were wrong.
   planned piece, saved for a session of its own because it's judged the part
   most likely to need someone's full attention.
 
-- **2026-07-28** — **The automatic checks now start the program, which they had
-  never done.** The entry below ends on the observation that "the checks pass" and
-  "a person can install it and use it" are different questions. This session
-  closed most of that gap. Until now every check stopped short of the one thing a
-  user does first: none of them opened dreamd. A change could compile, pass all
-  208 tests, and still fail to put a window on the screen — and nothing would have
-  noticed until somebody downloaded it.
-
-  Two things changed. Dreamd now survives starting up on Linux machines with
-  NVIDIA graphics cards, where it previously died before its window appeared, with
-  an error message that came from deep inside the graphics system and could not be
-  caught or reported. And the checks now launch the program on every change, then
-  take the finished downloads and *install and run them* on four different Linux
-  distributions that did not build them — which is the closest an automatic check
-  can get to being a user.
-
-  Getting there took three rounds of failures, all in the checks rather than in
-  dreamd itself, and one of them is worth recording: a packaging step failed with
-  a one-line error that gave no reason, and the fix turned out to be teaching the
-  packaging tool to explain itself rather than guessing at the cause. It then named
-  the real problem immediately. Two things are still checked only by hand, and are
-  written down as such rather than assumed: whether the all-in-one Linux download
-  really carries everything it needs, and the NVIDIA startup fix itself, which
-  needs hardware no automated machine has.
-
-- **2026-07-27** — **The Linux version was run on a real Linux machine for the
-  first time, and three things were wrong.** The entry below describes making
-  Linux a supported platform; that work had been written and checked
-  automatically, but never actually installed and used by a person. Doing so
-  found problems that automatic checks are not shaped to catch, because they only
-  appear once the program is packaged and put on a desktop:
-
-  Right-clicking a markdown file and choosing "Open with" never offered dreamd —
-  for a program whose entire job is reading markdown, that is the one place
-  people would look for it. It now appears there, and opens the file you picked.
-  It was also shipping its icon in the wrong sizes, so it appeared blurry in
-  menus and app grids; the missing size has been added. And building the Linux
-  download on an up-to-date Linux machine failed outright, with a one-line error
-  that explained nothing — the cause was a stale tool buried inside the packaging
-  software, and the workaround is now written down in the three places somebody
-  hitting it would actually look.
-
-  Everything the automatic checks cover passed on Linux unchanged, which is the
-  reassuring half of the result. The useful half is that "the checks pass" and
-  "a person can install it and use it" turned out to be different questions.
-
-- **2026-07-27** — **dreamd runs on Linux now, not just on a Mac.** It always
-  *could* in principle — the engine underneath was written to work on both — but
-  in practice the program had stopped compiling there months ago and nobody
-  noticed, because everything that checks the code automatically only ever ran on
-  a Mac. One small piece of Mac-only code was being called from a place that
-  wasn't Mac-only, and that was enough to break the whole build. That is fixed,
-  and the fix that matters more is the reason it went unnoticed: **every automatic
-  check now runs twice, once on each platform**, so the same thing cannot quietly
-  happen again in either direction.
-
-  What that gets you: releases now include a Linux download in three formats
-  (a single self-contained file that runs anywhere, a standard Debian/Ubuntu
-  package, and a recipe for Arch Linux), the automated checks can now be run by
-  anyone on a Linux machine rather than only on the author's laptop, and Linux is
-  a real place to develop dreamd rather than a place you can only read about it.
-  There is also a new automated performance check that runs on both platforms and,
-  more usefully, rehearses the *release build itself* on every change — a release
-  is frozen once it's published, so discovering the Linux half is broken at that
-  point is the expensive way to find out.
-
-  Two honest caveats. The Linux side has been written and reasoned about
-  carefully, but it has not yet been run by a person on an actual Linux machine —
-  the automated checks are its first outing. And the menus differ between the two
-  platforms on purpose: the Linux toolkit simply refuses to draw several of the
-  menu entries macOS uses, so rather than ship a menu with empty sections, Linux
-  gets a shorter one, and the "open a folder" shortcut moved there because the
-  Mac shortcut would have silently stolen a key the app already uses.
-
-- **(earlier)** — Claude Code embedded in a pane inside dreamd, `Ctrl+T` to open
+- **(earlier)** — the automatic checks started actually launching the program
+  instead of just compiling and testing it, catching an NVIDIA/Linux startup
+  crash nothing else could (2026-07-28); the Linux build run on a real Linux
+  machine for the first time, fixing "Open With" never offering dreamd, a
+  blurry icon, and a packaging failure caused by a stale tool (2026-07-27);
+  dreamd made to run on Linux at all, with every automatic check now running
+  on both platforms so a Mac-only regression can't hide there again
+  (2026-07-27); Claude Code embedded in a pane inside dreamd, `Ctrl+T` to open
   it (2026-07-27); highlights, annotations and the stack persisted to
   `~/.config/dreamd` so they survive quitting, plus `dreamd marks path`/`prune`
   (2026-07-27); an assistant able to read the highlight queue over a private
