@@ -609,6 +609,23 @@ highlights from a corpus fixture.
   signal only. Say so whenever quoting one. `perf/harness/ui-check.mjs` is the exception:
   it lives there for the Playwright install, asserts on DOM and IPC rather than timings,
   and feeds no baseline.
+- **A nightly job sweeps one area of the repo per night** — `/upkeep`, driven by a
+  Routine at 02:17 UTC. Fifteen areas on rotation, so each is swept about
+  fortnightly; the area due next is the stalest row in `.claude/upkeep/ledger.md`.
+  Each sweep does three passes over its area — verify CLAUDE.md's claims against
+  the code, simplify, then fix the drift and tighten that section — and the first
+  is the valuable one: a false claim here misleads every session that reads it.
+  Four things make it safe to run unwatched. The work lands on a
+  `claude/upkeep-<date>` branch as one PR and **never on `main`**, which is the
+  one place this repo's straight-to-main rule doesn't hold, because nobody is
+  watching. `ui/app.js` is **propose-only** — 5,700 lines the harnesses can't
+  prove the paint of, so those areas write to `docs/upkeep/` and change no code.
+  An empty night is a **success**: a job that must produce a diff churns code to
+  justify itself. And the ledger commit goes to `main` on its own even when the
+  PR doesn't, so an unmerged review can't stall the rotation into re-sweeping the
+  same area nightly. It never runs a perf tier — `run.sh` refuses comparison off
+  Darwin anyway — and flags in the PR when a measured path needs `/perf-quick` on
+  your own machine.
 
 ## Docs
 
@@ -619,6 +636,10 @@ highlights from a corpus fixture.
   a scheduled job and by the `/update-project-doc` skill. If a session materially
   changes the project story, update it in the same session rather than waiting.
 - `docs/plan.md` — original design intent. Historical; don't rewrite it.
+- `.claude/upkeep/ledger.md` — rotation state for the nightly sweep, and nothing
+  else: which area is due, when each was last swept, what it found. The area
+  definitions live in the skill. `docs/upkeep/` holds the propose-only findings
+  for `ui/app.js`, which are yours to apply by hand.
 - `perf/README.md` — what each performance tier measures and how much to trust it.
 - `website/CLAUDE.md` — the public site at `fongo.uk/dreamd`. A standalone Astro
   project, deployed separately; source of truth for everything under `website/`.
