@@ -2,7 +2,7 @@
 
 *This page is the daily landing spot for everyone on the team. It's kept up to date
 automatically and written so that you can be away for a week, read this in five
-minutes, and know exactly where things stand. Last updated: 2026-07-31.*
+minutes, and know exactly where things stand. Last updated: 2026-08-01.*
 
 ## What we're building
 
@@ -264,6 +264,21 @@ causes were wrong.
   that is where its users look.
 
 ## Recent updates
+
+- **2026-07-31** — **A settings-panel check broke quietly and stayed red
+  through the 0.2.1 release.** Adding the keymap-mode picker (see the entry
+  below) put a new row at the top of the shortcuts list that doesn't look
+  like the others — it's a dropdown, not a rebindable key — but the automated
+  check that walks every settings row was still looking for the *first* row
+  to have a key button. It found none, timed out, and the whole check crashed
+  right there: no summary got printed, so the 25 checks before that point and
+  the 300 after it never showed up in the CI log at all, even though most of
+  them were passing. Each row is now found by *which shortcut it is* rather
+  than by its position in the list, and the row count is read from the
+  settings panel's own list of shortcuts instead of a number someone has to
+  remember to update by hand. This also started `docs/patch-log.md`, a short
+  log of one-fix repairs like this one — separate from the full session log —
+  so a fix like this leaves more behind than just a commit message.
 
 - **2026-07-30** — **dreamd 0.2.1 released**, wrapping the keybinding and
   agent-pane work below.
