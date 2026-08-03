@@ -113,6 +113,14 @@ Two ideas that come up constantly:
   the highlight is marked **stale**, turns red, and moves to the margin with a `?`
   asking whether it's still relevant. Better to ask than to silently point at the
   wrong text.
+- **One highlight per passage.** You can't highlight text that is already
+  highlighted. Before, you could — but only the newest mark was clickable, so the
+  older ones underneath became questions you could no longer read, edit or
+  delete. Dragging over an existing highlight now opens *that* one instead of
+  making a second. Because of that, you can change your mind about where a
+  passage starts or ends: press **Resize** (in the highlight's own menu, or the
+  `⤢` on its card in the stack), drag the new extent, press Enter. The question
+  attached to it and its place in the queue come along unchanged.
 - **The whole app is themeable.** A theme is split in two: one stylesheet holds the
   *rules* (how big a heading is, how much space between paragraphs), and a **palette**
   is a short list of colours and font settings. Ten palettes ship with the app —
@@ -265,6 +273,17 @@ causes were wrong.
 
 ## Recent updates
 
+- **2026-08-03** — **The same passage can only be highlighted once, and any
+  highlight can now be resized.** Highlighting text that was already highlighted
+  used to work, and quietly cost you the older mark: only the topmost one
+  answered a click, so the question attached to the one underneath became
+  unreachable — still in the queue, still counted, impossible to open. Dragging
+  over an existing highlight now opens that highlight rather than stacking a
+  second one on top of it. That would have made a mistimed drag permanent, so the
+  other half shipped with it: **Resize**, from the highlight's own menu or the
+  `⤢` on its card in the stack panel. Drag the new extent, press Enter, and the
+  question you attached and its position in the queue survive untouched — the
+  stack button even opens the right file and scrolls to the passage first.
 - **2026-08-03** — **Light and dark got a keyboard shortcut, and "System"
   stopped lying about what your machine wants.** `Ctrl+Shift+D` flips the
   appearance and remembers it, without opening anything — for the moment the

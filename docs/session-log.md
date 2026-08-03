@@ -1,5 +1,96 @@
 # Session log
 
+## 2026-08-03 — one highlight per passage, and a way to resize it
+
+A feature session with one report behind it: the same text could be highlighted
+more than once, and every mark under the topmost became unreachable. Landed the
+refusal and the resize it makes necessary, plus the harness coverage for both.
+
+### What happened
+
+1. **Overlapping highlights are refused, and refused *towards* the mark that is
+   already there.** `triggerHighlight` now asks `overlappingIds` whether the
+   selection touches painted text; one mark overlapped opens that mark's edit
+   modal, several toast rather than picking one arbitrarily. Two decisions worth
+   keeping: the question is answered against the **DOM**, not the store, because
+   `line_start`/`line_end` cannot separate two phrases in one paragraph of prose;
+   and **adjacency is not overlap** — strict `compareBoundaryPoints` inequalities
+   — or the sentence immediately after a highlight would be unhighlightable.
+2. **`Store::retarget` and the `resize_highlight` command.** With overlap denied,
+   changing where a passage ends has to reach the existing mark or the only route
+   left is deleting it, which takes the annotation and the stack slot with it. So
+   the id survives and with it `annotation`, the stack position, `sent_at`,
+   `resolved` and `prior`. `prior` is deliberately *not* cleared: the fade tracks
+   the stack, and a resize moves nothing on or off it. Anchoring is
+   `add_anchored`'s, `(0, 0)` fallback included, so an extent spanning inline
+   markdown costs a line number rather than the mark. The command reads the
+   **mark's own** `file_path` rather than the open document — the stack spans
+   files, and the panel can start a resize.
+3. **Resize is a mode, not a modal.** What it waits for is a selection in the
+   document, which is the one gesture a modal cannot be open for. The modal's
+   Resize button hands over to `armResize`, `#resize-hint` replaces it, Enter or
+   the highlight key commits and Escape cancels. Escape ranks below every overlay
+   and above view mode; `clearHighlights` ends the mode, because a repaint pulls
+   the `<mark>`s out from under it. The commit re-checks overlap **excluding the
+   mark itself** — a resize that swallowed a neighbour would recreate exactly the
+   unreachable stacking the refusal exists to prevent.
+4. **The stack panel got a `⤢` per card**, which opens the pair's file, scrolls
+   the mark into view and arms the same mode. That is what makes "resizable
+   including the ones on the stack" true without the reader hunting for the
+   passage. Its handler re-reads the highlight through `get_highlight` rather
+   than closing over the one `buildPair` was handed: cards outlive the refresh
+   that built them, and the quote is the thing a resize is about.
+5. **23 new assertions in `ui-check.mjs`**, on a page with a real (if tiny) store
+   behind the IPC stub. Both halves of the feature are claims about what the
+   store holds after a gesture — a refusal means no `add_highlight` went out, a
+   resize means the same id came back with a different quote — and overlap is
+   decided in the DOM, so a stub that only counted calls would assert nothing.
+   The adjacent case is asserted beside the overlapping one so the guard cannot
+   pass by refusing everything.
+
+Landed as two commits: `9cf2e05` (feature + `CLAUDE.md`) and `0df2612` (harness).
+
+### Mistakes & deviations
+
+- The interaction was **not** chosen unilaterally: overlap behaviour and the
+  resize gesture were both put to the user with previews before any code, since
+  drag handles and an armed re-select imply very different placement code.
+- First `retarget` stale-state test was **wrong about its own fixture**: it
+  edited `beta` to `betamorphosis`, which `locate`'s whitespace-stripped tier
+  still finds, so nothing ever went `Stale`. Caught by the test failing on the
+  first run; the fixture now deletes the quote outright.
+- Both new guards were **proved to have teeth**, not trusted. Deleting
+  `retarget`'s `state = Active` turned the stale test red; making
+  `overlappingIds` return `[]` turned six harness assertions red. Both restored
+  by re-editing rather than `git checkout`.
+
+### State
+
+`cargo fmt --check`, `clippy -D warnings`, `cargo test --all-features` (376),
+`locate_check`, `marks_check` (75), `mcp_check` (59), `node --test
+ui/paths.test.mjs` and `ui-check.mjs` (359) all green. The GUI itself is
+unverified as ever — the harness asserts what the page knows, not what WebKitGTK
+paints.
+
+`perf-pass` (`perf/results/pass-0df2612-20260803-143851.json`) reports 33 `XX`
+against the baseline, and **none of them are this session**:
+
+- The `chromium.highlight.*.spanning.*` block is the baseline being stale, not a
+  regression. `applied` jumps 50 → 214 and `failRatio` goes *negative* because
+  `placeAcrossNodes` paints spanning quotes at all now, several `<mark>`s per id.
+  The 2026-07-30 `pass-c86cd80` file already holds those numbers; against it this
+  run is +11%, inside the Chromium floor.
+- The `chromium.scroll.*` rows (+27–56% vs that file) were A/B'd directly, three
+  reps per arm, HEAD against a `140d4e4` worktree sharing the corpus: HEAD 94.5 /
+  95.5 / 85.6 ms against base 100.3 / 100.8 / 89.1 ms. HEAD is if anything
+  *faster*, so the session's new CSS (`mark.hl.resizing`, `#resize-hint`) costs
+  nothing and the pass-run delta was machine state.
+- **Left open, and not ours:** `real.startup.debug.launch.d:ipc_get_highlights`
+  is 579ms against a baseline of 14ms. It reproduces, but it reproduces at
+  `140d4e4` too (575ms), so it arrived somewhere in `c86cd80..140d4e4` — the
+  agent/theme/keymap run — and wants its own look. Chromium rows throughout are
+  relative signal only, never WKWebView timings.
+
 ## 2026-08-03 — reconciling a tree that held three changes
 
 A short session with no new feature work of its own: the working tree carried
