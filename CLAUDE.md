@@ -313,6 +313,15 @@ the upgrade procedure.
   to an explicit `mode` — which is why `Config::mode` is an `Option`. Debug builds read
   bundled palettes off disk so they hot-reload like user ones.
   `readCssVar`/`modeSlice` in `ui/app.js` mirror this; change one, change the other.
+  **What the OS asks for is a second, separately remembered fact.** `scheme_for`
+  takes it as an argument, and `AppState` holds it in its own atom beside the
+  appearance on screen: while an explicit light or dark is pinned it cannot be
+  *asked* for — `Window::theme()` returns tao's cache of the pin on both
+  platforms, and the webview's `prefers-color-scheme` follows the pin too — so
+  the pinned value used to stand in for it, and one trip through Light rewrote
+  what `system` meant for the rest of the session. `os_scheme` is the only read:
+  it clears the pin first, and `set_config` calls it only on the way *into*
+  `system`, which is a mode that ends unpinned anyway.
 - `cli` — the headless `dreamd theme …` / `dreamd config …` / `dreamd marks …`
   subcommands. They run and exit
   before the Tauri builder, sharing the panel's write paths so both produce the same file.

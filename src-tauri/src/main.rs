@@ -113,6 +113,22 @@ struct AppState {
     /// order. Written by `.setup()` at startup and by `set_appearance` when the
     /// frontend notices the OS change.
     appearance: AtomicU8,
+    /// What the *OS* asked for, which is a different question from the one
+    /// above.
+    ///
+    /// The two agree under `mode = "system"` and part company the moment the
+    /// reader pins light or dark: while a pin is applied nothing can be asked
+    /// for the system's own answer — `Window::theme()` hands back the pin (tao
+    /// caches whatever `set_theme` last set) and the webview's
+    /// `prefers-color-scheme` follows the pinned appearance too. So this is the
+    /// last answer from a moment when it *was* observable: seeded in `.setup()`,
+    /// refreshed by `set_appearance`, and re-read with the pin taken off by
+    /// `set_config`.
+    ///
+    /// Reading `appearance` in its place is what used to make "System (dark)"
+    /// become "System (light)": a trip through Light left the pinned scheme
+    /// standing in for the OS, and returning to `system` resolved against it.
+    system: AtomicU8,
     /// Whether this process is the one that writes this repo's marks file.
     ///
     /// False for a repo with no `.git` (there is nothing to be the marks *of*)
@@ -165,18 +181,21 @@ impl AppState {
     }
 
     fn scheme(&self) -> theme::Scheme {
-        match self.appearance.load(Ordering::Relaxed) {
-            0 => theme::Scheme::Light,
-            _ => theme::Scheme::Dark,
-        }
+        scheme_from(self.appearance.load(Ordering::Relaxed))
     }
 
     fn set_scheme(&self, scheme: theme::Scheme) {
-        let v = match scheme {
-            theme::Scheme::Light => 0,
-            theme::Scheme::Dark => 1,
-        };
-        self.appearance.store(v, Ordering::Relaxed);
+        self.appearance
+            .store(scheme_byte(scheme), Ordering::Relaxed);
+    }
+
+    /// The OS's own appearance, as far as it is still knowable. See the field.
+    fn system(&self) -> theme::Scheme {
+        scheme_from(self.system.load(Ordering::Relaxed))
+    }
+
+    fn set_system(&self, scheme: theme::Scheme) {
+        self.system.store(scheme_byte(scheme), Ordering::Relaxed);
     }
 
     /// Note that the store changed, so the next debounce tick writes it.
@@ -194,6 +213,26 @@ impl AppState {
         theme::resolve(&self.config.lock().unwrap(), scheme)
             .syntax_theme
             .unwrap_or_else(|| markdown::CODE_THEME.to_string())
+    }
+}
+
+/// The two appearance atoms' encoding, in both directions.
+///
+/// Atoms rather than `Mutex<Scheme>` so `syntax_theme` — which runs on every
+/// render, already holding the config lock — never has to reason about lock
+/// order. Anything that is not light is dark, which keeps dreamd's historical
+/// default for a byte nobody wrote.
+fn scheme_from(byte: u8) -> theme::Scheme {
+    match byte {
+        0 => theme::Scheme::Light,
+        _ => theme::Scheme::Dark,
+    }
+}
+
+fn scheme_byte(scheme: theme::Scheme) -> u8 {
+    match scheme {
+        theme::Scheme::Light => 0,
+        theme::Scheme::Dark => 1,
     }
 }
 
@@ -759,6 +798,11 @@ fn set_appearance(
     scheme: theme::Scheme,
 ) -> ThemeView {
     state.set_scheme(scheme);
+    // And it is the *system's* answer, not merely the one to paint: the
+    // frontend pushes this only while the preference is `system`, which is
+    // exactly when the two are the same fact. Recording it here is what keeps
+    // "System (…)" honest across a later trip through Light and back.
+    state.set_system(scheme);
     let view = theme_view(&state);
     // The native window background follows too, so an auto-switch doesn't leave
     // the frame in the old appearance.
@@ -780,9 +824,15 @@ fn set_appearance(
 struct Settings {
     config: Config,
     theme: Option<String>,
-    /// What `config.mode` resolves to right now, so the toggle can say
-    /// "System (dark)" instead of just "System".
+    /// What `config.mode` resolves to right now — the appearance on screen.
     scheme: theme::Scheme,
+    /// What the *OS* asks for, so the System button can say "System (dark)"
+    /// while Light is the one being shown.
+    ///
+    /// Deliberately not `scheme`: labelling the button with the appearance on
+    /// screen made pressing Light rewrite System's meaning, which is the one
+    /// thing that button is there to be independent of.
+    system: theme::Scheme,
     themes: Vec<theme::ThemeInfo>,
     syntax_themes: Vec<String>,
     config_path: String,
@@ -797,6 +847,7 @@ fn get_settings(state: State<AppState>) -> Settings {
     Settings {
         theme: theme::resolve(&config, scheme).name,
         scheme,
+        system: state.system(),
         config,
         themes: theme::list(),
         syntax_themes: markdown::syntax_theme_names(),
@@ -817,13 +868,38 @@ fn set_config(
 ) -> Result<Settings, String> {
     config::patch_global(patch)?;
     let cfg = Config::load(&state.root());
-    // What the OS says, as far as we still know it: the scheme in hand is the
-    // last one the frontend pushed, which under `system` *is* the OS's answer.
-    let system = state.scheme();
-    let (mode, scheme) = (cfg.mode(), theme::scheme_for(&cfg, system));
+    let mode = cfg.mode();
+    let win = app.get_webview_window("main");
+    // Read before the swap below: which mode we are coming *from* is what
+    // decides whether the OS still has to be asked.
+    let was = state.config.lock().unwrap().mode();
+    // What the OS says — which is emphatically *not* what is on screen. Under an
+    // explicit light or dark the scheme in hand is dreamd's own pin, and reading
+    // it back as the system's answer is how a trip through Light used to turn
+    // "System (dark)" into "System (light)" permanently.
+    //
+    // Re-asked on the way *back into* `system`, and only there. That is the one
+    // moment the remembered value can be stale — a pinned window observes
+    // nothing, so an OS that switched while Light was up went unnoticed — and it
+    // costs nothing to fix, `system` being a mode that ends unpinned anyway. A
+    // window already *in* `system` learns every OS change through
+    // `set_appearance` as it happens, so re-reading here would only clear and
+    // re-set the pin a legacy alias holds, on every unrelated panel write.
+    let returning = mode == config::Mode::System && was != config::Mode::System;
+    let system = match win.as_ref().filter(|_| returning) {
+        Some(win) => {
+            let s = os_scheme(win);
+            state.set_system(s);
+            s
+        }
+        // Every other mode ignores `system` when resolving and needs the
+        // remembered value only for the panel's label.
+        None => state.system(),
+    };
+    let scheme = theme::scheme_for(&cfg, system);
     *state.config.lock().unwrap() = cfg;
     state.set_scheme(scheme);
-    if let Some(win) = app.get_webview_window("main") {
+    if let Some(win) = win {
         pin_native_theme(&win, native_pin(mode, scheme, system));
         apply_chrome(&win, &state.config.lock().unwrap().ui);
     }
@@ -911,6 +987,28 @@ fn apply_chrome(win: &tauri::WebviewWindow, ui: &config::Ui) {
             let _ = win.remove_menu();
         }
         _ => {}
+    }
+}
+
+/// What the OS asks for, with nothing of dreamd's pinned over the answer.
+///
+/// `Window::theme()` reports the **pin** while one is applied — tao caches
+/// whatever `set_theme` last set and hands that back, on both platforms — so the
+/// only way to ask the system again is to take the pin off first. tao refreshes
+/// its cache from the real appearance (`NSApp.effectiveAppearance`, or the
+/// portal / GTK setting) in that same call, so the pair is a read and not a
+/// guess. Both messages are queued on the event loop from a command thread in
+/// this order, so the read cannot overtake the clear.
+///
+/// Only call it when the window is about to be unpinned anyway: on the way into
+/// an explicit light or dark this would clear a pin only to set it again.
+fn os_scheme(win: &tauri::WebviewWindow) -> theme::Scheme {
+    pin_native_theme(win, None);
+    match win.theme() {
+        Ok(tauri::Theme::Light) => theme::Scheme::Light,
+        // An unknown or errored theme keeps dreamd's historical dark default
+        // rather than guessing light.
+        _ => theme::Scheme::Dark,
     }
 }
 
@@ -1799,6 +1897,8 @@ fn main() {
         // lands, so this is the status quo for the handful of statements in
         // between.
         appearance: AtomicU8::new(1),
+        // Same story, same default, and corrected in the same place.
+        system: AtomicU8::new(1),
         persists: AtomicBool::new(persists),
         dirty: dirty.clone(),
         pending_reanchor: Mutex::new(pending_reanchor),
@@ -1889,6 +1989,11 @@ fn main() {
                     (cfg.mode(), theme::scheme_for(&cfg, system))
                 };
                 state.set_scheme(scheme);
+                // Nothing is pinned yet, so this reading of the OS is the one
+                // uncontested one in the process's life. Everything after it
+                // either refreshes it (`set_appearance`, and `set_config` on the
+                // way back into `system`) or remembers it.
+                state.set_system(system);
                 pin_native_theme(&win, native_pin(mode, scheme, system));
                 apply_chrome(&win, &state.config.lock().unwrap().ui);
 

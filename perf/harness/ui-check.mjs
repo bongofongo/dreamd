@@ -107,6 +107,12 @@ await page.addInitScript(({ base, palettes }) => {
     config: JSON.parse(JSON.stringify(state.config)),
     theme: state.config.theme,
     scheme: themeView().scheme,
+    // The *OS* appearance, which is what `state.scheme` has always held here:
+    // `set_appearance` is the only thing that writes it, and the frontend only
+    // pushes that under `mode = "system"`. Pinning light or dark moves
+    // `scheme` above and must leave this one alone — the System button's label
+    // is the assertion.
+    system: state.scheme,
     themes: themeList(),
     syntax_themes: ["base16-ocean.dark", "InspiredGitHub", "Solarized (light)"],
     config_path: "/tmp/xdg/dreamd/config.toml",
@@ -444,6 +450,17 @@ check(
 check(
   "and flips data-mode",
   (await page.evaluate(() => document.documentElement.dataset.mode)) === "light",
+);
+// The System button answers for the *machine*, not for the palette pinned over
+// it. It used to be labelled from the resolved scheme, so pressing light here
+// relabelled it "System (light)" and going back to system then resolved against
+// that — a preference that quietly changed meaning every time the other one was
+// tried. The page is opened `colorScheme: "dark"`, so this must still say dark.
+check(
+  "System still names the OS appearance under a pinned light",
+  (await page.locator("#st-mode .st-mode-btn", { hasText: "System" }).first().textContent())
+    .toLowerCase().includes("dark"),
+  await page.locator("#st-mode .st-mode-btn", { hasText: "System" }).first().textContent(),
 );
 
 // Back to a family, in light, and assert it paints its *light* block — the
@@ -2451,7 +2468,7 @@ await chrome.addInitScript(({ base }) => {
       theme: "dreamd", mode: "system", extra_ignores: [], keymap: KEYMAP,
       ui: { tree_width: 320, stack_width: 360, pane_width: 500, pane_height: 300 },
     },
-    theme: "dreamd", scheme: "dark", themes: [], syntax_themes: [],
+    theme: "dreamd", scheme: "dark", system: "dark", themes: [], syntax_themes: [],
     config_path: "/tmp/xdg/dreamd/config.toml", themes_dir: "/tmp/xdg/dreamd/themes",
     local_overrides: [],
   });

@@ -5350,8 +5350,12 @@ function renderMode() {
   const current = settings.config.mode || "system";
   for (const mode of ["light", "dark", "system"]) {
     const b = document.createElement("button");
-    // "System" alone doesn't say what you are looking at.
-    b.textContent = mode === "system" ? `System (${settings.scheme})` : mode;
+    // "System" alone doesn't say what you are looking at. `system`, not
+    // `scheme`: this button's label is what the *OS* asks for, which is a fact
+    // about the machine and not about the palette currently pinned over it —
+    // labelling it with the appearance on screen is what made pressing Light
+    // rewrite what System meant.
+    b.textContent = mode === "system" ? `System (${settings.system})` : mode;
     b.className = "st-mode-btn" + (mode === current ? " sel" : "");
     b.onclick = () => setMode(mode);
     row.appendChild(b);
