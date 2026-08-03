@@ -202,6 +202,28 @@ check(
   (await page.evaluate(() => getComputedStyle(document.getElementById("content")).maxWidth)) === "700px",
 );
 
+// --- the agent composer reads the palette, not a fallback ---
+// Asserted against `body`'s colour rather than a hex, because the claim is
+// "the same variable the document uses" and that survives a palette edit.
+// It is worth a check at all because the failure was silent for both the
+// engine and the eye in dark mode: `#agent-input` read `var(--fg, #e6e1f2)`,
+// no palette in `ui/themes/` has ever declared `--fg`, so the fallback won in
+// every theme and the composer painted near-white text on the light half of
+// every family. Both appearances are checked — a value pinned to the dark
+// fallback passes any dark-only assertion by accident.
+const composerTracksPalette = () =>
+  page.evaluate(() => {
+    const input = getComputedStyle(document.getElementById("agent-input"));
+    const body = getComputedStyle(document.body);
+    return { input: input.color, body: body.color };
+  });
+for (const mode of ["dark", "light"]) {
+  await page.evaluate((m) => document.documentElement.setAttribute("data-mode", m), mode);
+  const { input, body } = await composerTracksPalette();
+  check(`composer text is the palette's --text (${mode})`, input === body, `${input} vs ${body}`);
+}
+await page.evaluate(() => document.documentElement.setAttribute("data-mode", "dark"));
+
 // --- open via the keybind ---
 await page.keyboard.press("Control+Comma");
 check("Ctrl+, opens settings", await page.locator("#settings-overlay.open").isVisible());

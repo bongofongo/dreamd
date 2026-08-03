@@ -3135,7 +3135,9 @@ function terminalTheme() {
   const v = (name, fallback) => appliedCssVar(name) || fallback;
   return {
     background: v("--sidebar-bg", "#100e17"),
-    foreground: v("--fg", "#e8e4f3"),
+    // `--text` — see `#agent-input` in index.html. `--fg` is a name no palette
+    // has ever set, so this read was the fallback in every theme.
+    foreground: v("--text", "#e8e4f3"),
     cursor: v("--accent", "#a48cf5"),
     // The glyph *under* the block cursor. Without it xterm inverts, which on an
     // accent-coloured cursor puts the accent's complement on screen.

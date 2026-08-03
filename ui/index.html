@@ -745,7 +745,7 @@
       .agent-card button {
         font: inherit; font-size: 12px; padding: 4px 10px; cursor: pointer;
         border: 1px solid var(--border, #2e2940); border-radius: 4px;
-        background: transparent; color: var(--fg, #e6e1f2);
+        background: transparent; color: var(--text, #e6e1f2);
       }
       .agent-card button:hover { background: var(--sidebar-bg, #100e17); }
       .agent-card button.primary { border-color: var(--accent, #a48cf5); color: var(--accent, #a48cf5); }
@@ -758,12 +758,23 @@
         display: flex; gap: 6px; align-items: flex-end;
         padding: 8px 10px; border-top: 1px solid var(--border, #2e2940);
       }
+      /* `--text`, not `--fg`. No palette has ever declared `--fg` — `ui/theme.css`
+         sets `body`'s colour from `--text` and every file in `ui/themes/`
+         declares that one — so a `var(--fg, …)` here resolved to its fallback in
+         every theme, which is to say the composer was permanently painting
+         near-white text on whatever `--bg` the palette asked for. On the light
+         half of a family that is the bug you can see. `caret-color` is spelled
+         out because a textarea's caret follows `color` and nothing else, and the
+         placeholder takes `--muted` rather than an opacity so it sits at the
+         palette's own idea of secondary rather than at a guess. */
       #agent-input {
         flex: 1; resize: none; font: inherit; font-size: 13px; line-height: 1.45;
         max-height: 40vh; padding: 6px 8px;
         border: 1px solid var(--border, #2e2940); border-radius: 5px;
-        background: var(--bg, #0d0b13); color: var(--fg, #e6e1f2);
+        background: var(--bg, #0d0b13); color: var(--text, #e6e1f2);
+        caret-color: var(--accent, #a48cf5);
       }
+      #agent-input::placeholder { color: var(--muted, #8f88a3); opacity: 1; }
       #agent-input:focus { outline: none; border-color: var(--accent, #a48cf5); }
       #agent-send {
         font: inherit; cursor: pointer; padding: 6px 10px; border-radius: 5px;
