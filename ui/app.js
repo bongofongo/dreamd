@@ -3423,6 +3423,13 @@ async function restartPane() {
       // and dreamd denied them on the way out, so leave them settled in the
       // log as the record of what was asked, and stop tracking them.
       agent.cards.clear();
+      // The chips go dark for the reason `startPaneProcess` gives: the new
+      // child comes up on whatever Claude Code chooses, and a `/model` sent to
+      // a process that no longer exists is not a claim about this one.
+      agent.model = null;
+      agent.pending = null;
+      agent.pendingLeft = 0;
+      paintModelChipsFrom(null);
       $("agent-log").replaceChildren();
       await openNativeAgent();
       return;
@@ -3457,13 +3464,35 @@ async function setModel(model) {
   // Natively the slash command *is* a turn: verified against claude 2.1.220,
   // `/model haiku` sent as ordinary user-message text is honoured and the next
   // turn's init reports the new model. So the chips cost exactly what they cost
-  // in the terminal — nothing — and the chip lights from that init rather than
-  // from this click, which is the more honest of the two.
+  // in the terminal — nothing.
+  //
+  // Lighting the chip from that init alone was the more honest of the two and
+  // was still wrong on screen, because **`system/init` is emitted at the top of
+  // a turn, before the CLI has read the line that turn carries**. The init
+  // following the click therefore reports the model the session was *already*
+  // on, repaints the chip the reader just left, and the press only appears one
+  // turn later — which is why every chip took two clicks and why the second
+  // click always seemed to work, whichever one it was.
+  //
+  // So the press paints, and the wire reconciles: `pending` outranks `ready`
+  // until a `ready` agrees with it. `pendingLeft` is what keeps that bounded —
+  // two turns, after which the wire wins even if it never confirmed, so a
+  // `/model` the CLI rejected costs a stale chip for one more turn rather than
+  // for the session.
   if (agent.running) {
+    const prev = { pending: agent.pending, left: agent.pendingLeft };
+    agent.pending = model;
+    agent.pendingLeft = 2;
+    paintModelChipsFrom(model);
     try {
       await invoke("agent_send", { text: `/model ${model}` });
       $("agent-input").focus();
     } catch (e) {
+      // Nothing was sent, so nothing is pending: put the chips back on whatever
+      // the session last reported rather than leaving a claim behind.
+      agent.pending = prev.pending;
+      agent.pendingLeft = prev.left;
+      paintModelChipsFrom(agent.pending || agent.model);
       setPaneStatus(String(e.message || e));
     }
     return;
@@ -3619,6 +3648,12 @@ const agent = {
   /// True while a turn is in flight, which is what the composer's Escape and
   /// the send button's disabled state both read.
   busy: false,
+  /// The model the last `ready` reported, or null before the first turn.
+  model: null,
+  /// A chip pressed whose `/model` line the wire has not confirmed yet, and how
+  /// many `ready`s it is still allowed to outrank. See `setModel`.
+  pending: null,
+  pendingLeft: 0,
 };
 
 /// Whether the pane draws itself or hands the box to xterm.
@@ -3672,9 +3707,18 @@ function onAgentEvent(ev) {
     case "ready":
       // Emitted once per *turn*, not once per process, so this is "still here,
       // this is the model now" rather than "start a conversation". It is what
-      // makes the model chips work without a restart.
+      // makes the model chips work without a restart — but it is emitted
+      // *before* the turn's own content is read, so a `/model` sent this turn is
+      // not in it yet. `setModel` explains the rest.
       agent.model = ev.model;
-      paintModelChipsFrom(ev.model);
+      if (agent.pending) {
+        // Confirmed, or out of patience: either way the wire is the truth from
+        // here on.
+        if (chipMatches(agent.pending, ev.model) || --agent.pendingLeft <= 0) {
+          agent.pending = null;
+        }
+      }
+      paintModelChipsFrom(agent.pending || ev.model);
       break;
     case "status":
       agent.busy = true;
@@ -4172,14 +4216,17 @@ function paintPopout() {
   hint.append(kbd, " to reply");
 }
 
+/// Whether a chip's word (`haiku`) names the model on the wire
+/// (`claude-haiku-4-5-20251001`). Substring rather than a table, so a model
+/// renamed within its family still lights up.
+function chipMatches(chip, model) {
+  return String(model || "").toLowerCase().includes(chip);
+}
+
 /// Light the chip matching whatever model the session reports.
-///
-/// The wire says `claude-haiku-4-5-20251001`; the chips say `haiku`. Substring
-/// rather than a table, so a model renamed within its family still lights up.
 function paintModelChipsFrom(model) {
-  const name = String(model || "").toLowerCase();
   for (const chip of document.querySelectorAll("#pty-models .pty-model")) {
-    chip.classList.toggle("sel", name.includes(chip.dataset.model));
+    chip.classList.toggle("sel", chipMatches(chip.dataset.model, model));
   }
 }
 

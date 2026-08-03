@@ -2164,6 +2164,32 @@ check("a model chip sends a slash command as a turn", await nat.evaluate(() =>
 check("and never reaches the pty command", await nat.evaluate(() =>
   !window.__CALLS__.some((c) => c.cmd === "pty_model")));
 
+// ...and it lights *now*, which is the half a turn cannot deliver. `system/init`
+// is emitted at the top of a turn, before the CLI has read the line that turn
+// carries, so the `ready` following this click still reports the model the
+// session was already on. Painting from `ready` alone therefore repainted the
+// chip the reader had just left and the press only appeared one turn later —
+// every chip took two clicks. The press paints; the wire reconciles.
+const lit = () => nat.evaluate(() =>
+  document.querySelector("#pty-models .pty-model.sel")?.dataset.model ?? null);
+check("a model chip lights on the press", (await lit()) === "opus", await lit());
+await nat.evaluate(() => window.__EMIT__("agent-event",
+  { kind: "ready", sessionId: "s1", model: "claude-haiku-4-5-20251001" }));
+check("a stale init does not steal the chip back", (await lit()) === "opus", await lit());
+await nat.evaluate(() => window.__EMIT__("agent-event",
+  { kind: "ready", sessionId: "s1", model: "claude-opus-4-5-20260101" }));
+check("and the confirming init keeps it lit", (await lit()) === "opus", await lit());
+
+// Bounded, so a `/model` the CLI never honoured costs one more turn rather than
+// the session: two inits that disagree and the wire wins regardless.
+await nat.locator('#pty-models .pty-model[data-model="sonnet"]').click();
+check("an unconfirmed press still paints", (await lit()) === "sonnet", await lit());
+for (let i = 0; i < 2; i++) {
+  await nat.evaluate(() => window.__EMIT__("agent-event",
+    { kind: "ready", sessionId: "s1", model: "claude-opus-4-5-20260101" }));
+}
+check("but the wire wins after two disagreeing inits", (await lit()) === "opus", await lit());
+
 await nat.close();
 
 // --- the pop-out (`agent.popout`) -------------------------------------------
