@@ -387,7 +387,11 @@ the upgrade procedure.
   `/tmp` mount that dies with the window. `registered` is `claude mcp get`'s
   **exit status**, three-valued — a `claude` that could not be run at all is
   not the same answer as one that ran and said no — cached per process, and
-  read only by the terminal surface.
+  read only by the terminal surface. **And now asked only by it**: that probe is
+  a whole Claude Code startup (measured 1.0–1.3s), `mcp_status` fires on the
+  pane's first open, and on the native surface it was a second `claude` racing
+  the session that open had just spawned for an answer that surface cannot use —
+  it is handed `--mcp-config` and has no registration to be missing.
 - `notify` — `marks-changed`, the only *store* change dreamd pushes unprompted.
   Emitted **only** from the MCP layer, never from a command: a command's return
   value is already the frontend's truth for its own mutation, and a second
@@ -435,7 +439,13 @@ the upgrade procedure.
   reader has, inside dreamd's pane and nowhere else. `--verbose` is not
   decoration; `-p` will not stream without
   it. A slash command sent as ordinary user text *is* honoured, which is why
-  the model chips still cost no restart.
+  the model chips still cost no restart. `resolve` asks a **login *and*
+  interactive** shell where `claude` is, once per process — and `warm` is that
+  once, moved to a thread in `.setup()`. It used to be `agent_spawn`'s first act,
+  so a whole `$SHELL -l -i` startup (~300ms here, and however long the reader's
+  `.zshrc` takes elsewhere) was paid on the pane's first open, which is the one
+  place it is visible. It starts no agent: the session is still created on first
+  open, and a launch that never opens the pane still spawns no `claude`.
 - `pty` — the **fallback** surface, kept undocumented behind `agent.surface =
   "terminal"` and removed when nobody reports needing it. The embedded Claude
   Code pane's pseudo-terminal, one per window,

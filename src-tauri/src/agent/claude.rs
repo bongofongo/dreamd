@@ -147,6 +147,24 @@ pub fn resolve() -> &'static str {
     })
 }
 
+/// Pay [`resolve`]'s login shell now, on a thread nobody is waiting on.
+///
+/// The question is asked once per process and the answer is free after that —
+/// but the *first* caller was `agent_spawn`, so the whole of a `$SHELL -l -i`
+/// startup (300ms on a quiet machine, and however long the reader's `.zshrc`
+/// takes on any other) landed on the one open of the pane where it is visible.
+/// Called from `.setup()`, it is long over by then, and whichever call arrives
+/// first is the one that pays: `OnceLock` makes the other free either way.
+///
+/// This starts **no agent**. The shell exits with its answer, and the session
+/// itself is still created on the pane's first open — a launch that never opens
+/// the pane still spawns no `claude` and holds no process.
+pub fn warm() {
+    std::thread::spawn(|| {
+        resolve();
+    });
+}
+
 #[cfg(target_os = "macos")]
 const DEFAULT_SHELL: &str = "/bin/zsh";
 #[cfg(not(target_os = "macos"))]

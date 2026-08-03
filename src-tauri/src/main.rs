@@ -1637,16 +1637,30 @@ struct McpReport {
 /// and the probe is deliberately computed *outside* the lock, because holding
 /// the state mutex across a process spawn would stall every other command for
 /// the length of a shell startup.
+///
+/// **And it is not asked at all on the native surface.** `claude mcp get` is a
+/// whole Claude Code startup — measured at 0.8–1.5s — and the pane fires this on
+/// its first open, which is precisely when the session it just spawned is doing
+/// its own startup. Two of them competing bought an answer the native strip
+/// cannot use: that surface is handed `--mcp-config` at spawn and has no
+/// registration to be missing. Only the terminal surface reads it, so only the
+/// terminal surface pays for it. A reader who switches `agent.surface` gets the
+/// probe on their next open, the cache being empty until something asks.
 #[tauri::command]
 fn mcp_status(state: State<AppState>) -> McpReport {
     let (armed, serving) = match state.mcp_status.lock().unwrap().as_ref() {
         Some(s) => (true, s.serving()),
         None => (false, false),
     };
+    let asked = state.config.lock().unwrap().agent.surface == config::Surface::Terminal;
     let cached = *state.mcp_registered.lock().unwrap();
-    let answer = match cached {
-        Some(a) => a,
-        None => {
+    let answer = match (asked, cached) {
+        (_, Some(a)) => a,
+        // `None` is "dreamd did not get an answer", which is the truth here as
+        // much as it is for a `claude` that could not be run — and the strip
+        // never reads it on this surface anyway.
+        (false, None) => None,
+        (true, None) => {
             let a = mcp::register::registered(&state.root());
             *state.mcp_registered.lock().unwrap() = Some(a);
             a
@@ -2018,6 +2032,12 @@ fn main() {
                     let _ = win.show();
                 }
             }
+            // Where `claude` is, asked now rather than on the pane's first open.
+            // It is one login shell on a thread of its own, started after the
+            // window is up so it competes with nothing on the way to first
+            // paint, and it holds nothing afterwards — see `claude::warm`.
+            agent::claude::warm();
+
             // Not armed when there is no repo: `watch` is recursive, and the
             // root would be `/`.
             if let Some(cancel) = watcher_cancel.clone() {
