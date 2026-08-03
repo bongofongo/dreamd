@@ -2,7 +2,7 @@
 
 *This page is the daily landing spot for everyone on the team. It's kept up to date
 automatically and written so that you can be away for a week, read this in five
-minutes, and know exactly where things stand. Last updated: 2026-08-01.*
+minutes, and know exactly where things stand. Last updated: 2026-08-03.*
 
 ## What we're building
 
@@ -264,6 +264,21 @@ causes were wrong.
   that is where its users look.
 
 ## Recent updates
+
+- **2026-08-03** — **Light and dark got a keyboard shortcut, and "System"
+  stopped lying about what your machine wants.** `Ctrl+Shift+D` flips the
+  appearance and remembers it, without opening anything — for the moment the
+  light in the room changes rather than a settings decision. Going back to
+  following the operating system stays in the settings panel, which is the only
+  place that can tell you what "System" would actually give you. That label was
+  also wrong until now: trying Light once made the button read "System (light)"
+  and, worse, made *choosing* System from then on mean light for the rest of the
+  session. A window that has an appearance pinned over it cannot see the
+  machine's own preference, so dreamd now remembers that answer separately and
+  re-asks it at the one moment it can. The agent pane also opens faster: two
+  separate program start-ups that used to happen the first time you opened it —
+  around a second and a half between them — now happen in the background at
+  launch, or not at all.
 
 - **2026-07-31** — **A settings-panel check broke quietly and stayed red
   through the 0.2.1 release.** Adding the keymap-mode picker (see the entry

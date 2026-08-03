@@ -1,5 +1,80 @@
 # Session log
 
+## 2026-08-03 — reconciling a tree that held three changes
+
+A short session with no new feature work of its own: the working tree carried
+three unrelated changes left by earlier threads, and the job was to find out
+what they were, whether they were finished, and to land them separately. All
+three were sound; two mirrors of one of them had been missed.
+
+### What happened
+
+1. **The OS appearance is now a second, separately remembered fact.**
+   `Window::theme()` reports the *pin* while one is applied — tao caches whatever
+   `set_theme` last set, on both platforms — and the webview's
+   `prefers-color-scheme` follows it too, so a pinned window can observe nothing
+   about the machine. Reading the scheme in hand as the system's answer meant one
+   trip through Light rewrote what `system` resolved to for the rest of the
+   session: "System (dark)" became "System (light)" and stayed. `AppState` grew a
+   `system` atom beside `appearance`, seeded in `.setup()` where nothing is
+   pinned yet, refreshed by `set_appearance` (which the frontend pushes only
+   under `mode = "system"`, exactly when the two are the same fact), and re-read
+   by a new `os_scheme` — clear the pin, then ask — on the way back *into*
+   `system`, the one moment the remembered value can be stale and a mode that
+   ends unpinned anyway. `Settings` carries it so the panel's System button is
+   labelled from the machine rather than from the palette pinned over it.
+2. **`toggle_mode`, `Ctrl+Shift+D`** — light ↔ dark from the keyboard, writing
+   `mode` so it persists. Two-valued rather than a three-way cycle through
+   `system`, because a toggle you have to press twice to undo a mistake is not a
+   toggle; returning to the OS stays a panel decision, which is also the only
+   place that can say what `system` would resolve to. Shifted because a bare
+   `Ctrl+D` is a half-page scroll everywhere else and because `Shift` survives
+   the strip in vim mode. `setMode` now re-renders the theme grid only when the
+   panel is open — the keybind reaches it with nothing on screen, and a repaint
+   costs a `theme_css` per palette for a window with nothing to show for it.
+3. **Two process startups moved off the pane's first open.** `claude::warm` asks
+   `resolve`'s login-and-interactive shell on a thread in `.setup()` (~300ms
+   here, and however long the reader's `.zshrc` takes elsewhere); it starts no
+   agent, so a launch that never opens the pane still spawns no `claude`. And
+   `mcp_status` no longer runs `claude mcp get` — a whole Claude Code startup,
+   0.8–1.5s — on the native surface, which is handed `--mcp-config` at spawn and
+   has no registration to be missing. Only the terminal surface reads that
+   answer, so only it pays for one.
+
+Landed as three commits (`a4d0984`, `0f84385`, `aaf3671`) rather than one. The
+split needed hunk-level staging: `main.rs`, `ui/app.js`, `ui-check.mjs` and
+`CLAUDE.md` each carried hunks belonging to two or three of the changes, so the
+index was built a hunk at a time from filtered patches, leaving the working tree
+untouched throughout.
+
+### Mistakes & deviations
+
+- **The keybind had been added in four places and missed in two.** `README.md`'s
+  `[keymap]` block and `perf/harness/lib/fixtures.mjs`'s shared `KEYMAP` both
+  lacked `toggle_mode` — the fixture's own comment claims it mirrors
+  `Keymap::default()` and was therefore lying. Found by grepping for a
+  neighbouring binding rather than by any test; nothing asserts that those two
+  lists are complete. Both filled in before the commit.
+- The new ui-check assertion was **proved to have teeth** rather than trusted:
+  reverting the System button's label to the resolved scheme turned it red with
+  `System (light)`, and restoring it turned it green. The revert was undone by
+  re-editing, not by `git checkout` — the file held two other uncommitted
+  changes at the time.
+
+### State
+
+`cargo fmt --check`, `clippy -D warnings`, `cargo test --all-features` (371),
+`config_check` (59), `node --test ui/paths.test.mjs` and `ui-check.mjs` (329)
+all green on the final tree. Each of the three commits was also built standalone
+in a detached worktree, so the split does not leave a broken intermediate.
+
+No perf tier was run — the user's call, made explicitly. The two startup costs
+this session removed are on the pane's first open, which no tier measures, and
+nothing here touches render, locate, search or scroll.
+
+`7048994 feat(mcp): inject config, add get_open_document` was already committed
+and unpushed when this session began; it went out with these three.
+
 ## 2026-07-30 — the agent floats, and is read-only until asked
 
 A feature session, run alongside a second thread working in the same tree. The
