@@ -2951,6 +2951,236 @@ check(
   results.filter((r) => r.startsWith("FAIL")).length === errorsBefore,
 );
 
+// --- one highlight per passage, and resizing the one that is there ---
+// A page with a real (if tiny) store behind the IPC stub, because both halves
+// of this feature are about what the *store* ends up holding after a gesture:
+// refusing an overlapping selection is only meaningful if no `add_highlight`
+// went out, and a resize is only meaningful if the same id came back with a
+// different quote.
+//
+// Overlap is decided against the painted DOM (`overlappingIds`), so a stub that
+// merely counted calls would assert nothing. The document below is one
+// paragraph of five words for that reason: every case — a quote inside the
+// mark, one straddling its start, one clear of it — is a substring of it.
+const hl = await newPage();
+hl.on("pageerror", (e) => results.push("FAIL pageerror (highlights): " + e.message));
+hl.on("console", (m) => {
+  if (m.type() === "error") results.push("FAIL console.error (highlights): " + m.text());
+});
+await hl.addInitScript(({ base }) => {
+  const tree = {
+    name: "repo", is_dir: true, path: "/repo", rel: "",
+    children: [{ name: "doc.md", is_dir: false, path: "/repo/doc.md", rel: "doc.md", children: [] }],
+  };
+  // Deliberately flat: no inline markup, so every quote below fits in one text
+  // node and a failure is about the guard rather than about `placeAcrossNodes`.
+  const store = { marks: [], stack: [], seq: 0, resizes: 0 };
+  window.__STORE__ = store;
+  const find = (id) => store.marks.find((m) => m.id === id);
+  window.__TAURI__ = {
+    core: {
+      async invoke(cmd, args) {
+        switch (cmd) {
+          case "perf_enabled": return false;
+          case "repo_info": return { root: "/repo", name: "repo", display: "~/repo" };
+          case "get_keymap": return {
+            palette: "Ctrl+F", palette_prev: "Ctrl+P", palette_next: "Ctrl+N",
+            highlight: "Ctrl+H", send_stack: "Ctrl+Enter", toggle_stack: "Ctrl+O",
+            toggle_outline: "Ctrl+I", toggle_tree: "Ctrl+B", toggle_view: "Ctrl+M",
+            toggle_mode: "Ctrl+Shift+D",
+            jump_top: "Home", jump_bottom: "End", set_mark: "m", jump_mark: "'",
+            jump_back: "Ctrl+[", jump_forward: "Ctrl+]",
+            find: "/", find_next: "n", find_prev: "Shift+N",
+            next_file: "]", prev_file: "[",
+            copy_stack: "Ctrl+C", settings: "Ctrl+,",
+            save_annotation: "Ctrl+Y",
+            // Off, so a bare `h` cannot stand in for the configured key and the
+            // assertions below are about the binding they press.
+            quick_highlight: false,
+          };
+          case "get_theme": return { css: base, mode: "system", scheme: "dark", syntax_theme: null };
+          case "initial_file": return "/repo/doc.md";
+          case "list_markdown_files": return tree;
+          case "render_markdown": return "<p id=\"p\">alpha beta gamma delta epsilon</p>";
+          case "add_highlight": {
+            const id = "h" + ++store.seq;
+            store.marks.push({
+              id, file_path: args.filePath, quote: args.quote,
+              prefix: args.prefix, suffix: args.suffix,
+              line_start: 1, line_end: 1, state: "active", annotation: null,
+            });
+            return id;
+          }
+          case "resize_highlight": {
+            const m = find(args.id);
+            if (!m) return false;
+            m.quote = args.quote; m.prefix = args.prefix; m.suffix = args.suffix;
+            store.resizes++;
+            return true;
+          }
+          case "set_annotation": {
+            const m = find(args.id);
+            if (!m) return false;
+            m.annotation = args.text;
+            if (!store.stack.includes(args.id)) store.stack.push(args.id);
+            return true;
+          }
+          case "remove_highlight":
+            store.marks = store.marks.filter((m) => m.id !== args.id);
+            store.stack = store.stack.filter((x) => x !== args.id);
+            return null;
+          case "get_highlight": return find(args.id) || null;
+          case "get_highlights": case "reanchor":
+            return store.marks.filter((m) => m.file_path === args.path);
+          case "get_stack":
+            return store.stack
+              .map(find)
+              .filter((m) => m && m.annotation)
+              .map((h) => ({ highlight: h, annotation: h.annotation }));
+          default: return null;
+        }
+      },
+    },
+    event: { async listen() { return () => {}; } },
+  };
+}, { base });
+await hl.goto(pathToFileURL(join(UI, "index.html")).href);
+await hl.waitForFunction(() => document.getElementById("content").textContent.includes("epsilon"));
+
+// Select a stretch of rendered text by its content, across text nodes. Across,
+// because the moment one mark is painted the paragraph is three nodes and every
+// overlapping case straddles a boundary — the same reason `placeAcrossNodes`
+// exists.
+const selectText = (needle) => hl.evaluate((needle) => {
+  const nodes = [], starts = [];
+  let total = 0, text = "";
+  const w = document.createTreeWalker(document.getElementById("content"), NodeFilter.SHOW_TEXT);
+  for (let n; (n = w.nextNode()); ) {
+    nodes.push(n); starts.push(total); total += n.nodeValue.length; text += n.nodeValue;
+  }
+  const at = text.indexOf(needle);
+  if (at < 0) return false;
+  const point = (off) => {
+    let i = 0;
+    while (i + 1 < starts.length && starts[i + 1] <= off) i++;
+    return [nodes[i], off - starts[i]];
+  };
+  const [sn, so] = point(at);
+  const [en, eo] = point(at + needle.length);
+  const r = document.createRange();
+  r.setStart(sn, so); r.setEnd(en, eo);
+  const s = window.getSelection();
+  s.removeAllRanges(); s.addRange(r);
+  return true;
+}, needle);
+const marksState = () => hl.evaluate(() => ({
+  count: window.__STORE__.marks.length,
+  quotes: window.__STORE__.marks.map((m) => m.quote),
+  resizes: window.__STORE__.resizes,
+  stack: window.__STORE__.stack.length,
+}));
+
+check("the fixture paragraph is selectable", await selectText("beta gamma"));
+await hl.keyboard.press("Control+H");
+await hl.waitForSelector("#annot-overlay.open");
+await hl.locator("#annot-text").fill("why this?");
+await hl.locator("#annot-save").click();
+await hl.waitForTimeout(200);
+check("a first highlight is created and painted",
+  (await marksState()).count === 1 && (await hl.locator("mark.hl").count()) > 0);
+
+// The rule. `alpha beta` starts outside the mark and ends inside it.
+await selectText("alpha beta");
+await hl.keyboard.press("Control+H");
+await hl.waitForTimeout(200);
+let state = await marksState();
+check("an overlapping selection mints no second mark", state.count === 1, `${state.count}`);
+check("and opens the existing mark for editing instead",
+  await hl.locator("#annot-overlay.open").isVisible() &&
+  (await hl.locator("#annot-title").textContent()) === "Edit annotation");
+check("with the existing annotation in the box",
+  (await hl.locator("#annot-text").inputValue()) === "why this?");
+check("and the resize button is offered", await hl.locator("#annot-resize").isVisible());
+await hl.keyboard.press("Escape");
+await hl.waitForTimeout(150);
+
+// The other half of the same guard: text merely *next to* a mark is still new
+// text. Without this the check above would pass on a rule that refused
+// everything.
+await selectText("delta epsilon");
+await hl.keyboard.press("Control+H");
+await hl.waitForTimeout(200);
+state = await marksState();
+check("a selection clear of every mark still highlights", state.count === 2, `${state.count}`);
+check("and does so as a new mark, not an edit",
+  (await hl.locator("#annot-title").textContent()) === "Add annotation");
+await hl.keyboard.press("Escape"); // cancels a create, so the mark goes with it
+await hl.waitForTimeout(200);
+check("cancelling that create removes it again", (await marksState()).count === 1);
+
+// --- resizing ---
+await hl.locator("mark.hl").first().click();
+await hl.waitForSelector("#annot-overlay.open");
+await hl.locator("#annot-resize").click();
+await hl.waitForTimeout(150);
+check("Resize closes the modal and arms the mode",
+  !(await hl.locator("#annot-overlay.open").isVisible()) &&
+  await hl.evaluate(() => document.body.classList.contains("resizing")));
+check("the hint bar is up", await hl.locator("#resize-hint").isVisible());
+check("and the mark says which one is being redrawn",
+  (await hl.locator("mark.hl.resizing").count()) > 0);
+
+// Escape leaves the mark exactly as it was.
+await hl.keyboard.press("Escape");
+await hl.waitForTimeout(150);
+state = await marksState();
+check("Escape leaves resize mode",
+  !(await hl.evaluate(() => document.body.classList.contains("resizing"))));
+check("and changes nothing", state.resizes === 0 && state.quotes[0] === "beta gamma");
+
+// Shrink it, from the stack panel's button — the path a pair on the stack takes.
+await hl.locator("#btn-stack").click();
+await hl.waitForTimeout(200);
+check("the pair is on the stack", (await hl.locator("#stack-list .pair").count()) === 1);
+await hl.locator("#stack-list .pair .rs").click();
+await hl.waitForTimeout(300);
+check("the stack's resize button arms the mode too",
+  await hl.evaluate(() => document.body.classList.contains("resizing")));
+await selectText("gamma");
+await hl.keyboard.press("Enter");
+await hl.waitForTimeout(300);
+state = await marksState();
+check("committing shrinks the extent", state.quotes[0] === "gamma", state.quotes[0]);
+check("through exactly one resize, minting nothing",
+  state.resizes === 1 && state.count === 1, `${state.resizes}/${state.count}`);
+check("the pair keeps its stack slot", state.stack === 1);
+check("the mode ends on commit",
+  !(await hl.evaluate(() => document.body.classList.contains("resizing"))));
+check("and the document paints the new extent",
+  (await hl.locator("mark.hl").first().textContent()) === "gamma",
+  await hl.locator("mark.hl").first().textContent());
+
+// A resize may not swallow another mark either — that is the same unreachable
+// stacking by another route.
+await selectText("delta epsilon");
+await hl.keyboard.press("Control+H");
+await hl.waitForSelector("#annot-overlay.open");
+await hl.locator("#annot-text").fill("and this?");
+await hl.locator("#annot-save").click();
+await hl.waitForTimeout(250);
+await hl.locator(`mark.hl`).first().click();
+await hl.waitForSelector("#annot-overlay.open");
+await hl.locator("#annot-resize").click();
+await hl.waitForTimeout(150);
+await selectText("gamma delta epsilon");
+await hl.keyboard.press("Enter");
+await hl.waitForTimeout(250);
+state = await marksState();
+check("a resize onto another mark is refused", state.resizes === 1, `${state.resizes}`);
+check("and the mode stays armed for another try",
+  await hl.evaluate(() => document.body.classList.contains("resizing")));
+await hl.keyboard.press("Escape");
+
 await browser.close();
 console.log(results.join("\n"));
 const failed = results.filter((r) => r.startsWith("FAIL")).length;
