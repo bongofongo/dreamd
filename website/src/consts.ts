@@ -4,7 +4,7 @@ export const PERSONAL_SITE = "https://fongo.uk";
 export const REPO_URL = "https://github.com/bongofongo/dreamd";
 export const LICENSE_NAME = "Apache 2.0";
 export const LICENSE_URL = "https://github.com/bongofongo/dreamd/blob/main/LICENSE";
-export const VERSION = "0.2.1";
+export const VERSION = "0.2.2";
 export const RELEASES_URL = `${REPO_URL}/releases/latest`;
 export const INSTALL_URL =
   "https://raw.githubusercontent.com/bongofongo/dreamd/main/packaging/install.sh";
