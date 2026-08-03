@@ -307,6 +307,52 @@ impl Store {
         id
     }
 
+    /// Replace a mark's extent — the reader shrinking or growing a highlight
+    /// they already made — keeping everything else about it.
+    ///
+    /// This is the counterpart to the frontend's refusal to highlight text that
+    /// is already highlighted: with overlap denied, changing your mind about
+    /// where a passage starts or ends has to be *this*, or it would mean
+    /// deleting the mark and losing the question attached to it. So the id
+    /// survives, and with it the annotation, the stack slot, `sent_at`,
+    /// `resolved` and `prior`. Only the quote, its context and the lines change.
+    ///
+    /// `prior` in particular is left alone: the fade tracks the stack (see
+    /// [`Highlight::prior`]), resizing moves nothing on or off it, and
+    /// brightening a mark here would put the two surfaces back in disagreement.
+    ///
+    /// Anchoring is [`add_anchored`](Store::add_anchored)'s, including its
+    /// `(0, 0)` fallback and for the same reason — a new extent that spans
+    /// inline markdown is rendered DOM text `locate` cannot find in the source,
+    /// and losing the mark over it would be worse than an imprecise line. Past
+    /// that the `line_start > 0` guard in
+    /// [`reanchor_file`](Store::reanchor_file) keeps `Stale` honest about it.
+    ///
+    /// Returns false if the id names nothing.
+    pub fn retarget(
+        &mut self,
+        id: &str,
+        source: &str,
+        quote: String,
+        prefix: String,
+        suffix: String,
+    ) -> bool {
+        let (line_start, line_end) = markdown::locate(source, &prefix, &quote, &suffix)
+            .map_or((0, 0), |loc| (loc.line_start, loc.line_end));
+        let Some(h) = self.highlights.iter_mut().find(|h| h.id == id) else {
+            return false;
+        };
+        h.quote = quote;
+        h.prefix = prefix;
+        h.suffix = suffix;
+        h.line_start = line_start;
+        h.line_end = line_end;
+        // The new extent was just measured against these bytes, so whatever the
+        // old one had come to say about the source no longer applies.
+        h.state = HighlightState::Active;
+        true
+    }
+
     /// Attach/replace an annotation and enqueue the pair on the stack.
     ///
     /// Two rules ride along, and both are about what annotating *means*:
@@ -704,6 +750,146 @@ mod tests {
             Origin::Agent,
         );
         assert_eq!(store.get(&id).expect("present").origin, Origin::Agent);
+    }
+
+    // ---- retargeting ------------------------------------------------------
+
+    #[test]
+    fn retarget_moves_the_extent_and_re_anchors_it() {
+        let source = "alpha\nbeta gamma delta\nepsilon\n";
+        let mut store = Store::default();
+        let id = store.add_anchored(
+            FILE.to_string(),
+            source,
+            "gamma".into(),
+            "beta ".into(),
+            " delta".into(),
+            Origin::Human,
+        );
+        assert!(store.retarget(
+            &id,
+            source,
+            "beta gamma delta".into(),
+            String::new(),
+            "\nepsilon".into()
+        ));
+        let h = store.get(&id).expect("present");
+        assert_eq!(h.quote, "beta gamma delta");
+        assert_eq!(h.prefix, "");
+        assert_eq!(h.suffix, "\nepsilon");
+        assert_eq!((h.line_start, h.line_end), (2, 2));
+    }
+
+    #[test]
+    fn retarget_keeps_the_id_the_annotation_and_the_stack_slot() {
+        // The whole reason resizing is not delete-and-re-add: the question
+        // attached to the passage is the expensive part, and a reader adjusting
+        // where the passage starts has not withdrawn it.
+        let source = "alpha\nbeta gamma\n";
+        let (mut store, ids) = store_with(source, &["alpha", "beta"]);
+        store.set_annotation(&ids[0], "first".into());
+        store.set_annotation(&ids[1], "second".into());
+        store.mark_sent(&[ids[1].clone()]);
+        store.set_annotation(&ids[1], "second again".into());
+
+        let before = store.get(&ids[1]).expect("present");
+        assert!(store.retarget(
+            &ids[1],
+            source,
+            "beta gamma".into(),
+            String::new(),
+            String::new()
+        ));
+        let after = store.get(&ids[1]).expect("present");
+        assert_eq!(after.id, before.id);
+        assert_eq!(after.annotation.as_deref(), Some("second again"));
+        assert_eq!(after.sent_at, before.sent_at);
+        assert_eq!(after.prior, before.prior);
+        // Still second on the stack, still behind the pair that was queued first.
+        assert_eq!(
+            store
+                .stack_pairs()
+                .iter()
+                .map(|p| p.highlight.id.clone())
+                .collect::<Vec<_>>(),
+            ids
+        );
+    }
+
+    #[test]
+    fn retarget_clears_a_stale_state_because_the_new_extent_was_just_measured() {
+        let mut store = Store::default();
+        let id = store.add_anchored(
+            FILE.to_string(),
+            "alpha\nbeta\n",
+            "beta".into(),
+            String::new(),
+            String::new(),
+            Origin::Human,
+        );
+        // The passage itself is edited: `beta` is gone, so the mark goes Stale.
+        store.reanchor_file(FILE, "alpha\ndelta\n");
+        assert_eq!(
+            store.get(&id).expect("present").state,
+            HighlightState::Stale
+        );
+        assert!(store.retarget(
+            &id,
+            "alpha\ndelta\n",
+            "delta".into(),
+            String::new(),
+            String::new()
+        ));
+        let h = store.get(&id).expect("present");
+        assert_eq!(h.state, HighlightState::Active);
+        assert_eq!((h.line_start, h.line_end), (2, 2));
+    }
+
+    #[test]
+    fn retarget_of_an_unlocatable_extent_keeps_the_mark_at_line_zero() {
+        // `add_anchored`'s fallback, and it has to be the same one: a new extent
+        // spanning inline markdown is DOM text `locate` cannot find at any tier,
+        // and losing the mark over it would be worse than an imprecise line.
+        let source = "alpha **beta** gamma\n";
+        let mut store = Store::default();
+        let id = store.add_anchored(
+            FILE.to_string(),
+            source,
+            "alpha".into(),
+            String::new(),
+            String::new(),
+            Origin::Human,
+        );
+        assert!(store.retarget(
+            &id,
+            source,
+            "alpha beta".into(),
+            String::new(),
+            String::new()
+        ));
+        let h = store.get(&id).expect("the highlight is kept");
+        assert_eq!((h.line_start, h.line_end), (0, 0));
+        assert_eq!(h.quote, "alpha beta");
+        // And the `line_start > 0` guard now covers it, so the next re-anchor of
+        // an untouched file does not accuse it.
+        store.reanchor_file(FILE, source);
+        assert_eq!(
+            store.get(&id).expect("present").state,
+            HighlightState::Active
+        );
+    }
+
+    #[test]
+    fn retarget_of_an_unknown_id_changes_nothing() {
+        let (mut store, ids) = store_with("alpha\nbeta\n", &["alpha"]);
+        assert!(!store.retarget(
+            "hdeadbeefdeadbeef",
+            "alpha\nbeta\n",
+            "beta".into(),
+            String::new(),
+            String::new()
+        ));
+        assert_eq!(store.get(&ids[0]).expect("present").quote, "alpha");
     }
 
     // ---- stack ------------------------------------------------------------

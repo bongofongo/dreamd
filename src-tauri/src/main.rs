@@ -497,6 +497,42 @@ fn add_highlight(
     Ok(id)
 }
 
+/// Shrink or grow an existing mark: same id, same question, new extent.
+///
+/// The reader's other half of "one highlight per passage". With overlapping
+/// selections refused by the frontend, changing your mind about where a passage
+/// ends has to reach the mark that is already there — otherwise the only way
+/// through is deleting it, which takes the annotation and the stack slot with
+/// it. [`Store::retarget`] is what keeps those.
+///
+/// The file is the mark's own, not the open document: a pair on the stack can
+/// be resized from the panel, and a stack that spans files would otherwise
+/// re-anchor one file's quote against another's bytes.
+#[tauri::command]
+fn resize_highlight(
+    state: State<AppState>,
+    id: String,
+    quote: String,
+    prefix: String,
+    suffix: String,
+) -> Result<bool, String> {
+    // The read happens between the two locks rather than under one: `read_source`
+    // is I/O, and the store lock is on the paint path.
+    let Some(file_path) = state.store.lock().unwrap().get(&id).map(|h| h.file_path) else {
+        return Ok(false);
+    };
+    let source = read_source(&file_path)?;
+    let changed = state
+        .store
+        .lock()
+        .unwrap()
+        .retarget(&id, &source, quote, prefix, suffix);
+    if changed {
+        state.touch();
+    }
+    Ok(changed)
+}
+
 #[tauri::command]
 fn set_annotation(state: State<AppState>, id: String, text: String) -> bool {
     let changed = state.store.lock().unwrap().set_annotation(&id, text);
@@ -1939,6 +1975,7 @@ fn main() {
             fuzzy_search,
             rebuild_index,
             add_highlight,
+            resize_highlight,
             set_annotation,
             remove_highlight,
             remove_pair,

@@ -108,6 +108,10 @@ let keymap = {
 };
 let pending = null; // { id, mark } while awaiting an annotation
 let highlightMode = false; // highlighter tool: auto-highlight on selection
+// The mark whose extent is being redrawn, or null. `{ id }` — see `armResize`.
+// A mode rather than a modal, because what it is waiting for is a selection in
+// the document, which is the one gesture a modal cannot be open for.
+let resizing = null;
 
 const $ = (id) => document.getElementById(id);
 const contentEl = $("content");
@@ -973,6 +977,11 @@ const SCAN_THRESHOLD = 4;
 // quote split across two of them is silently skipped by locateInNodes — so
 // without this, repeated repaints progressively stop finding their own marks.
 function clearHighlights() {
+  // An armed resize points at `<mark>`s this is about to unwrap. Whoever is
+  // repainting has already changed the document out from under the mode — and
+  // the selection it was waiting for goes with it — so the mode ends here rather
+  // than surviving invisibly over marks that no longer carry its class.
+  endResize();
   for (const m of [...contentEl.querySelectorAll("mark.hl")]) unwrap(m);
   contentEl.normalize();
   staleRail.innerHTML = "";
@@ -1298,14 +1307,68 @@ function toggleHighlightMode(on) {
   toast(highlightMode ? "Highlight mode on" : "Highlight mode off");
 }
 
+/// The distinct highlight ids whose painted text `range` actually overlaps.
+///
+/// Touching at a boundary is deliberately *not* an overlap: a selection that
+/// begins exactly where a mark ends is new text, and refusing it would make the
+/// sentence after a highlight unhighlightable.
+///
+/// It reads the DOM rather than the store because the DOM is where the question
+/// is exact. The store knows lines, and a line is a whole paragraph in prose —
+/// two disjoint phrases in one sentence would collide on line numbers alone.
+/// `excludeId` is for `commitResize`, whose new extent legitimately covers the
+/// mark it is replacing.
+function overlappingIds(range, excludeId) {
+  const ids = new Set();
+  for (const m of contentEl.querySelectorAll("mark.hl")) {
+    if (excludeId && m.dataset.id === excludeId) continue;
+    const r = document.createRange();
+    r.selectNodeContents(m);
+    // `compareBoundaryPoints` compares *this* range's point to the argument's:
+    // START_TO_END is this end vs their start, END_TO_START is this start vs
+    // their end. Strict inequalities are what leave adjacency alone.
+    if (range.compareBoundaryPoints(Range.START_TO_END, r) > 0 &&
+        range.compareBoundaryPoints(Range.END_TO_START, r) < 0) {
+      ids.add(m.dataset.id);
+    }
+  }
+  return [...ids];
+}
+
+/// Every `<mark>` painting one highlight. Several per id is normal — a quote
+/// across a bold run is one `<mark>` per text-node slice (`placeAcrossNodes`).
+function marksFor(id) {
+  return [...contentEl.querySelectorAll(`mark.hl[data-id="${id}"]`)];
+}
+
 async function triggerHighlight() {
   if (!currentFile) return;
+  // Resize mode owns the selection while it is armed: the reader is drawing a
+  // new extent for a mark that exists, not asking for a second one.
+  if (resizing) return;
   const sel = window.getSelection();
   if (!sel || sel.isCollapsed) return;
   const quote = sel.toString();
   if (!quote.trim()) return;
   if (!contentEl.contains(sel.anchorNode)) return; // only within the preview
   const range = sel.getRangeAt(0).cloneRange();
+
+  // One highlight per passage. Overlapping marks are all still in the store and
+  // all still on the stack, but only the topmost is reachable by a click — the
+  // ones underneath became annotations you could neither read, edit nor delete.
+  // So the second highlight is refused, and refused *towards* the first: a
+  // reader who dragged over highlighted text wants to do something to that
+  // passage, and the edit modal is where the resize and delete buttons are.
+  const hit = overlappingIds(range, null);
+  if (hit.length) {
+    sel.removeAllRanges();
+    // More than one and there is no single mark to open — the reader dragged
+    // across a stretch holding several. Saying so beats picking one arbitrarily.
+    if (hit.length > 1) { toast("That passage is already highlighted"); return; }
+    openEditHighlight(hit[0]);
+    return;
+  }
+
   const { prefix, suffix } = selectionContext(range);
   const id = await invoke("add_highlight", {
     filePath: currentFile, quote, prefix, suffix,
@@ -1321,21 +1384,31 @@ async function triggerHighlight() {
 async function openEditHighlight(id) {
   const hl = await invoke("get_highlight", { id });
   if (!hl) return;
-  openAnnot({ mode: "edit", quote: hl.quote, id, text: hl.annotation || "" });
+  openAnnot({
+    mode: "edit", quote: hl.quote, id, text: hl.annotation || "", file: hl.file_path,
+  });
 }
 
 // ---- annotation modal ----------------------------------------------------
-// `annotCtx` = { mode: "create"|"edit", id, quote }
+// `annotCtx` = { mode: "create"|"edit", id, quote, file }
+//
+// `file` is the mark's own path and is only carried in edit mode, where the
+// Resize button needs it: a mark can only be redrawn against the document it
+// belongs to, and the modal is reachable from the stack panel, whose pairs span
+// files.
 let annotCtx = null;
 
-function openAnnot({ mode, quote, id, text }) {
-  annotCtx = { mode, id, quote };
+function openAnnot({ mode, quote, id, text, file }) {
+  annotCtx = { mode, id, quote, file };
   $("annot-title").textContent = mode === "edit" ? "Edit annotation" : "Add annotation";
   $("annot-save").textContent =
     // `displayField`: this button sits under the textarea it is a shortcut for,
     // so it must name the key that works *there*, modifier and all.
     (mode === "edit" ? "Save" : "Add to stack") + "  " + displayField(keymap.save_annotation);
   $("annot-delete").style.display = mode === "edit" ? "" : "none";
+  // Both of the "this mark already exists" actions appear together, and neither
+  // means anything while the mark is still being created.
+  $("annot-resize").style.display = mode === "edit" ? "" : "none";
   $("annot-ev").textContent = quote;
   $("annot-text").value = text || "";
   $("annot-overlay").classList.add("open");
@@ -1384,8 +1457,110 @@ async function deleteHighlight() {
   // link is several `<mark>`s sharing one id (see `placeAcrossNodes`), and
   // unwrapping only the first left the rest of the passage painted for a mark
   // that no longer exists.
-  for (const m of contentEl.querySelectorAll(`mark.hl[data-id="${id}"]`)) unwrap(m);
+  for (const m of marksFor(id)) unwrap(m);
   closeAnnot();
+  refreshStack();
+}
+
+// ---- resizing a mark -----------------------------------------------------
+// The other half of "one highlight per passage". Overlap is refused at
+// creation, so this is the only way to change where a passage starts or ends —
+// and it has to keep the id, because the id is what the annotation, the stack
+// slot and the agent's `resolve_highlight` all name. `Store::retarget` is the
+// backend half; nothing here mints or removes anything.
+//
+// It is a mode, not a modal, for one reason: what it waits for is a selection
+// in the document, and a modal is exactly the thing that cannot be open while
+// the reader drags across the page. So the modal closes, a hint bar takes its
+// place, and the document's own keys are borrowed for as long as the mode lasts
+// (see `wireKeys`). Marks on the stack are no different from any other — resize
+// changes the extent and touches neither the stack nor `prior`.
+
+/// Enter resize mode for `id`. The caller owns making the mark visible first.
+function armResize(id) {
+  const marks = marksFor(id);
+  if (!marks.length) {
+    // Nothing painted to redraw. A stale mark, or a quote the placers cannot
+    // find on screen — either way the reader has nothing to drag over.
+    toast("That highlight isn't on screen");
+    return false;
+  }
+  const sel = window.getSelection();
+  if (sel) sel.removeAllRanges();
+  resizing = { id };
+  document.body.classList.add("resizing");
+  for (const m of marks) m.classList.add("resizing");
+  return true;
+}
+
+/// The Resize button. Only meaningful for a mark in the open document, which is
+/// what `annotCtx.file` is carried for — the backend anchors the new quote in
+/// the *mark's* file, so redrawing one that belongs elsewhere would measure this
+/// document's text against another's bytes.
+function resizeFromAnnot() {
+  if (!annotCtx || annotCtx.mode !== "edit") return;
+  const { id, file } = annotCtx;
+  if (file && file !== currentFile) { toast("Open that file to resize the mark"); return; }
+  closeAnnot();
+  armResize(id);
+}
+
+/// The stack panel's way in, and what makes "including the ones on the stack"
+/// true without the reader having to go and find the passage: open the file if
+/// the pair is not in the open document, scroll the mark into view, arm.
+async function resizeFromStack(h) {
+  if (h.file_path !== currentFile) await openFile(h.file_path);
+  const marks = marksFor(h.id);
+  if (marks.length) marks[0].scrollIntoView({ block: "center", behavior: "smooth" });
+  armResize(h.id);
+}
+
+/// Leave the mode, however it ended. Idempotent, because it is called from the
+/// commit path, from Escape, and from `clearHighlights` — a re-render pulls the
+/// marks out from under an armed mode, and staying armed over marks that no
+/// longer carry the class would leave the reader in a mode with no sign of it.
+function endResize() {
+  if (!resizing) return;
+  for (const m of marksFor(resizing.id)) m.classList.remove("resizing");
+  resizing = null;
+  document.body.classList.remove("resizing");
+}
+
+function cancelResize() {
+  const sel = window.getSelection();
+  if (sel) sel.removeAllRanges();
+  endResize();
+}
+
+/// Commit the current selection as the mark's new extent.
+///
+/// The same overlap rule as creation, minus this mark: shrinking or growing may
+/// cover the old extent — that is the point — but must not swallow a *different*
+/// reader's-eye passage, or the resize would recreate by the back door exactly
+/// the unreachable stacked marks this feature exists to prevent.
+async function commitResize() {
+  if (!resizing) return;
+  const { id } = resizing;
+  const sel = window.getSelection();
+  if (!sel || sel.isCollapsed || !sel.toString().trim() || !contentEl.contains(sel.anchorNode)) {
+    toast("Select the new extent first");
+    return;
+  }
+  const range = sel.getRangeAt(0).cloneRange();
+  if (overlappingIds(range, id).length) {
+    toast("That would overlap another highlight");
+    return;
+  }
+  const quote = sel.toString();
+  const { prefix, suffix } = selectionContext(range);
+  sel.removeAllRanges();
+  endResize();
+  const ok = await invoke("resize_highlight", { id, quote, prefix, suffix });
+  if (!ok) { toast("That highlight is gone"); return; }
+  // Two surfaces again, for the same reason the stack's remove button repaints
+  // both: the passage on screen and the card's evidence line are the same fact
+  // written twice, and a resize changes it in both places.
+  await repaintHighlights();
   refreshStack();
 }
 
@@ -1543,7 +1718,23 @@ function buildPair(p) {
     refreshStack();
     repaintHighlights();
   };
-  top.append(cb, loc, rm);
+  // Beside Remove, and deliberately not inside the annotation modal's route: a
+  // pair on the stack is the case where the reader is least likely to have the
+  // passage in front of them, so this one goes and gets it (see
+  // `resizeFromStack`) rather than asking them to find it first.
+  const rs = document.createElement("button");
+  rs.className = "icon rs";
+  rs.textContent = "⤢";
+  rs.setAttribute("aria-label", "Resize highlight");
+  rs.dataset.tip = "Resize highlight";
+  // Re-read rather than closing over `p.highlight`: this node outlives the
+  // refresh that built it (see `reconcileStack`), and the mark's own quote and
+  // file are exactly what a resize is about.
+  rs.onclick = async () => {
+    const h = await invoke("get_highlight", { id });
+    if (h) resizeFromStack(h);
+  };
+  top.append(cb, loc, rs, rm);
 
   const ev = document.createElement("div");
   ev.className = "ev";
@@ -4448,8 +4639,11 @@ function wireUi() {
     const sel = window.getSelection();
     if (sel && !sel.isCollapsed && sel.toString().trim()) triggerHighlight();
   });
-  // Click an existing highlight to edit / re-add / delete it.
+  // Click an existing highlight to edit / re-add / delete it. Not while a resize
+  // is armed: there a click on a mark is the start of dragging the new extent
+  // over it, and opening a modal would take the document away mid-gesture.
   contentEl.addEventListener("click", (e) => {
+    if (resizing) return;
     const m = e.target.closest && e.target.closest("mark.hl");
     if (m && contentEl.contains(m)) { e.preventDefault(); openEditHighlight(m.dataset.id); }
   });
@@ -4469,6 +4663,7 @@ function wireUi() {
   $("annot-save").onclick = saveAnnot;
   $("annot-cancel").onclick = cancelAnnot;
   $("annot-delete").onclick = deleteHighlight;
+  $("annot-resize").onclick = resizeFromAnnot;
   // Submits the annotation straight from the textarea (keyboard-only flow).
   // The global handler can't do this: it bails on editable targets.
   // `matchField` for the reason the palette's next/prev use it: this is the box
@@ -4587,7 +4782,11 @@ function wireKeys() {
       if ($("annot-overlay").classList.contains("open")) cancelAnnot();
       if ($("confirm-overlay").classList.contains("open")) closeConfirm();
       if ($("settings-overlay").classList.contains("open")) closeSettings();
-      if (!claimed) exitView();
+      // Resize mode is claimed last of all: it outranks view mode, because it is
+      // the more specific thing to be escaping from, and loses to every overlay
+      // above — an overlay sits on top of the document, and resize mode is a
+      // mode *in* it. The mark is left exactly as it was.
+      if (!claimed) { if (resizing) cancelResize(); else exitView(); }
       return;
     }
     // While an overlay is open, let its own inputs handle keys.
@@ -4649,6 +4848,19 @@ function wireKeys() {
         log.scrollTop += step ? step * log.clientHeight * 0.9 : line * 64;
         return;
       }
+    }
+
+    // While a resize is armed, the two keys that mean "make this selection a
+    // highlight" mean "make this selection *that* highlight" instead — the
+    // gesture is identical and the reader's hand is already there. Enter joins
+    // them because it is what the hint bar can name without knowing the keymap.
+    // Claimed above the branch below, so the highlight key cannot mint a second
+    // mark over the one being redrawn.
+    if (resizing && (e.key === "Enter" || matchCombo(e, keymap.highlight) ||
+        (keymap.quick_highlight && matchCombo(e, "h")))) {
+      e.preventDefault();
+      commitResize();
+      return;
     }
 
     // The configured highlight key turns the current selection into a dreamd

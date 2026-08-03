@@ -268,6 +268,20 @@ the upgrade procedure.
   asking to confirm that was five cards over the paragraph they were about.
   `sent_at`, `Store::resolve` and the MCP `resolve_highlight` stay: they are the
   agent's record of what it closed, and `list_highlights` filters on it.
+  **One highlight per passage, and `retarget` is the price of it.** Overlapping
+  marks were all in the store and all on the stack, but only the topmost was
+  reachable by a click, so the ones underneath became annotations nobody could
+  read, edit or delete. `triggerHighlight` now refuses a selection that overlaps
+  a painted mark and opens *that* mark's modal instead — the decision is made in
+  the DOM (`overlappingIds`), not in the store, because line numbers cannot tell
+  two phrases in one paragraph apart, and adjacency is deliberately not overlap
+  or the sentence after a highlight would be unhighlightable. With overlap
+  refused, changing where a passage ends has to reach the mark that exists, which
+  is `Store::retarget` (command: `resize_highlight`): new quote, prefix, suffix
+  and lines, same id — so the annotation, the stack slot, `sent_at`, `resolved`
+  and `prior` all survive, and a resize moves nothing on or off the stack. It
+  anchors against the *mark's own* file, not the open document, because the stack
+  spans files. Anchoring is `add_anchored`'s, `(0, 0)` fallback included.
 - `config` — layered TOML: global `~/.config/dreamd/config.toml` under a repo-local
   `.dreamd.toml`. Merging happens on raw `toml::Table`s, *not* on deserialized structs:
   with `#[serde(default)]` an absent key is indistinguishable from a defaulted one, which
@@ -567,6 +581,20 @@ throws across an element boundary and `extractContents` would re-parent the
 the interior edges so `mark.hl`'s radius and padding do not make one phrase read
 as three. Anything consuming a mark must therefore tolerate several per id —
 `clearHighlights` and `deleteHighlight` both use `querySelectorAll`.
+
+**Resize is a mode, not a modal**, and it is the only reason `#resize-hint`
+exists. What it waits for is a selection in the document, which is exactly the
+gesture a modal cannot be open for — so the annotation modal's Resize button
+closes it, `armResize` marks the `<mark>`s and the hint bar takes the modal's
+place until Enter (or the highlight key) commits or Escape cancels. Escape ranks
+below every overlay and above view mode; `clearHighlights` ends the mode, because
+a repaint pulls the marks out from under it. The commit re-checks overlap
+excluding the mark itself — a resize that swallowed a neighbour would recreate
+the unreachable stacking the refusal exists to prevent. The stack panel's `⤢`
+opens the pair's file, scrolls the mark into view and arms the same mode, which
+is what makes a queued pair resizable without hunting for the passage. All of it
+is asserted in `ui-check.mjs`, against a stub store — the DOM decides overlap, so
+a harness that only counted IPC calls would assert nothing.
 
 **`prior` means "done with", not "read off disk".** `marks_file::admit`,
 `Store::mark_sent` and `Store::remove_from_stack` all set it; `set_annotation`
