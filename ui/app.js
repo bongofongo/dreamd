@@ -86,6 +86,7 @@ let keymap = {
   toggle_pane: "Ctrl+T",
   toggle_tree: "Ctrl+B",
   toggle_view: "Ctrl+M",
+  toggle_mode: "Ctrl+Shift+D",
   jump_top: "Home",
   jump_bottom: "End",
   scroll_down: "j",
@@ -4610,6 +4611,7 @@ function wireKeys() {
       return;
     }
     if (matchCombo(e, keymap.toggle_view)) { e.preventDefault(); toggleView(); return; }
+    if (matchCombo(e, keymap.toggle_mode)) { e.preventDefault(); toggleAppearance(); return; }
     if (matchCombo(e, keymap.toggle_tree)) { e.preventDefault(); toggleTree(); return; }
     if (matchCombo(e, keymap.toggle_outline)) { e.preventDefault(); toggleOutline(); return; }
     if (matchCombo(e, keymap.toggle_stack)) { e.preventDefault(); toggleStack(); return; }
@@ -4884,6 +4886,7 @@ const KEY_ACTIONS = [
   { id: "toggle_outline", label: "Toggle contents panel", sub: "Outline of the open document's headings" },
   { id: "toggle_tree", label: "Toggle file tree", sub: "Collapse or restore the sidebar" },
   { id: "toggle_view", label: "Toggle view mode", sub: "Hide the titlebar, sidebar and panels — Esc also exits" },
+  { id: "toggle_mode", label: "Toggle light / dark", sub: "Pins the appearance. Following the OS again is the System button under Themes" },
   { id: "toggle_stack", label: "Toggle stack panel" },
   { id: "toggle_pane", label: "Toggle Claude Code pane", sub: "Claude Code in this repo, docked beside the document — the same key gets you back out of it" },
   { id: "jump_top", label: "Jump to top", sub: "Scroll the open document to the start" },
@@ -5332,15 +5335,32 @@ async function cacheTheme(name) {
 }
 
 /// Light / Dark / System, independent of which family is selected.
+///
+/// Reachable from the keybind as well as from the three buttons, which is why
+/// the re-render is conditional: repainting the theme grid costs a `theme_css`
+/// per palette, and a window whose settings panel is shut has nothing to show
+/// for it. `openSettings` re-reads everything anyway.
 async function setMode(mode) {
   if (!(await applyPatch({ mode }))) return;
   modePref = mode;
   await loadTheme();
-  renderMode();
-  renderThemes();
+  if ($("settings-overlay").classList.contains("open")) {
+    renderMode();
+    renderThemes();
+  }
   toast(shadowed("mode")
     ? `Saved, but .dreamd.toml pins ${settings.config.mode} in this repo`
     : `Appearance: ${mode}`);
+}
+
+/// The keybind: light ↔ dark, pinned.
+///
+/// Two-valued rather than a three-way cycle through `system` — see
+/// `Keymap::toggle_mode`. A window that is *following* the OS takes the opposite
+/// of what is on screen, which is the only reading of "toggle" that changes
+/// anything; `appearance` is the resolved scheme, so that falls out for free.
+function toggleAppearance() {
+  return setMode(appearance === "dark" ? "light" : "dark");
 }
 
 function renderMode() {

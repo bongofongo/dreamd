@@ -481,6 +481,14 @@ pub struct Keymap {
     /// Distraction-free view mode: hide the titlebar, sidebar and side panels
     /// in one flip, leaving only the rendered document.
     pub toggle_view: String,
+    /// Flip the appearance between light and dark, writing [`Config::mode`].
+    ///
+    /// Two-valued, not a three-way cycle through `system`: a reading window is
+    /// switched because the light in the room changed, and a toggle that has to
+    /// be pressed twice to undo a mistake is not a toggle. Returning to
+    /// following the OS is a settings-panel decision, which is also where it can
+    /// say what it would resolve to.
+    pub toggle_mode: String,
     /// Jump the reading pane to the top / bottom of the open document.
     pub jump_top: String,
     pub jump_bottom: String,
@@ -557,6 +565,12 @@ impl Default for Keymap {
             // webview; the macOS menubar's Cmd-chords can't reach it because
             // `matchCombo` requires an exact modifier match.
             toggle_view: "Ctrl+M".into(),
+            // D for dark, the spelling every other application uses for this.
+            // Shifted because the bare `Ctrl+D` is a reader's half-page scroll
+            // in every mode but this one's, and because `Shift` survives the
+            // strip in `vim` mode — where this arrives as `Shift+D` and the
+            // bare `d` it would otherwise collide with keeps scrolling.
+            toggle_mode: "Ctrl+Shift+D".into(),
             // Vim's `gg`/`G` would be the obvious pair, but `gg` is a two-key
             // sequence and `matchCombo` only knows single combos — see
             // docs/plans/jump-top-bottom-keybind.md. `Home`/`End` are single

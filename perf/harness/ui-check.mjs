@@ -51,6 +51,7 @@ await page.addInitScript(({ base, palettes }) => {
     palette: "Ctrl+F", palette_prev: "Ctrl+P", palette_next: "Ctrl+N",
     highlight: "Ctrl+H", send_stack: "Ctrl+Enter", toggle_stack: "Ctrl+O",
     toggle_outline: "Ctrl+I", toggle_tree: "Ctrl+B", toggle_view: "Ctrl+M",
+    toggle_mode: "Ctrl+Shift+D",
     jump_top: "Home", jump_bottom: "End", set_mark: "m", jump_mark: "'",
     jump_back: "Ctrl+[", jump_forward: "Ctrl+]",
     find: "/", find_next: "n", find_prev: "Shift+N",
@@ -493,6 +494,33 @@ check("switching block shows the other appearance", lightVal === "#fbf1c7", ligh
 await page.keyboard.press("Escape");
 check("Esc closes the panel", !(await page.locator("#settings-overlay.open").isVisible()));
 
+// --- the appearance keybind ---
+// The panel is shut, which is the state it is for: the same `setMode` the three
+// buttons call, reached without opening anything. Click into the document first
+// — the Custom tab left focus in a text input, and `isEditable` disarms every
+// bare-modifier binding while one holds it.
+await page.locator("#content").click();
+await page.waitForTimeout(120);
+const modeBefore = await page.evaluate(() => document.documentElement.dataset.mode);
+await page.keyboard.press("Control+Shift+D");
+await page.waitForTimeout(250);
+check(
+  "toggle_mode flips the appearance",
+  (await page.evaluate(() => document.documentElement.dataset.mode)) !== modeBefore,
+);
+check(
+  "and writes it to the config rather than only painting it",
+  (await page.evaluate(() => window.__STATE__.config.mode)) ===
+    (modeBefore === "dark" ? "light" : "dark"),
+  await page.evaluate(() => window.__STATE__.config.mode),
+);
+await page.keyboard.press("Control+Shift+D");
+await page.waitForTimeout(250);
+check(
+  "and back",
+  (await page.evaluate(() => document.documentElement.dataset.mode)) === modeBefore,
+);
+
 // --- sidebar default, single-file branch ---
 // A second page, because the boot decision is made once per load. The tree
 // resolves late on purpose: that is the deferred walk, and the point is that
@@ -517,6 +545,7 @@ await solo.addInitScript(({ base }) => {
             palette: "Ctrl+F", palette_prev: "Ctrl+P", palette_next: "Ctrl+N",
             highlight: "Ctrl+H", send_stack: "Ctrl+Enter", toggle_stack: "Ctrl+O",
             toggle_outline: "Ctrl+I", toggle_tree: "Ctrl+B", toggle_view: "Ctrl+M",
+            toggle_mode: "Ctrl+Shift+D",
             jump_top: "Home", jump_bottom: "End", set_mark: "m", jump_mark: "'",
             jump_back: "Ctrl+[", jump_forward: "Ctrl+]",
             find: "/", find_next: "n", find_prev: "Shift+N",
@@ -594,6 +623,7 @@ await nav.addInitScript(({ base }) => {
             palette: "Ctrl+F", palette_prev: "Ctrl+P", palette_next: "Ctrl+N",
             highlight: "Ctrl+H", send_stack: "Ctrl+Enter", toggle_stack: "Ctrl+O",
             toggle_outline: "Ctrl+I", toggle_tree: "Ctrl+B", toggle_view: "Ctrl+M",
+            toggle_mode: "Ctrl+Shift+D",
             jump_top: "Home", jump_bottom: "End", set_mark: "m", jump_mark: "'",
             jump_back: "Ctrl+[", jump_forward: "Ctrl+]",
             find: "/", find_next: "n", find_prev: "Shift+N",
@@ -966,6 +996,7 @@ await agent.addInitScript(({ base }) => {
             palette: "Ctrl+F", palette_prev: "Ctrl+P", palette_next: "Ctrl+N",
             highlight: "Ctrl+H", send_stack: "Ctrl+Enter", toggle_stack: "Ctrl+O",
             toggle_outline: "Ctrl+I", toggle_tree: "Ctrl+B", toggle_view: "Ctrl+M",
+            toggle_mode: "Ctrl+Shift+D",
             jump_top: "Home", jump_bottom: "End", set_mark: "m", jump_mark: "'",
             jump_back: "Ctrl+[", jump_forward: "Ctrl+]",
             find: "/", find_next: "n", find_prev: "Shift+N",
@@ -1282,6 +1313,7 @@ const paneStub = ({ base, position, surface, popout }) => {
           case "get_keymap": return {
             palette: "Ctrl+F", highlight: "Ctrl+H", toggle_stack: "Ctrl+O",
             toggle_outline: "Ctrl+I", toggle_tree: "Ctrl+B", toggle_view: "Ctrl+M",
+            toggle_mode: "Ctrl+Shift+D",
             toggle_pane: "Ctrl+T", find: "/", settings: "Ctrl+,",
             send_stack: "Ctrl+Enter",
             quick_highlight: true,
@@ -2444,6 +2476,7 @@ await chrome.addInitScript(({ base }) => {
     palette: "Ctrl+F", palette_prev: "Ctrl+P", palette_next: "Ctrl+N",
     highlight: "Ctrl+H", send_stack: "Ctrl+Enter", toggle_stack: "Ctrl+O",
     toggle_outline: "Ctrl+I", toggle_tree: "Ctrl+B", toggle_view: "Ctrl+M",
+    toggle_mode: "Ctrl+Shift+D",
     toggle_pane: "Ctrl+T", jump_top: "Home", jump_bottom: "End",
     set_mark: "m", jump_mark: "'", jump_back: "Ctrl+[", jump_forward: "Ctrl+]",
     find: "/", find_next: "n", find_prev: "Shift+N",

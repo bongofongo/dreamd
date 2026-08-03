@@ -121,6 +121,7 @@ export const KEYMAP = {
   toggle_outline: "Ctrl+I",
   toggle_tree: "Ctrl+B",
   toggle_view: "Ctrl+M",
+  toggle_mode: "Ctrl+Shift+D",
   jump_top: "Home",
   jump_bottom: "End",
   next_file: "]",

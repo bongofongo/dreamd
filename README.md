@@ -330,6 +330,7 @@ toggle_stack = "Ctrl+O"
 toggle_outline = "Ctrl+I"
 toggle_tree = "Ctrl+B"
 toggle_view = "Ctrl+M"                   # hide all chrome; Esc also exits
+toggle_mode = "Ctrl+Shift+D"             # light <-> dark; System is in the panel
 jump_top = "Home"                        # scroll the document to the start
 jump_bottom = "End"                      # ...and to the end
 next_file = "]"                          # next file in the sidebar's order
