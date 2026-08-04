@@ -178,6 +178,14 @@
           rgba(0,0,0,0.6) 68%, rgba(0,0,0,0) 100%);
       }
       body.mac.chrome-fade #content-scroll { margin-top: -38px; padding-top: 38px; }
+      /* The scrim hangs 26px past the bar, and in the right dock the pane's top
+         edge *is* that boundary — so `#pty-head` sat directly under a gradient
+         still at 94% alpha where it starts. The document has 38px of padding
+         standing it off the bar; the pane gets a smaller share of the same idea,
+         enough to clear the dense end of the gradient without turning the header
+         into a band of empty chrome. Only the right dock: the bottom one is at
+         the far edge of `#main-wrap` and never meets the bar. */
+      body.mac.chrome-fade.agent-right #pty-pane { padding-top: 14px; }
       #tb-actions { margin-left: auto; display: flex; gap: 6px; align-items: center; }
       #btn-stack { position: relative; }
       #btn-stack .badge {
