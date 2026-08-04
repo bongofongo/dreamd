@@ -161,7 +161,7 @@ jobs:
   # Does it *run*? Nothing else in this repo asks.
   #
   # `cargo test` never touches a window, `ui-check.mjs` drives Chromium behind a
-  # stub of the Rust commands, and perf.yml's package-smoke only asserts the
+  # stub of the Rust commands, and the packaging jobs only assert the
   # artifacts are non-empty files. A commit that compiles, passes every test and
   # aborts inside GTK init would be green everywhere — which is precisely the
   # shape of the NVIDIA/Wayland failure src/webkit.rs works around, and precisely
@@ -259,7 +259,7 @@ jobs:
       # `ui/` through an absolute path into one checkout — green by never being
       # executed. The path is derived now, and this step is what keeps it that
       # way. It asserts DOM structure, event wiring and which IPC calls the page
-      # makes; no timings are taken and nothing here feeds perf/baseline.json.
+      # makes; no timings are taken and nothing here feeds the perf baseline.
       - name: Frontend harness
         working-directory: perf/harness
         run: |
