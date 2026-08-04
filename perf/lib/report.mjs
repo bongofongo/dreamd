@@ -1,5 +1,5 @@
-// Flattens a tier result into comparable metrics and diffs it against the
-// committed baseline.
+// Flattens a tier result into comparable metrics and diffs it against a
+// baseline. run.sh resolves where that is; this file only takes the path.
 //
 // A metric is one dot-path with a number at the end. Keeping the comparison
 // dumb and path-based means adding a measurement anywhere in any script shows
@@ -136,7 +136,7 @@ function fmt(n) {
 export function render(result, { verbose = false } = {}) {
   if (result.missingBaseline) {
     return [
-      `no baseline at perf/baseline.json — recorded ${result.metrics} metrics.`,
+      `no baseline at ${baselinePath} — recorded ${result.metrics} metrics.`,
       `establish one with:  ./perf/run.sh deep --update-baseline`,
     ].join("\n");
   }

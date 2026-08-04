@@ -9,8 +9,10 @@ hand and by Claude, on this machine, during a session.
 ./perf/run.sh deep      # ~20min  
 ```
 
-Results go to `perf/results/` (gitignored). Each run prints a diff against
-`perf/baseline.json`, which is committed.
+Results go to `perf/results/` (gitignored). Each run prints a diff against the
+baseline — **if this checkout has one.** The baseline is not tracked here; see
+[Baselines](#baselines). Without it every tier still runs in full and simply
+records instead of comparing, which is what a fresh clone does.
 
 ## Setup
 
@@ -55,7 +57,7 @@ report should keep that distinction visible.
 ```
 perf/
 ├── run.sh                  the only entry point
-├── baseline.json           committed reference numbers
+├── baseline.json           reference numbers, if any — gitignored, see Baselines
 ├── corpus/gen.mjs          deterministic fixture generator
 ├── corpus/manifest.json    committed sizes + sha256
 ├── lib/report.mjs          flatten + diff + render the table
@@ -146,13 +148,33 @@ statistically the way a microbenchmark can:
 
 ## Baselines
 
-`perf/baseline.json` is only ever written by `./perf/run.sh deep --update-baseline`.
-Never by `quick` or `pass` — their reduced sample counts are not a reference point,
-and the runner refuses.
+**The baseline is not in this repo.** It is one developer's machine — an arm64
+Mac, WKWebView, APFS, FSEvents — and it is working material rather than product,
+so it lives in the private notes repo alongside the session log. `run.sh`
+resolves it, first hit wins:
+
+| | |
+| --- | --- |
+| `$DREAMD_PERF_BASELINE` | explicit override, for an A/B against an arbitrary file |
+| `notes/perf-baseline.json` | the private notes repo, cloned at `notes/` |
+| `perf/baseline.json` | a purely local one — gitignored, never committed here |
+
+None of the three is required, and a missing baseline is **not an error**: the
+tier runs, `perf/results/` is written, the comparison is skipped with a line
+saying so, and the exit status is the tier's own. A red table about a machine
+nobody has would be worse than no table.
+
+The baseline is only ever written by `./perf/run.sh deep --update-baseline`, to
+whichever of the three paths resolves for writing (the notes clone when it is
+there, `perf/baseline.json` otherwise). Never by `quick` or `pass` — their
+reduced sample counts are not a reference point, and the runner refuses. It is
+also refused off Darwin, where it would re-zero every macOS comparison against a
+different computer.
 
 A baseline that drifts on its own hides exactly the slow regression it exists to
 catch. Update it deliberately, in the same commit as the change that justified it,
-with the before/after in the commit message.
+with the before/after in the commit message — that commit lands in the notes repo,
+next to the dreamd commit it belongs to.
 
 **The deep tier runs the real app twice**, once debug and once release, and that is
 what makes the pass tier's `real.*` numbers checkable at all. Metric paths carry the
@@ -162,7 +184,7 @@ measured release alone would leave every pass-tier `real.*` metric permanently
 baseline-less, including `events_per_save` and `save_to_paint_ms`. Deep is a superset
 of pass: the same debug workload pass runs, plus the release one on top.
 
-**Known-stale:** the committed baseline's `real.*` entries predate profile keying and
+**Known-stale:** the current baseline's `real.*` entries predate profile keying and
 sit at the old paths, so every `real.*` metric shows as `new` and the old names show
 under "not measured this run". The next `./perf/run.sh deep --update-baseline`
 realigns them — for both profiles, now that deep measures both. `bench.*` and

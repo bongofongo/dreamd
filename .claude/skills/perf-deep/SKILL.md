@@ -1,6 +1,6 @@
 ---
 name: perf-deep
-description: Runs the ~20min deep performance tier on the dreamd repo — everything in perf-pass against both the debug and the release build, plus Instruments traces, a samply flamegraph, cargo-bloat and release binary size — and is the only tier permitted to update perf/baseline.json. Invoke before committing a performance change, when investigating where time actually goes, when establishing a new reference point, or runs /perf-deep.
+description: Runs the ~20min deep performance tier on the dreamd repo — everything in perf-pass against both the debug and the release build, plus Instruments traces, a samply flamegraph, cargo-bloat and release binary size — and is the only tier permitted to update the perf baseline. Invoke before committing a performance change, when investigating where time actually goes, when establishing a new reference point, or runs /perf-deep.
 ---
 
 # Perf deep
@@ -68,13 +68,20 @@ Only this tier may do it, and only deliberately:
 ./perf/run.sh deep --update-baseline
 ```
 
+**The baseline is not in the dreamd repo.** `run.sh` writes it to
+`notes/perf-baseline.json` when the private notes clone is present, and to a
+gitignored `perf/baseline.json` otherwise. It prints which. `$DREAMD_PERF_BASELINE`
+overrides both.
+
 Rules, all of which matter:
 
 - **Never** update a baseline to make a regression disappear. If a number got worse
   and you cannot explain why, the baseline is correct and the code is not.
-- The new `perf/baseline.json` goes in the **same commit** as the change that
-  justified it, with the before/after in the commit message. A baseline moving on its
-  own in a separate commit is indistinguishable from a cover-up six months later.
+- The new baseline goes in a commit of its own in `notes/`, made at the **same time**
+  as the dreamd commit that justified it, with the before/after in the message and a
+  reference to what changed. The two repos cannot share a commit, so the message is
+  the only thing tying them together — a baseline moving with no such reference is
+  indistinguishable from a cover-up six months later.
 - Update on a quiet machine. A baseline captured next to a running build bakes that
   contention into every future comparison.
 - Say what moved and why, in the commit body. "Baseline refresh" is not a reason.

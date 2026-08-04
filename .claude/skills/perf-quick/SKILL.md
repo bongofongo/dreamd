@@ -29,7 +29,9 @@ From the repo root:
 
 It regenerates the corpus if stale (usually a no-op), runs the benches, runs the two
 Chromium scenarios, writes `perf/results/quick-<sha>-<stamp>.json`, and prints a diff
-against `perf/baseline.json`.
+against the baseline. That file is **not tracked in dreamd** — `run.sh` resolves it
+from `$DREAMD_PERF_BASELINE`, then `notes/perf-baseline.json` (the private notes
+clone), then a local `perf/baseline.json`.
 
 Expect roughly 45–90 seconds. If it takes materially longer, something rebuilt —
 `Cargo.toml` changes force a full bench-profile rebuild, which is a one-off. Say so
@@ -59,8 +61,9 @@ Rows are grouped by where the number came from, and the distinction matters:
   that something got slower, and worthless as absolute figures. Whenever you quote
   one, say it is Chromium-relative.
 
-If the run reports `no baseline at perf/baseline.json`, stop and tell the user — the
-tier measured fine but has nothing to compare against, and the fix is a
+If the run reports `no baseline on this machine`, stop and tell the user — the tier
+measured fine but has nothing to compare against. It is not a failure and the run
+still exits zero. The usual cause is a missing `notes/` clone; the other fix is a
 `./perf/run.sh deep --update-baseline`, which is theirs to authorize.
 
 ## 3. Interpret, don't just relay
@@ -73,7 +76,7 @@ regression:
   `send.rs` edit is noise, not a finding.
 - Ignore movement in metrics the tier didn't really exercise.
 
-Do **not** update `perf/baseline.json`, and do **not** commit. This skill measures;
+Do **not** update the baseline, and do **not** commit. This skill measures;
 it does not decide. If a regression is real, say what moved, by how much, and which
 edit is the likely cause — then let the user choose.
 
