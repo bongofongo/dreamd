@@ -243,10 +243,26 @@ pub struct Ui {
     /// Whether the window keeps its native titlebar: the bar the window manager
     /// draws above the window, carrying close / minimize / maximize.
     ///
-    /// See [`TITLEBAR_DEFAULT`] for why the default is not the same on every
-    /// platform. `ui/index.html`'s `#drag-strip` is what keeps a window with no
-    /// titlebar movable, and it predates this setting — it exists for view mode.
+    /// **Inert on macOS**, where there is no such bar — only the traffic lights,
+    /// which stay. `chrome::set_titlebar` is where that is decided and why; the
+    /// settings panel hides the row there rather than offering a dead switch.
+    /// See [`TITLEBAR_DEFAULT`] for why the default still differs by platform.
+    ///
+    /// `ui/index.html`'s `#drag-strip` is what keeps a window with no titlebar
+    /// movable, and it predates this setting — it exists for view mode.
     pub titlebar: bool,
+
+    /// Whether dreamd's own top bar dissolves into the document instead of
+    /// ending at a border: a scrim of the page's background masked out along a
+    /// gradient, so a line of prose fades away as it scrolls under the bar
+    /// rather than being cut off by it. The buttons on the bar do not move.
+    ///
+    /// Unlike [`Ui::titlebar`] this is not the window's frame at all — it is how
+    /// dreamd paints a row of its own page, so it never reaches the native
+    /// window and lives entirely in CSS (`body.chrome-fade`), which is also why
+    /// a repo may set it. macOS-only in practice: the settings panel offers the
+    /// row nowhere else. See [`TITLEBAR_FADE_DEFAULT`].
+    pub titlebar_fade: bool,
 }
 
 /// The sidebar's original fixed width, and the range the drag handle may leave
@@ -278,22 +294,32 @@ pub const PANE_HEIGHT_MAX: u32 = 1200;
 
 /// macOS keeps its titlebar; nothing else does.
 ///
-/// This is the one platform difference in the window-chrome settings, and it is
-/// a *value* rather than a `cfg` arm around the code that applies it — so both
-/// platforms compile and run the same `apply_chrome`, and a macOS user who sets
-/// `titlebar = false` by hand gets a frameless window rather than a key that
-/// silently does nothing.
-///
 /// The asymmetry is real, not taste: `tauri.conf.json` asks for
 /// `titleBarStyle: "Overlay"` with `hiddenTitle`, so on macOS the traffic
 /// lights sit *inside* the reading pane and cost no vertical space. There is no
-/// second bar there to reclaim. On Linux the WM stacks a real title bar above
-/// the window, directly on top of the menubar — two rows of furniture before
-/// the first line of prose.
+/// second bar there to reclaim, so the default is on. On Linux the WM stacks a
+/// real title bar above the window, directly on top of the menubar — two rows
+/// of furniture before the first line of prose, so the default is off.
+///
+/// It is a *value* rather than a `cfg` arm around `apply_chrome`, so one code
+/// path runs on both platforms — and on macOS it is a value the window then
+/// ignores, because `chrome::set_titlebar` has nothing it may safely do there.
 #[cfg(target_os = "macos")]
 pub const TITLEBAR_DEFAULT: bool = true;
 #[cfg(not(target_os = "macos"))]
 pub const TITLEBAR_DEFAULT: bool = false;
+
+/// The fading top bar is on where it works and off where it does not.
+///
+/// macOS gets it because that is where the window has no bar of its own: the
+/// traffic lights float over the page, dreamd's row is the only bar there is,
+/// and ending it in a hard border is the thing that reads as a seam. Elsewhere
+/// the WM already draws a real bar above the window, and a second, dissolving
+/// one under it is two ideas about the same edge.
+#[cfg(target_os = "macos")]
+pub const TITLEBAR_FADE_DEFAULT: bool = true;
+#[cfg(not(target_os = "macos"))]
+pub const TITLEBAR_FADE_DEFAULT: bool = false;
 
 impl Default for Ui {
     fn default() -> Self {
@@ -304,6 +330,7 @@ impl Default for Ui {
             pane_height: PANE_HEIGHT_DEFAULT,
             menubar: false,
             titlebar: TITLEBAR_DEFAULT,
+            titlebar_fade: TITLEBAR_FADE_DEFAULT,
         }
     }
 }
@@ -710,9 +737,13 @@ impl Config {
 ///   settings panel to get the frame back. The pair travels together: one key
 ///   deciding your chrome is the shape of the problem, not the direction.
 ///
-/// `agent.position`, `agent.surface`, `agent.popout` and the four `ui` sizes —
-/// `tree_width`, `stack_width`, `pane_width`, `pane_height` — are left alone:
-/// they move furniture *inside* the window and read nothing. `surface` and
+/// `agent.position`, `agent.surface`, `agent.popout`, `ui.titlebar_fade` and the
+/// four `ui` sizes — `tree_width`, `stack_width`, `pane_width`, `pane_height` —
+/// are left alone: they move furniture *inside* the window and read nothing.
+/// `titlebar_fade` sits next to a stripped key and is not one of them: it takes
+/// no button away and hides no control, it only decides whether dreamd's own bar
+/// ends at a border or a gradient, and walking to another repo undoes it.
+/// `surface` and
 /// `popout` in particular only choose how and where a conversation is *drawn* —
 /// no value of either widens what the agent may do, because the permission gate
 /// is a hook and outranks both entirely.
@@ -1205,13 +1236,32 @@ mod tests {
 
     #[test]
     fn the_window_chrome_defaults_are_off_except_the_mac_titlebar() {
-        // The pair the settings panel toggles, pinned so a change to either
+        // The three the settings panel toggles, pinned so a change to any
         // default is a deliberate edit here. `menubar` is unconditional
         // because `hide_menu` is a documented no-op on macOS — the bar there
         // belongs to the app, not the window, and this key never touches it.
         let ui = Ui::default();
         assert!(!ui.menubar);
         assert_eq!(ui.titlebar, cfg!(target_os = "macos"));
+        // Both per-platform, and deliberately in the same direction for
+        // opposite reasons: macOS has no WM bar to reclaim, which is exactly
+        // why dreamd's own bar is the only edge there and worth dissolving.
+        assert_eq!(ui.titlebar_fade, cfg!(target_os = "macos"));
+    }
+
+    #[test]
+    fn a_repo_may_fade_the_bar_it_may_not_take_away() {
+        // The neighbouring key that is *not* stripped, and the line between
+        // them: `titlebar` is the window's frame and hides a close button,
+        // `titlebar_fade` is how dreamd paints a row of its own page.
+        let mut local = table("[ui]\ntitlebar = false\ntitlebar_fade = true\n");
+        let warnings = strip_untrusted(&mut local);
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert_eq!(warnings[0].0, "ui.titlebar");
+
+        let cfg = Config::deserialize(Value::Table(local)).expect("stripped config");
+        assert_eq!(cfg.ui.titlebar, TITLEBAR_DEFAULT);
+        assert!(cfg.ui.titlebar_fade, "a repo may choose its own bar's edge");
     }
 
     #[test]

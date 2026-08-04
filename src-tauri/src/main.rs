@@ -15,8 +15,8 @@ use dreamd::flow::Flow;
 use dreamd::fs_walk::FileNode;
 use dreamd::send::SendResult;
 use dreamd::{
-    agent, cli, config, flow, guard, home_relative, markdown, marks_file, mcp, menu, notify, perf,
-    prompt, pty, read_source, rootfield, send, theme, watcher,
+    agent, chrome, cli, config, flow, guard, home_relative, markdown, marks_file, mcp, menu,
+    notify, perf, prompt, pty, read_source, rootfield, send, theme, watcher,
 };
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -1000,11 +1000,12 @@ fn menubar_at_launch(ui: &config::Ui) -> bool {
 /// header's root field opens a folder with tab completion, and every reader
 /// action has a keybind in `[keymap]`.
 ///
-/// `set_decorations` needs none of this — it is supported on every platform and
-/// applies immediately, which is why the platform difference lives in
-/// `config::TITLEBAR_DEFAULT` and not here.
+/// The titlebar half needs none of this, and is `chrome::set_titlebar` rather
+/// than a `set_decorations` call inline — on macOS that call rebuilds the style
+/// mask and loses the overlay titlebar the window was created with, which is a
+/// whole module's worth of explanation.
 fn apply_chrome(win: &tauri::WebviewWindow, ui: &config::Ui) {
-    let _ = win.set_decorations(ui.titlebar);
+    chrome::set_titlebar(win, ui.titlebar);
 
     // macOS's bar belongs to the application, not to this window:
     // `set_menu`/`remove_menu` are documented Unsupported there, and
@@ -2067,6 +2068,17 @@ fn main() {
                 // describes for every other launch.
                 if state.has_repo.load(Ordering::Relaxed) || state.initial_file.is_some() {
                     let _ = win.show();
+                    // `show` alone is `makeKeyAndOrderFront`, which orders the
+                    // window to the front of *this* application — and dreamd
+                    // launched from a terminal is not the frontmost
+                    // application, so the window came up behind the shell that
+                    // asked for it. `set_focus` is the `activateIgnoringOtherApps`
+                    // half. It is only reachable after `show` because tao skips
+                    // it on a window that is not yet visible, which is why the
+                    // conf's `visible: false` made this necessary at all; a
+                    // window Tauri showed itself would have been activated as
+                    // part of the launch. `adopt_root` already pairs the two.
+                    let _ = win.set_focus();
                 }
             }
             // Where `claude` is, asked now rather than on the pane's first open.

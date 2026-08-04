@@ -274,6 +274,19 @@ causes were wrong.
 
 ## Recent updates
 
+- **2026-08-04** — **dreamd opens in front of you now, and the window's top edge
+  was rebuilt.** Launching from the terminal used to put the window *behind* the
+  terminal you launched it from — it was there, just not in front — while opening
+  it from Spotlight worked fine. Fixed. On a Mac, the file tree now runs the full
+  height of the window and holds the close/minimise/zoom buttons in its top-left
+  corner while it is open; collapse the tree and they hand back to the bar. And
+  the bar itself can dissolve rather than end at a line: text fades out as it
+  scrolls up underneath it, the way Preview and the Claude desktop app do. That
+  is on by default on macOS and can be turned off in Settings → Window. The
+  setting that used to sit there — a "native titlebar" switch — is gone from the
+  Mac, because it did nothing good: turning it off and on again left the window
+  with an opaque grey bar stuck on top of the page and no way to get rid of it
+  short of hand-editing a config file. The window buttons now simply stay.
 - **2026-08-03** — **dreamd 0.2.2 released**, wrapping the highlight-overlap/resize
   work and the two agent-pane fixes below.
 - **2026-08-03** — **Two small but visible agent-pane bugs fixed.** Clicking a

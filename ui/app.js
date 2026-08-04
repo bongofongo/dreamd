@@ -122,7 +122,15 @@ const staleRail = $("stale-rail");
 async function init() {
   await perf.probe();
   perf.at("js_start");
-  if (/Macintosh/.test(navigator.userAgent)) document.body.classList.add("mac");
+  if (/Macintosh/.test(navigator.userAgent)) {
+    document.body.classList.add("mac");
+    // `config::TITLEBAR_FADE_DEFAULT`, restated here for the same reason the
+    // `data-mode` bootstrap at the top of this file exists: `get_ui` is two
+    // round trips away, and a bar that painted solid and then dissolved would
+    // do it in front of the reader. `applyWindowChrome` corrects it when the
+    // config lands, which is the only thing that can disagree.
+    document.body.classList.add("chrome-fade");
+  }
 
   // First, because it decides whether the sidebar stays collapsed. The markup
   // ships collapsed and we *remove* the class here, so the single-file case is
@@ -151,6 +159,7 @@ async function init() {
     const [km, ui] = await Promise.all([invoke("get_keymap"), invoke("get_ui")]);
     if (km) keymap = km;
     applyPanelSizes(ui);
+    applyWindowChrome(ui);
   } catch (e) {}
   // `displayCombo`, not the raw value: what is stored is `Ctrl+F` in every key
   // mode, and telling a reader in `vim` mode to press Ctrl+F is telling them
@@ -493,6 +502,20 @@ function applyPanelSizes(ui) {
   applySize("stack", ui && ui.stack_width);
   applySize("paneW", ui && ui.pane_width);
   applySize("paneH", ui && ui.pane_height);
+}
+
+// The one piece of window chrome the page owns rather than the native window:
+// `ui.titlebar_fade`, which is how dreamd's own bar ends — at a border, or in a
+// gradient the document scrolls away under. `ui.titlebar` is not here; that one
+// is the window manager's frame and `chrome::set_titlebar` applies it.
+//
+// A missing `ui` (a config that never mentioned `[ui]`, or a `get_ui` that
+// failed) leaves the class exactly as `init` bootstrapped it, so the fallback is
+// the platform default rather than "off". The CSS is scoped to `body.mac` on top
+// of the class, so this is inert elsewhere whatever the config says.
+function applyWindowChrome(ui) {
+  if (!ui) return;
+  document.body.classList.toggle("chrome-fade", !!ui.titlebar_fade);
 }
 
 // Debounced: a drag across the window is one config write, not forty. One
@@ -5226,6 +5249,10 @@ async function applyPatch(patch) {
   try {
     settings = await invoke("set_config", { patch });
     keymap = settings.config.keymap;
+    // From the merged config rather than from the patch, for the same reason
+    // the refetch exists: the panel shows what the config *says*. Cheap enough
+    // to run on every write rather than only on the one row that moves it.
+    applyWindowChrome(settings.config.ui);
     return true;
   } catch (e) { toast(String(e)); return false; }
 }
@@ -5425,15 +5452,19 @@ function comboFromEvent(e) {
 
 // ---- window tab ----
 //
-// The two bars the platform draws around the reader, rather than anything dreamd
-// paints: the native menubar and the window manager's titlebar. Off by default
-// everywhere except the macOS titlebar, which is an overlay and costs no room —
-// and this pane is the only way back once they are gone, which is why it is a
-// tab of its own and not a footnote in Themes.
+// The chrome the platform draws around the reader, rather than anything dreamd
+// paints: the native menubar and the window's own close / minimize / maximize.
+// Off by default everywhere except the macOS titlebar, which is an overlay and
+// costs no room — and this pane is the only way back once they are gone, which
+// is why it is a tab of its own and not a footnote in Themes.
 //
 // The Rust side applies both to the live window inside `set_config`, so there is
 // nothing to re-render here beyond the checkbox itself and no restart to
 // prompt for.
+//
+// `mac` is which platform a row belongs to, and both directions are used: two of
+// these three are dead on the other one, and a switch wired to nothing is worse
+// than an absent row.
 const WINDOW_TOGGLES = [
   {
     key: "menubar",
@@ -5448,7 +5479,19 @@ const WINDOW_TOGGLES = [
     key: "titlebar",
     label: "Native titlebar",
     sub: "The window manager's bar, with close, minimize and maximize. Drag the top edge of the window to move it without one.",
+    // Absent on macOS for the mirror-image reason: there is no such bar there,
+    // only the traffic lights, which stay. See `chrome::set_titlebar` for what
+    // the call that looks like it would toggle one actually does.
+    mac: false,
+  },
+  {
+    key: "titlebar_fade",
+    label: "Fade the top bar",
+    sub: "dreamd's own bar goes translucent and dissolves into a gradient, so text fades away as it scrolls under instead of stopping at a hard edge. The buttons stay where they are.",
+    // macOS only: it is the platform where dreamd's bar is the only bar there
+    // is — see `TITLEBAR_FADE_DEFAULT`.
     mac: true,
+    macOnly: true,
   },
 ];
 
@@ -5459,7 +5502,7 @@ function renderWindow() {
 
   box.appendChild(sectionHeader("Window chrome"));
   for (const t of WINDOW_TOGGLES) {
-    if (isMac && !t.mac) continue;
+    if (isMac ? !t.mac : t.macOnly) continue;
     const row = document.createElement("div");
     row.className = "st-row";
     row.innerHTML =

@@ -64,12 +64,14 @@ await page.addInitScript(({ base, palettes }) => {
     config: {
       theme: "dreamd", mode: "system",
       tmux_autodetect: true, extra_ignores: [], keymap: { ...KEYMAP },
-      // `config::Ui` is a plain struct, so Rust always sends all six —
+      // `config::Ui` is a plain struct, so Rust always sends all seven —
       // spelling them out here is what keeps the Window tab's checks below
-      // asserting on the payload the real backend produces.
+      // asserting on the payload the real backend produces. `titlebar_fade`
+      // is the macOS default rather than this runner's, so the class it drives
+      // is exercised on both.
       ui: {
         tree_width: 260, stack_width: 280, pane_width: 380, pane_height: 240,
-        menubar: false, titlebar: false,
+        menubar: false, titlebar: false, titlebar_fade: true,
       },
       // `config::Agent` is a plain struct too, and the Window tab now renders
       // two of its fields. Spelled out for the same reason `ui` is.
@@ -136,6 +138,12 @@ await page.addInitScript(({ base, palettes }) => {
           case "perf_enabled": return false;
           case "repo_info": return { root: "/repo", name: "repo", display: "~/repo" };
           case "get_keymap": return state.config.keymap;
+          // The boot's second answer, off the same table `set_config` merges
+          // into — so the Window tab's checks below start from the state the
+          // page actually booted with rather than from `default: null`, which
+          // is `applyWindowChrome`'s "assume the platform default" branch and
+          // would have disagreed with the payload.
+          case "get_ui": return state.config.ui;
           case "get_theme": return themeView();
           case "set_appearance":
             state.scheme = args.scheme;
@@ -285,10 +293,21 @@ const chromeLabels = await page.evaluate(() =>
   [...document.querySelectorAll("#st-window .st-row .lbl")].map((l) => l.childNodes[0].textContent.trim()),
 );
 const isMacPage = await page.evaluate(() => document.body.classList.contains("mac"));
+// Two rows that are each dead on the other platform, asserted in both
+// directions — a one-way check would pass on the runner and be silent about the
+// machine this was written on. The titlebar row is absent on macOS because
+// there is no window-manager bar there to toggle (`chrome::set_titlebar`), and
+// the fade row is absent off it because it is `backdrop-filter` over dreamd's
+// own bar.
 check(
-  "the titlebar toggle is always listed",
-  chromeLabels.includes("Native titlebar"),
-  `got ${JSON.stringify(chromeLabels)}`,
+  "the titlebar toggle is listed exactly off macOS",
+  chromeLabels.includes("Native titlebar") === !isMacPage,
+  `mac=${isMacPage} got ${JSON.stringify(chromeLabels)}`,
+);
+check(
+  "and the fading bar exactly on it",
+  chromeLabels.includes("Fade the top bar") === isMacPage,
+  `mac=${isMacPage} got ${JSON.stringify(chromeLabels)}`,
 );
 check(
   "the menubar toggle is listed exactly off macOS",
@@ -329,16 +348,40 @@ await page.waitForTimeout(200);
 check("and turning it back off re-enables it", !(await popSelect.isDisabled()));
 await popSelect.selectOption("never");
 await page.waitForTimeout(150);
-const titlebarBox = page.locator("#st-window .st-row", { hasText: "Native titlebar" })
+// `ui.titlebar_fade` is the one window setting the *page* applies rather than
+// the native window, so it is the one this harness can see end to end. The class
+// is toggled on every platform — only the CSS is scoped to `body.mac` — so the
+// boot mapping is assertable on the runner as well as on a Mac.
+const fadeClass = () => page.evaluate(() => document.body.classList.contains("chrome-fade"));
+check("a titlebar_fade config paints the fading bar", await fadeClass());
+
+// The row's own round trip. Which row that is depends on the platform — the two
+// chrome toggles are each absent on the other one — so the key and the label are
+// picked together, and a mismatch between them is what this would catch.
+const [chromeLabel, chromeKey] = isMacPage
+  ? ["Fade the top bar", "titlebar_fade"]
+  : ["Native titlebar", "titlebar"];
+const chromeBox = page.locator("#st-window .st-row", { hasText: chromeLabel })
   .locator('input[type="checkbox"]');
-check("titlebar starts from the config payload", !(await titlebarBox.isChecked()));
-await titlebarBox.click();
+check(
+  `${chromeKey} starts from the config payload`,
+  (await chromeBox.isChecked()) === isMacPage,
+);
+await chromeBox.click();
 await page.waitForTimeout(200);
 check(
-  "toggling writes ui.titlebar",
-  (await page.evaluate(() => window.__STATE__.config.ui.titlebar)) === true,
+  `toggling writes ui.${chromeKey}`,
+  (await page.evaluate((k) => window.__STATE__.config.ui[k], chromeKey)) === !isMacPage,
 );
-check("and the box stays checked", await titlebarBox.isChecked());
+check("and the box holds its new state", (await chromeBox.isChecked()) === !isMacPage);
+if (isMacPage) {
+  // Only reachable where the row exists, and the half worth having: the fade is
+  // a CSS mode, so turning it off has to take the class with it.
+  check("and turning the fade off drops the class", !(await fadeClass()));
+  await chromeBox.click();
+  await page.waitForTimeout(200);
+  check("and back on restores it", await fadeClass());
+}
 
 // Print, the tab's one action rather than a preference — it moved off the
 // titlebar and this row is now the only way to reach it. Chromium cannot open an
@@ -2345,14 +2388,21 @@ check(
 const geom = await right.evaluate(() => {
   const p = document.getElementById("pty-pane").getBoundingClientRect();
   const d = document.getElementById("content-scroll").getBoundingClientRect();
+  const m = document.getElementById("main-wrap").getBoundingClientRect();
   return { px: Math.round(p.x), pw: Math.round(p.width), ph: Math.round(p.height),
-           dr: Math.round(d.right), dh: Math.round(d.height) };
+           dr: Math.round(d.right), mh: Math.round(m.height) };
 });
-// Beside the document rather than under it, and full height — the shape a
-// bottom dock cannot produce, so this fails if the grid never applied.
+// Beside the document rather than under it, and spanning both rows of
+// `#main-wrap` — the shape a bottom dock cannot produce, so this fails if the
+// grid never applied.
+//
+// Against `#main-wrap` rather than against the document, which is what it used
+// to compare with. Under `ui.titlebar_fade` the scroller is pulled 38px up under
+// the bar and is *taller* than the box it lives in, so "as tall as the document"
+// stopped being the same claim as "full height" on exactly one platform.
 check(
   "it sits beside the document, not under it",
-  geom.px >= geom.dr && geom.pw > 200 && geom.ph >= geom.dh,
+  geom.px >= geom.dr && geom.pw > 200 && geom.ph >= geom.mh - 1,
   JSON.stringify(geom),
 );
 const rightSpawns = await right.evaluate(() => window.__CALLS__.filter((c) => c.cmd === "pty_spawn"));
@@ -2641,6 +2691,52 @@ const widthPatches = () =>
 
 // --- 4a. the tree drag ---
 check("the persisted tree width is applied on boot", (await treeWidthPx()) === 320, `${await treeWidthPx()}`);
+
+// --- 4a0. the sidebar owns the top-left corner ---
+// `#workspace` is a 2x2 grid with the sidebar spanning both rows, so the tree
+// reaches the top of the window and the bar spans only the document beside it.
+// Geometry rather than class names: the whole point of the grid is where the
+// boxes land, and a `grid-area` typo leaves every class exactly where it was.
+const chromeMac = await chrome.evaluate(() => document.body.classList.contains("mac"));
+const topGeom = () => chrome.evaluate(() => {
+  const s = document.getElementById("sidebar").getBoundingClientRect();
+  const t = document.getElementById("titlebar").getBoundingClientRect();
+  return {
+    st: Math.round(s.top), sh: Math.round(s.height), sr: Math.round(s.right),
+    tt: Math.round(t.top), tl: Math.round(t.left),
+    lights: getComputedStyle(document.getElementById("sidebar-lights")).display,
+    pad: getComputedStyle(document.getElementById("titlebar")).paddingLeft,
+    wh: Math.round(window.innerHeight),
+  };
+});
+let g = await topGeom();
+check("the open sidebar reaches the top of the window", g.st === 0, JSON.stringify(g));
+check("and runs its full height", g.sh === g.wh, JSON.stringify(g));
+check("the bar starts where the tree ends", g.tl === g.sr && g.tt === 0, JSON.stringify(g));
+// The lights' room is the sidebar's while the tree is open, so the bar owes them
+// nothing — 10px is `#titlebar`'s own padding, not a gutter.
+check(
+  "the lights' strip is the sidebar's, on macOS only",
+  g.lights === (chromeMac ? "block" : "none"),
+  JSON.stringify(g),
+);
+check("and the bar keeps its ordinary padding", g.pad === "10px", JSON.stringify(g));
+
+await chrome.keyboard.press("Control+b");
+await chrome.waitForTimeout(120);
+g = await topGeom();
+check("collapsing hands the corner back to the bar", g.tl === 0, JSON.stringify(g));
+check("the sidebar's strip goes with it", g.lights === "none", JSON.stringify(g));
+// The other half of the same handover, and the one a reader notices: with no
+// tree in the corner the bar has to clear the traffic lights itself.
+check(
+  "and the bar takes the 78px gutter on macOS",
+  g.pad === (chromeMac ? "78px" : "10px"),
+  JSON.stringify(g),
+);
+await chrome.keyboard.press("Control+b");
+await chrome.waitForTimeout(120);
+check("expanding gives it back", (await topGeom()).pad === "10px");
 
 // Dragged well past the maximum: the clamp is the frontend's, so the config
 // file never has to reject what the handle sent.

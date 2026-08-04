@@ -1,5 +1,106 @@
 # Session log
 
+## 2026-08-04 — the window comes to the front, and the tree takes the corner
+
+Two reported bugs and a look. Launching from the CLI left the window behind the
+shell; toggling the macOS titlebar left the window in a state nothing could undo.
+Both fixed, then the top bar was rebuilt around the sidebar and given the
+Preview-style dissolve — with one deviation the measurement forced.
+
+### What happened
+
+1. **`set_focus` after `show`, in `.setup()`.** `tauri.conf.json` declares the
+   window `visible: false`, so `main.rs` shows it by hand — and `show` is only
+   `makeKeyAndOrderFront`, which orders the window to the front of *this*
+   application. A dreamd launched from a terminal is not the frontmost
+   application, so the window came up behind the shell. Spotlight worked because
+   LaunchServices activates on its behalf. `adopt_root` had paired the two calls
+   all along; the launch path had not. Verified both arms by polling System
+   Events for the frontmost process: with the fix `dreamd` by t=2s, without it
+   never.
+2. **`chrome`, a new module, and the rule it exists to state: `set_decorations`
+   must never be called on macOS.** tao rebuilds the style mask from scratch on
+   every call — `Closable | Miniaturizable | Resizable | Titled` for `true` —
+   which drops the `FullSizeContentView` and transparent-titlebar bits the window
+   was *created* with. So `ui.titlebar` off and on again did not restore the
+   overlay: it produced an opaque native bar over a page laid out for none, and
+   there is no second call that puts those bits back. The module is a no-op on
+   macOS and the settings row is hidden there, the way the menubar row already
+   was. It briefly hid the traffic lights instead (via `objc2-app-kit`,
+   `standardWindowButton`/`setHidden`, verified through the accessibility tree in
+   both states and both dispatch arms) — correct, reversible, and then thrown
+   away when the ask turned out to be that the lights stay in every mode. The
+   `objc2` dependencies went with it.
+3. **`#workspace` is a 2x2 grid and the sidebar spans both rows.** `#titlebar`
+   moved into it, column 2 — not a row above it — so the tree reaches the top of
+   the window and the bar spans only the document. On macOS that is what puts the
+   traffic lights *inside* the tree: `#sidebar-lights` is 38px of the sidebar's
+   own background holding the corner, and `#titlebar` takes the 78px gutter back
+   only under `body.nav-collapsed`. Exactly one of the two owes them room at any
+   moment. A side effect worth having: all three children are now placed by
+   explicit `grid-area`, which turned `body.view-mode #workspace` from a comment
+   that says "measured in Chromium, not reasoned about" into an ordinary rule —
+   auto-placement was what used to drop `#main-wrap` into the zero-width track.
+4. **`ui.titlebar_fade`, macOS-only, on by default.** `#content-scroll` is pulled
+   up under the bar with `margin-top: -38px` and given the same number back as
+   padding, so prose passes beneath it. Only the scroller moves: `#main-wrap`
+   stays in row 2, which keeps the agent pane, the find bar and both panels out
+   from under a bar none of them should be under. The scrim is a `::before`
+   because a mask applies to an element's *children* and masking `#titlebar`
+   would fade the buttons with it; the mask carries the translucency as well as
+   the fade, so no `color-mix` — Safari 16.2 against a 10.15 floor. It is the one
+   window key a repo may set: it takes no button away and walking to another repo
+   undoes it.
+
+### Mistakes & deviations
+
+- **Built it with `backdrop-filter`, measured it, took it out.** Preview and the
+  Claude desktop app blur what passes under their bars. Here that cost **+38%
+  renderer main-thread time per scroll** — 282ms -> 392ms over 30 wheel ticks on
+  the 2MB mixed corpus, arms interleaved as a `body.chrome-fade` toggle inside
+  one page so the machine could not favour either, and the two sets did not
+  overlap at all. `blur(6px)` cost +37.5%, so the price is the per-frame backdrop
+  readback and not the radius — there is no cheaper blur to reach for. The masked
+  scrim alone measured -3.2%, i.e. free, and the visual difference is that fading
+  glyphs dim rather than also going soft. Shipped without it. The user asked for
+  "a gradient of transparency that text vanishes behind"; the blur was an
+  addition, and it did not get to cost a third of a frame budget.
+- **`perf/run.sh quick` could not answer that question, and saying so mattered.**
+  It reported the *Rust* benches 10-15% slower on a CSS-only change, which is
+  impossible — the machine was loaded, and every row including the scroll one was
+  contaminated. The one-page interleaved A/B is what a Chromium row is worth
+  trusting on. Recorded in CLAUDE.md next to the rule.
+- Two harness assertions had to be corrected rather than worked around. The
+  right-dock geometry check read "full height" as "as tall as the document", and
+  under `titlebar_fade` the scroller is 38px *taller* than the box it lives in —
+  it now measures against `#main-wrap`, which is what it always meant. The
+  settings-page stub answered `get_ui` with `default: null`, so the Window tab's
+  checks started from a state the page had not booted with; it now answers off
+  the same table `set_config` merges into.
+- A stray `sed` alternation (BSD sed has no `\|` in BRE) swallowed a whole
+  `perf/run.sh pass` run's output and left a stale lock directory behind. The run
+  itself had completed; `perf/lib/compare.mjs` takes the results file directly,
+  which is how it was read back without re-running.
+
+### State
+
+`cargo build`, `cargo fmt --check` and `clippy -D warnings` clean. 377 unit
+tests, `config_check` 59, `theme_check`, `node --test ui/paths.test.mjs` 10, and
+`ui-check.mjs` 372 all pass. New harness coverage: the sidebar's top/height, the
+bar's origin, the 78px gutter handover on collapse, and the fade class round
+trip — each proved to have teeth by breaking the rule behind it and watching the
+check go red. The fade was also looked at, not just asserted: both states
+rendered in Chromium and compared.
+
+**The perf tier could not be certified this session, and it is not evidence of
+anything.** A `tree_engine` test binary from another project was at 405% CPU with
+the load average climbing 2 -> 32 during the runs; `bench.walk_startup_pair/5000`
+came out at 271ms and then 71ms on two runs of *identical* code, a 3.8x spread on
+a filesystem-walk path this session never touched. Worth re-running on a quiet
+machine before reading anything into `perf/results/pass-7c944f3-20260804-17{4436,5656}.json`.
+The one measurement that survives machine load is the interleaved A/B above, and
+it says the shipped bar is free.
+
 ## 2026-08-03 — one highlight per passage, and a way to resize it
 
 A feature session with one report behind it: the same text could be highlighted

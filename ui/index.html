@@ -96,15 +96,88 @@
         position: fixed; top: 0; left: 0; right: 0; height: 10px; z-index: 0;
       }
 
-      /* titlebar: shares the row with the macOS traffic lights (overlay style) */
+      /* dreamd's own top bar. A child of `#workspace`, in its second column —
+         so it spans the document and not the tree, and the sidebar reaches the
+         top of the window beside it. See `#workspace` for the grid. */
       #titlebar {
         display: flex; align-items: center; gap: 8px;
-        height: 38px; flex: 0 0 38px; padding: 0 10px;
+        height: 38px; padding: 0 10px;
         border-bottom: 1px solid var(--border, #2e2940);
         background: var(--sidebar-bg, #100e17);
         position: relative; z-index: 1; /* over #drag-strip — see above */
       }
-      body.mac #titlebar { padding-left: 78px; } /* clear the traffic lights */
+      /* The macOS traffic lights sit over whatever is in the window's top-left
+         corner, so *which* box owes them 78px of clearance depends on whether
+         the tree is open: the sidebar when it is (`#sidebar-lights`), this bar
+         when it is not. Two rules rather than one padded box, because the
+         alternative — padding the bar always — leaves 78px of nothing between
+         the tree's right edge and the first button. */
+      body.mac.nav-collapsed #titlebar { padding-left: 78px; }
+      /* The lights' room inside the sidebar. `display` rather than a height of
+         zero so it takes no part in the flex column when it is not wanted, and
+         `:not(.nav-collapsed)` rather than a class of its own so it can never
+         disagree with the rule above about which box is holding the corner. */
+      #sidebar-lights { display: none; flex: 0 0 38px; }
+      body.mac:not(.nav-collapsed) #sidebar-lights { display: block; }
+
+      /* --- the fading bar (`ui.titlebar_fade`) -----------------------------
+         The bar stops being a lid and becomes a dissolve: a scrim of the page's
+         own background, masked out along a gradient, so a line of prose fades
+         away as it scrolls under rather than being cut off at a border.
+
+         Three pieces, and each is load-bearing:
+
+         1. `#content-scroll` is pulled up under the bar with a negative margin
+            and given the same number back as *padding*, so the document starts
+            below the bar at rest and passes beneath it as it scrolls. Only the
+            scroller moves — `#main-wrap` stays in row 2, which is what keeps
+            the agent pane, the find bar, the stack panel and the outline card
+            out from under a bar none of them should be under. Moving
+            `#main-wrap` itself was the obvious version and put the pane's
+            header behind the scrim.
+         2. The scrim is a `::before`, not the bar itself, because a mask applies
+            to an element's children too — masking `#titlebar` would fade the
+            buttons along with it. The pseudo-element is behind them
+            (`z-index: -1`, contained by the bar's own stacking context) and
+            hangs 26px *below* the bar, which is where the last of the gradient
+            lives.
+         3. The mask carries the translucency as well as the fade: its alpha is
+            the element's alpha, so one gradient does both and no `color-mix` is
+            needed to derive a see-through `--bg`. That matters — `color-mix`
+            is Safari 16.2, and `minimumSystemVersion` here is 10.15.
+
+         **No `backdrop-filter`, and that is measured, not taste.** Preview and
+         the Claude desktop app blur what passes under their bars, and adding
+         `backdrop-filter` here costs **+38% renderer main-thread time per
+         scroll** — 282ms -> 392ms over 30 wheel ticks on the 2MB mixed corpus,
+         arms interleaved in one page so the machine could not favour either,
+         and the two sets did not overlap at all. `blur(6px)` cost +37.5%: the
+         price is the per-frame backdrop readback, not the radius, so there is no
+         cheaper blur to reach for. Chromium-relative, as every number from
+         `perf/harness` is — but a backdrop readback is a backdrop readback on
+         WebKit too. The masked scrim alone measured -3.2%, i.e. free, and the
+         visual difference is that fading glyphs dim rather than also going soft.
+         A reader scrolling a long document is the whole app; it does not get to
+         cost a third of a frame budget for that.
+
+         Scoped to `body.mac` on top of the class: the key exists everywhere and
+         `TITLEBAR_FADE_DEFAULT` is false everywhere else. */
+      body.mac.chrome-fade #titlebar {
+        background: transparent;
+        border-bottom: none;
+      }
+      body.mac.chrome-fade #titlebar::before {
+        content: ""; position: absolute; inset: 0 0 -26px 0; z-index: -1;
+        pointer-events: none;
+        background: var(--bg, #14121c);
+        -webkit-mask-image: linear-gradient(to bottom,
+          rgba(0,0,0,0.96) 0%, rgba(0,0,0,0.94) 42%,
+          rgba(0,0,0,0.6) 68%, rgba(0,0,0,0) 100%);
+        mask-image: linear-gradient(to bottom,
+          rgba(0,0,0,0.96) 0%, rgba(0,0,0,0.94) 42%,
+          rgba(0,0,0,0.6) 68%, rgba(0,0,0,0) 100%);
+      }
+      body.mac.chrome-fade #content-scroll { margin-top: -38px; padding-top: 38px; }
       #tb-actions { margin-left: auto; display: flex; gap: 6px; align-items: center; }
       #btn-stack { position: relative; }
       #btn-stack .badge {
@@ -115,19 +188,34 @@
       #btn-stack .badge.show { display: block; }
       #btn-hl-mode.active { background: var(--hl, #f2d16b); border-color: var(--hl, #f2d16b); color: var(--hl-text, #1a1a1a); }
 
-      /* workspace grid: sidebar | main
+      /* workspace grid: sidebar | (titlebar over main)
          The width is a variable rather than a literal because the drag handle
          writes it — as an inline style on <html>, which outranks any `:root`
          a palette might declare. `config.ui.tree_width` clamps it to 140–600
          on the way in and out, so this fallback is the only other place the
-         old fixed 260 still appears. */
+         old fixed 260 still appears.
+
+         Two rows, and the sidebar spans both: that is what makes the tree reach
+         the *top* of the window rather than starting below a full-width bar,
+         which on macOS is what puts the traffic lights inside the tree instead
+         of floating over the document's bar. The bar is column 2 only, so its
+         buttons sit over the document they act on.
+
+         Every child is placed explicitly. Auto-placement is what made
+         `body.view-mode` below a measurement rather than a rule — with three
+         children and one declared column, `#main-wrap` used to land in the
+         wrong track and lay out at width zero. Named areas cannot do that, so
+         the view-mode rule is now an ordinary override. */
       #workspace {
         flex: 1; min-height: 0; display: grid;
-        grid-template-columns: var(--tree-width, 260px) 1fr;
-        grid-template-rows: minmax(0, 1fr);
+        grid-template-columns: var(--tree-width, 260px) minmax(0, 1fr);
+        grid-template-rows: auto minmax(0, 1fr);
         overflow: hidden;
       }
-      body.nav-collapsed #workspace { grid-template-columns: 0 1fr; }
+      #sidebar   { grid-area: 1 / 1 / 3 / 2; }
+      #titlebar  { grid-area: 1 / 2 / 2 / 3; }
+      #main-wrap { grid-area: 2 / 2 / 3 / 3; }
+      body.nav-collapsed #workspace { grid-template-columns: 0 minmax(0, 1fr); }
       body.nav-collapsed #sidebar { overflow: hidden; border-right: none; }
 
       #sidebar {
@@ -150,8 +238,12 @@
       #tree-resize:hover, body.dragging-tree #tree-resize { background: var(--accent, #a48cf5); opacity: 0.5; }
       body.nav-collapsed #tree-resize { display: none; }
       body.dragging-tree { cursor: col-resize; user-select: none; -webkit-user-select: none; }
+      /* `min-height` pins it to the bar's 38px. Off macOS there is no
+         `#sidebar-lights` above it, so this row and `#titlebar` are side by side
+         at the top of the window and a one-pixel disagreement between them reads
+         as a misaligned tree. */
       #sidebar-header {
-        display: flex; align-items: center; gap: 6px;
+        display: flex; align-items: center; gap: 6px; min-height: 38px;
         padding: 8px 8px 8px 12px; border-bottom: 1px solid var(--border, #2e2940);
       }
       /* The root path field. An `<input>` rather than a span with an editor
@@ -221,6 +313,13 @@
       }
       body.hl-mode #content { cursor: crosshair; }
       body.hl-mode #content-scroll { box-shadow: inset 0 3px 0 var(--hl, #f2d16b); }
+      /* In fade mode the scroller's top edge is *under* the bar, so an inset
+         shadow there paints where nobody can see it. The stripe moves to the
+         bar's own bottom edge, which is the same line as far as the reader is
+         concerned — and it is a plain shadow rather than part of the masked
+         `::before`, so it stays a crisp 3px instead of dissolving with it. */
+      body.mac.chrome-fade.hl-mode #content-scroll { box-shadow: none; }
+      body.mac.chrome-fade.hl-mode #titlebar { box-shadow: inset 0 -3px 0 var(--hl, #f2d16b); }
 
       #content-scroll { flex: 1; overflow: auto; position: relative; min-height: 0; }
       #content { max-width: var(--content-width, 700px); margin: 0 auto; padding: 32px 40px 120px; }
@@ -1091,14 +1190,14 @@
       body.view-mode #pty-pane,
       body.view-mode #agent-popout,
       body.view-mode #stack-panel { display: none; }
-      /* One column, not `0 1fr` — and the difference is the whole screen.
-         `display: none` takes the sidebar out of grid *placement* entirely,
-         unlike `body.nav-collapsed`, which keeps it as a zero-width item. With
-         two tracks declared, `#main-wrap` therefore becomes the first grid item
-         and lands in the `0` track: the document lays out at width 0 and view
-         mode shows a blank window. Measured in Chromium, not reasoned about.
-         Adding a third child to `#workspace` means revisiting this line. */
-      body.view-mode #workspace { grid-template-columns: 1fr; }
+      /* Collapse the tree's track, the same way `nav-collapsed` does. This used
+         to have to be `1fr` — one track, not two — because `display: none`
+         takes the sidebar out of grid *placement* entirely and `#main-wrap`,
+         auto-placed, fell into the `0` track and laid out at width zero. It was
+         a measurement rather than a rule, and it stopped being one when
+         `#workspace` started placing all three children by area: `#main-wrap`
+         is column 2 whatever else is on screen. */
+      body.view-mode #workspace { grid-template-columns: 0 minmax(0, 1fr); }
 
       /* command palette */
       #palette-overlay {
@@ -1516,49 +1615,14 @@
          it sits under the titlebar. -->
     <div id="drag-strip" data-tauri-drag-region></div>
 
-    <div id="titlebar" data-tauri-drag-region>
-      <div id="tb-actions">
-        <button id="btn-outline" class="icon" data-tip="Toggle contents" data-tip-key="toggle_outline">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h2"/><path d="M9 6h11"/><path d="M7 12h2"/><path d="M12 12h8"/><path d="M10 18h2"/><path d="M15 18h5"/></svg>
-        </button>
-        <button id="btn-pane" class="icon" data-tip="Toggle Claude Code pane" data-tip-key="toggle_pane">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M6 9l3 3-3 3"/><path d="M12 15h5"/></svg>
-        </button>
-        <!-- Print used to sit here. It is in Settings → Window now: it is a rare,
-             deliberate action with no keybind of its own, and the bar's right
-             end is worth more to the three buttons that carry the reading loop.
-             See `renderWindow` in app.js. -->
-        <button id="btn-settings" class="icon" data-tip="Settings" data-tip-key="settings">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1.08-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1.08 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-        </button>
-        <button id="btn-hl-mode" class="icon" data-tip="Highlight mode (auto-highlight on select)">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l4 4-8 8-4 1 1-4z"/><path d="M13 7l4 4"/><path d="M5 21h6"/></svg>
-        </button>
-        <!-- The clipboard icon means the clipboard, and nothing else. -->
-        <button id="btn-copy" class="icon" data-tip="Copy stack to clipboard" data-tip-key="copy_stack">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/></svg>
-        </button>
-        <!-- Stack and send are adjacent because they are two halves of one
-             gesture and now two halves of one *place*: both panels dock to the
-             window's right edge, the stack opens under this button, and pressing
-             send closes it and opens the pane in the space it was holding. The
-             stack keeps the ordinary button colour — it opens a panel, which is
-             not the primary action of the bar. -->
-        <button id="btn-stack" class="icon" data-tip="Toggle stack" data-tip-key="toggle_stack">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l9 5-9 5-9-5 9-5z"/><path d="M3 12l9 5 9-5"/><path d="M3 17l9 5 9-5"/></svg>
-          <span class="badge" id="stack-badge">0</span>
-        </button>
-        <!-- The rightmost slot, and the primary one: Ctrl+Enter's whole verb —
-             open the pane, cold-start if needed, send the stack. A paper plane
-             rather than a clipboard, because what happens now is a send. -->
-        <button id="btn-send" class="icon primary" data-tip="Send stack to Claude" data-tip-key="send_stack">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.5 2.5L11 13"/><path d="M21.5 2.5l-6.5 19-4-8.5-8.5-4z"/></svg>
-        </button>
-      </div>
-    </div>
-
     <div id="workspace">
       <aside id="sidebar">
+        <!-- The macOS traffic lights' room, and nothing else: no content, no
+             border, just 38px of the sidebar's own background with the drag
+             attribute on it. Present only when the tree is open on macOS — see
+             its rule — because that is the only arrangement in which the lights
+             are over the sidebar rather than over the bar. -->
+        <div id="sidebar-lights" data-tauri-drag-region></div>
         <div id="sidebar-header">
           <!-- Click-to-edit root: basename unfocused, full path focused. An
                invalid path leaves you in the current root. See `wireRootField`. -->
@@ -1579,6 +1643,47 @@
         <div id="tree-resize" role="separator" aria-orientation="vertical"
              aria-label="Resize the file tree"></div>
       </aside>
+
+      <div id="titlebar" data-tauri-drag-region>
+        <div id="tb-actions">
+          <button id="btn-outline" class="icon" data-tip="Toggle contents" data-tip-key="toggle_outline">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h2"/><path d="M9 6h11"/><path d="M7 12h2"/><path d="M12 12h8"/><path d="M10 18h2"/><path d="M15 18h5"/></svg>
+          </button>
+          <button id="btn-pane" class="icon" data-tip="Toggle Claude Code pane" data-tip-key="toggle_pane">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M6 9l3 3-3 3"/><path d="M12 15h5"/></svg>
+          </button>
+          <!-- Print used to sit here. It is in Settings → Window now: it is a rare,
+               deliberate action with no keybind of its own, and the bar's right
+               end is worth more to the three buttons that carry the reading loop.
+               See `renderWindow` in app.js. -->
+          <button id="btn-settings" class="icon" data-tip="Settings" data-tip-key="settings">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1.08-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1.08 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+          </button>
+          <button id="btn-hl-mode" class="icon" data-tip="Highlight mode (auto-highlight on select)">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l4 4-8 8-4 1 1-4z"/><path d="M13 7l4 4"/><path d="M5 21h6"/></svg>
+          </button>
+          <!-- The clipboard icon means the clipboard, and nothing else. -->
+          <button id="btn-copy" class="icon" data-tip="Copy stack to clipboard" data-tip-key="copy_stack">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/></svg>
+          </button>
+          <!-- Stack and send are adjacent because they are two halves of one
+               gesture and now two halves of one *place*: both panels dock to the
+               window's right edge, the stack opens under this button, and pressing
+               send closes it and opens the pane in the space it was holding. The
+               stack keeps the ordinary button colour — it opens a panel, which is
+               not the primary action of the bar. -->
+          <button id="btn-stack" class="icon" data-tip="Toggle stack" data-tip-key="toggle_stack">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l9 5-9 5-9-5 9-5z"/><path d="M3 12l9 5 9-5"/><path d="M3 17l9 5 9-5"/></svg>
+            <span class="badge" id="stack-badge">0</span>
+          </button>
+          <!-- The rightmost slot, and the primary one: Ctrl+Enter's whole verb —
+               open the pane, cold-start if needed, send the stack. A paper plane
+               rather than a clipboard, because what happens now is a send. -->
+          <button id="btn-send" class="icon primary" data-tip="Send stack to Claude" data-tip-key="send_stack">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.5 2.5L11 13"/><path d="M21.5 2.5l-6.5 19-4-8.5-8.5-4z"/></svg>
+          </button>
+        </div>
+      </div>
 
       <div id="main-wrap">
         <div id="content-scroll" tabindex="-1">
@@ -1804,7 +1909,7 @@
                application rather than to this window and the toggle would be
                dead. -->
           <div class="st-pane" id="st-pane-window">
-            <p class="st-note">The chrome around the reader, and the one action that does not belong on the titlebar. The two bars are your desktop's rather than anything dreamd paints; both take effect immediately, and both are off by default — the document is the point.</p>
+            <p class="st-note">The chrome around the reader, and the one action that does not belong on the titlebar. What is here is your desktop's rather than anything dreamd paints; every toggle takes effect immediately, and the defaults lean toward less of it — the document is the point.</p>
             <div id="st-window"></div>
           </div>
 

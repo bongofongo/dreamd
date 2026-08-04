@@ -11,6 +11,7 @@
 pub mod agent;
 pub mod annotations;
 pub mod catalog;
+pub mod chrome;
 pub mod cli;
 pub mod config;
 pub mod flow;

@@ -496,6 +496,22 @@ the upgrade procedure.
   has a materially different cost per platform.
 - `send` — assembles markdown, writes a temp file, then tmux `send-keys` a fixed
   `read @<file>` prompt (falling back to clipboard). See tenet 3.
+- `chrome` — the other half of `apply_chrome`: `ui.titlebar`, the window
+  manager's bar, `set_decorations`. **A no-op on macOS, and that is the whole
+  module.** tao rebuilds the style mask from scratch on every
+  `set_decorations` call — `Closable | Miniaturizable | Resizable | Titled` for
+  `true` — dropping the `FullSizeContentView` and transparent-titlebar bits
+  `tauri.conf.json` created the window with. So toggling the bar off and back on
+  produced an *opaque* native bar on top of a page laid out for none,
+  unrecoverable short of hand-editing `config.toml`, and there is no second call
+  that puts those bits back. macOS has no bar to reclaim anyway — only the
+  traffic lights, which stay in every mode — so the settings panel hides the row
+  there (`WINDOW_TOGGLES`, `mac: false`) rather than offering a dead switch.
+  `ui.titlebar_fade` is the macOS-only preference that replaced it and never
+  reaches this module: it is how dreamd paints a row of its *own page*, so it is
+  CSS (`body.chrome-fade`) and the native window knows nothing about it. It is
+  also therefore the one window setting a repo may set — it takes no button away
+  and walking to another repo undoes it.
 - `menu` — the native menubar, and the only module with two whole `build`
   implementations. muda exposes every `PredefinedMenuItem` on every platform but
   its GTK backend silently *drops* all but Separator/Cut/Copy/Paste/SelectAll/About
@@ -524,7 +540,8 @@ the upgrade procedure.
   existing `WEBKIT_DISABLE_DMABUF_RENDERER` always wins, including `=0`.
 
 **Platform surface.** After Linux became a shipping target the whole
-`#[cfg(target_os = "macos")]` surface is three things: `menu::build`'s two arms,
+`#[cfg(target_os = "macos")]` surface is four things: `menu::build`'s two arms,
+`chrome::set_titlebar`'s two arms (one of which is empty on purpose),
 `trash_context`'s `DeleteMethod::NsFileManager`, and `pty`'s `DEFAULT_SHELL`.
 Everything else — including `adopt_root`, which carries the config reload,
 re-walk, watcher re-arm, marks flush and socket retirement — compiles on both, on
@@ -534,6 +551,45 @@ purpose: gating it was what kept it from ever being built off macOS.
 file and the themes directory need no per-platform anything. `webkit` is the
 pattern to copy for the next such quirk: a runtime probe of something only the
 affected system has, not a `cfg` arm nobody else compiles.
+
+**`#workspace` is a 2×2 grid and the sidebar spans both rows.** `#titlebar` is
+its child, in column 2 — not a row above it — so the tree reaches the *top* of
+the window and the bar spans only the document beside it. That is what puts the
+macOS traffic lights inside the tree when it is open: `#sidebar-lights` is 38px
+of the sidebar's own background holding the corner, and `#titlebar` takes the
+78px gutter back only under `body.nav-collapsed`. Exactly one of the two owes
+the lights room at any moment, and the pair of rules is written so they cannot
+disagree. All three children are placed by explicit `grid-area`, which is what
+turned `body.view-mode #workspace` from a measurement into a rule — auto-placement
+used to drop `#main-wrap` into the zero-width track and lay the document out at
+width 0.
+
+**The fading bar moves the scroller, not the wrapper.** `ui.titlebar_fade` makes
+`#titlebar` transparent and puts a scrim on a `::before` that hangs 26px below
+it, masked along a gradient; `#content-scroll` is pulled up under it with
+`margin-top: -38px` and given the same number back as padding. Only the scroller
+moves — `#main-wrap` stays in row 2, which is what keeps the agent pane, the find
+bar, the stack panel and the outline card out from under a bar none of them
+should be under (moving `#main-wrap` was the obvious version and put the pane's
+header behind the scrim). The scrim is a pseudo-element because a mask applies to
+an element's *children*: masking `#titlebar` would fade the buttons with it. The
+mask carries the translucency as well as the fade, so no `color-mix` is needed to
+derive a see-through `--bg` — that matters, `color-mix` is Safari 16.2 and
+`minimumSystemVersion` is 10.15. A consequence: the scroller is 38px *taller*
+than `#main-wrap` in this mode, so a geometry assertion meaning "full height"
+must measure against the wrapper.
+
+**Do not add `backdrop-filter` to that bar.** Preview and the Claude desktop app
+blur what passes under theirs, and it was tried here: **+38% renderer main-thread
+time per scroll** (282ms -> 392ms, 30 wheel ticks, 2MB mixed corpus), arms
+interleaved as a `body.chrome-fade` toggle inside one page so the machine could
+not favour either, and the two sets did not overlap. `blur(6px)` cost +37.5% —
+the price is the per-frame backdrop readback, not the radius. The masked scrim
+alone measured -3.2%, i.e. free. Chromium-relative, like everything from
+`perf/harness`. Note the method: `perf/run.sh quick` could not answer this,
+because a loaded machine moved the *Rust* benches 10–15% on a CSS-only change and
+contaminated every row — a one-page interleaved A/B is what a Chromium row is
+worth trusting on.
 
 **The pop-out is one body in two containers, not two views.** `#agent-body` is
 *moved* between `#pty-pane` and `#agent-card` — `raisePopout` / `dockAgentBody`
