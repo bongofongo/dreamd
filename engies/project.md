@@ -2,7 +2,7 @@
 
 *This page is the daily landing spot for everyone on the team. It's kept up to date
 automatically and written so that you can be away for a week, read this in five
-minutes, and know exactly where things stand. Last updated: 2026-08-03.*
+minutes, and know exactly where things stand. Last updated: 2026-08-04.*
 
 ## What we're building
 
@@ -134,7 +134,8 @@ Two ideas that come up constantly:
 
 ## Where things stand right now
 
-**Status: v1 is built and works, and shipped as 0.2.0 on 2026-07-29.** The repo
+**Status: v1 is built and works, and shipped as 0.2.0 on 2026-07-29** (followed by
+0.2.1 on 2026-07-30 and 0.2.2 on 2026-08-03). The repo
 went from an empty scaffold to a working app in a single session on 2026-07-24.
 It compiles clean (`cargo build`),
 launches, and the send loop has been verified end to end — a real stack landed in a
@@ -273,6 +274,22 @@ causes were wrong.
 
 ## Recent updates
 
+- **2026-08-03** — **dreamd 0.2.2 released**, wrapping the highlight-overlap/resize
+  work and the two agent-pane fixes below.
+- **2026-08-03** — **Two small but visible agent-pane bugs fixed.** Clicking a
+  model chip (opus/sonnet/haiku) used to take two clicks — the first press
+  changed nothing on screen, and only the second (or whatever you typed next)
+  made it visibly switch. Claude Code reports which model it's using at the
+  *start* of a turn, before it has read what you just sent, so the chip was
+  always confirming the *previous* turn's choice one step late. It now lights
+  the moment you click it, and only reverts if the model genuinely hasn't
+  changed within two turns. Separately, the agent pane's text box, its
+  permission-card buttons and the embedded terminal were always a near-white
+  colour no matter which theme was active, because they read a colour
+  variable (`--fg`) that no theme file has ever actually defined — so every
+  one of them silently fell back to the same hardcoded shade, most visible on
+  light themes. They now follow the active palette like the rest of the
+  window.
 - **2026-08-03** — **The same passage can only be highlighted once, and any
   highlight can now be resized.** Highlighting text that was already highlighted
   used to work, and quietly cost you the older mark: only the topmost one
