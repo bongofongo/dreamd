@@ -152,7 +152,12 @@ in CI — see **Releasing** below.
 
 ## Performance
 
-Measurement lives in `perf/` and runs entirely locally — no CI.
+Measurement lives in `perf/` and runs locally — no CI. There is a workflow that
+runs the quick tier on both platforms, but it is parked out of tree and enabled
+by hand, because a shared runner is not a quiet machine: its numbers gate
+nothing and move no baseline. The reference numbers are one machine's and live
+outside this repo, so a clone without them runs every tier with the comparison
+skipped rather than failing.
 
 ```sh
 ./perf/run.sh quick     # ~60s    after an edit
@@ -227,14 +232,21 @@ See `perf/README.md` for what each tier measures and how much to trust it.
   pair you untick stays unticked as you add and remove others, so **Send
   selected** sends the selection you actually built.
 
-### Send behavior (tmux optional)
+### Send behavior
 
-1. If tmux is running and a pane running `claude` is found (or a pane is pinned
-   in config), dreamd writes the query to a temp file and types a fixed
-   `read @<file>` prompt into that pane — zero paste. Your highlighted text is
-   never interpolated into a shell command.
-2. Otherwise the query is copied to your clipboard (and kept as a temp file) so
-   you can paste it into Claude.ai / the desktop app / any agent.
+The send key opens dreamd's own agent pane (`Ctrl+T` toggles it independently),
+starting a Claude Code session on first use, and submits the stack there. The
+conversation is drawn by dreamd — the answer is typeset like the document, not
+painted into a terminal.
+
+The older path out to tmux is still here, unbound and absent from the settings
+panel, for when you want to compare the two: bind `keymap.send_stack_tmux` by
+hand and it does what it always did — if tmux is running and a pane running
+`claude` is found (or a pane is pinned in config), dreamd writes the query to a
+temp file and types a fixed `read @<file>` prompt into that pane, zero paste;
+otherwise the query goes to your clipboard (and stays as a temp file) so you can
+paste it anywhere. Either way your highlighted text is never interpolated into a
+shell command.
 
 ## Keybinds (defaults)
 
@@ -244,12 +256,13 @@ See `perf/README.md` for what each tier measures and how much to trust it.
 | Open a file *(macOS menu)*  | `⌘⇧O`                      |
 | Open file palette           | `Ctrl+F`                   |
 | Palette previous / next     | `Ctrl+P` / `Ctrl+N`        |
-| Highlight selection         | `h` (or `Ctrl+H`)          |
+| Highlight selection         | `h` (or `Ctrl+Shift+H`)    |
 | Add annotation (in modal)   | `Ctrl+Y`                   |
 | Toggle highlight mode       | toolbar highlighter icon   |
 | Toggle contents panel       | `Ctrl+I`                   |
 | Toggle file tree            | `Ctrl+B`                   |
 | Toggle stack panel          | `Ctrl+O`                   |
+| Toggle the agent pane       | `Ctrl+T`                   |
 | View mode (hide all chrome) | `Ctrl+M` (`Esc` exits)     |
 | Send stack                  | `Ctrl+Enter`               |
 | Copy stack to clipboard     | `Ctrl+C`                   |
@@ -290,9 +303,12 @@ alias kept from before keybinds were configurable; turn it off with
 
 `Ctrl+,` (or the gear in the titlebar) opens the settings panel. Three tabs:
 
-- **Keys** — click a shortcut to record a new one. Duplicates are flagged, and a
-  shortcut a repo-local `.dreamd.toml` overrides is marked as such, so the panel
-  never claims a change took effect when it didn't.
+- **Keys** — click a shortcut to record a new one. A picker at the top spells
+  the primary modifier three ways — Ctrl, Cmd, or none at all (`Ctrl+F` becomes
+  a bare `f`) — which is a rendering of the same map, not a second one.
+  Duplicates are flagged, and a shortcut a repo-local `.dreamd.toml` overrides
+  is marked as such, so the panel never claims a change took effect when it
+  didn't.
 - **Themes** — a Light / Dark / System toggle, then every bundled and saved
   theme with a swatch. The toggle is independent of the theme, since every
   theme ships both; the swatch shows the appearance you are currently in. Click
@@ -321,18 +337,26 @@ tmux_target = "work:0.1"                 # pin a pane; skips auto-detect
 tmux_autodetect = true
 
 [keymap]
+mode = "linux"                           # how Ctrl is spelled: linux / mac / vim
 palette = "Ctrl+F"
 palette_prev = "Ctrl+P"
 palette_next = "Ctrl+N"
-highlight = "Ctrl+H"
+highlight = "Ctrl+Shift+H"
 send_stack = "Ctrl+Enter"
 toggle_stack = "Ctrl+O"
 toggle_outline = "Ctrl+I"
+toggle_pane = "Ctrl+T"                   # show / hide the agent pane
 toggle_tree = "Ctrl+B"
 toggle_view = "Ctrl+M"                   # hide all chrome; Esc also exits
 toggle_mode = "Ctrl+Shift+D"             # light <-> dark; System is in the panel
 jump_top = "Home"                        # scroll the document to the start
 jump_bottom = "End"                      # ...and to the end
+scroll_down = "j"                        # a line at a time, vim's keys
+scroll_up = "k"
+scroll_half_down = "d"                   # ...and half a screen at a time
+scroll_half_up = "u"
+pane_left = "Ctrl+H"                     # move focus between tree, document, panel
+pane_right = "Ctrl+J"
 next_file = "]"                          # next file in the sidebar's order
 prev_file = "["                          # ...previous; both wrap at the ends
 set_mark = "m"                           # bookmark this spot (one mark, global)
@@ -349,26 +373,42 @@ quick_highlight = true                   # also accept a bare `h` for highlight
 # send_stack_tmux = "Ctrl+Alt+Enter"     # send down the tmux path instead; unbound
 
 [agent]
-position = "bottom"                      # where the Claude Code pane docks; or "right"
+position = "right"                       # where the Claude Code pane docks; or "bottom"
 permission_mode = "accept-edits"         # or "default" / "plan" / "bypass-permissions"
+popout = "never"                         # or "send" / "always": float over the reader
 
 [ui]
 tree_width = 260                         # sidebar width in px, 140–600
+stack_width = 280                        # stack panel, 200–720
+pane_width = 380                         # agent pane docked right, 240–1200
+pane_height = 240                        # ...and docked bottom, 120–1200
 menubar = false                          # the native File / Edit / Help bar
-titlebar = false                         # the WM's close / minimize / maximize bar
+titlebar = false                         # the WM's bar; defaults on (and inert) on macOS
+titlebar_fade = true                     # macOS only: dissolve dreamd's own top bar
 ```
 
-Both `[ui]` chrome keys are off by default and live under Settings → Window,
-where they apply immediately. `menubar` is read on Linux and Windows only — on
-macOS the menubar belongs to the application rather than to the window — and
-`titlebar` defaults to `true` there, because macOS draws it as an overlay that
-costs no vertical space. Turning the menubar off takes its `Ctrl+Shift+O` /
-`Ctrl+Alt+O` with it: the bar is detached rather than hidden, which is the only
-state GTK will not undo the next time the window is shown. Click the repo name
-above the file tree to move to another folder without it. A window with no
-titlebar is still movable — drag the top few pixels of it.
+The four sizes are where your drag handles left them, and a number outside the
+range is clamped rather than rejected — a stale width costs you the nearest
+usable panel, not the rest of the file. The pane keeps a width *and* a height
+because its handle changes axis with `position`.
 
-Both `[agent]` keys are read when the pane opens, so changing either takes effect
+The chrome keys live under Settings → Window, where they apply immediately.
+`menubar` is off everywhere and read on Linux only — on macOS the menubar
+belongs to the application rather than to the window. `titlebar` is off on Linux
+and on by default on macOS, which draws it as an overlay that costs no vertical
+space; it is inert there in any case, since there is no such bar to reclaim —
+only the traffic lights, which stay. Turning the menubar off takes its
+`Ctrl+Shift+O` / `Ctrl+Alt+O` with it: the bar is detached rather than hidden,
+which is the only state GTK will not undo the next time the window is shown.
+Click the repo name above the file tree to move to another folder without it. A
+window with no titlebar is still movable — drag the top few pixels of it.
+
+`titlebar_fade` is not the window's frame at all — it is how dreamd paints a row
+of its own page, so it is CSS and the native window knows nothing about it. On
+by default on macOS, where dreamd's bar is the only bar there is; offered
+nowhere else, where the WM already draws one above it.
+
+Every `[agent]` key is read when the pane opens, so changing one takes effect
 on the next cold start rather than mid-session. `send_stack_tmux` is unbound and
 absent from the settings panel: the embedded pane is the send path, and this is
 the escape hatch back to `tmux send-keys` when you want to compare them.

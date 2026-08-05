@@ -797,7 +797,10 @@ In this repo:
 
 - `CLAUDE.md` — this file. The architecture doc, and the best one here.
 - `CONTRIBUTING.md` — the straight-to-main convention and what to run before a PR.
-- `README.md` — the user-facing feature list, install and known limits.
+- `README.md` — the user-facing feature list, install and known limits, and the
+  one doc that is also a *claim about the code*: every keybind default, config
+  key, CLI flag and theme name it prints is checkable, and several had drifted
+  before anyone checked. Change it in the same commit as the default it documents.
 - `perf/README.md` — what each performance tier measures and how much to trust it.
 - `website/CLAUDE.md` — the public site at `fongo.uk/dreamd`. A standalone Astro
   project, deployed separately; source of truth for everything under `website/`.
@@ -815,8 +818,18 @@ In `notes/`:
   materially changes the project story, update it in the same session rather than
   waiting.
 - `notes/plan.md` — original design intent. Historical; don't rewrite it.
+  `notes/agentic-direction.md` and `notes/overnight_plan.md` read the same way:
+  the reasoning behind work that has since shipped.
 - `notes/plans/`, `notes/ideas/{done,hold}/`, `notes/bugs/` — per-feature design
-  notes and the idea backlog, by state.
+  notes and the idea backlog, by state. `notes/bugs/` is where raw notes are
+  filed before triage, and is not either log below.
+- `notes/bugs.md` and `notes/patch-log.md` — two newest-first logs with a real
+  split: `bugs.md` is for a bug that reached a *release artifact* (symptom,
+  cause, what would have caught it), `patch-log.md` for a between-release
+  one-change repair that would otherwise leave no trace but a commit subject.
+- `notes/todo.md`, `notes/todo2.md` — queues, not logs. An item is **deleted**
+  when it lands; the history is `session-log.md`'s job. A queue nobody clears
+  reads as a list of things that don't work.
 - `notes/perf-baseline.json` — the perf reference numbers; see Working practices.
 - `notes/workflows/perf.yml` — the perf workflow, parked rather than run.
 - `notes/upkeep/ledger.md`, `notes/upkeep-findings/` — the nightly Routine's
