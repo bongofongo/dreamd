@@ -87,7 +87,14 @@ export function diff(current, baselinePath, opts = {}) {
   const now = flatten(current);
 
   if (!existsSync(baselinePath)) {
-    return { rows: [], missingBaseline: true, metrics: Object.keys(now).length };
+    // Carry the path out: render() has to name it, and there is no fixed
+    // answer to name any more — run.sh resolves it from three candidates.
+    return {
+      rows: [],
+      missingBaseline: true,
+      baselinePath,
+      metrics: Object.keys(now).length,
+    };
   }
   const base = flatten(JSON.parse(readFileSync(baselinePath, "utf8")));
 
@@ -136,7 +143,7 @@ function fmt(n) {
 export function render(result, { verbose = false } = {}) {
   if (result.missingBaseline) {
     return [
-      `no baseline at ${baselinePath} — recorded ${result.metrics} metrics.`,
+      `no baseline at ${result.baselinePath} — recorded ${result.metrics} metrics.`,
       `establish one with:  ./perf/run.sh deep --update-baseline`,
     ].join("\n");
   }
