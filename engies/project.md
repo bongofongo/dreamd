@@ -2,7 +2,7 @@
 
 *This page is the daily landing spot for everyone on the team. It's kept up to date
 automatically and written so that you can be away for a week, read this in five
-minutes, and know exactly where things stand. Last updated: 2026-08-04.*
+minutes, and know exactly where things stand. Last updated: 2026-08-05.*
 
 ## What we're building
 
@@ -274,6 +274,23 @@ causes were wrong.
 
 ## Recent updates
 
+- **2026-08-05** — **A nightly job now sweeps its own codebase.** A scheduled job
+  runs once a night against one of fifteen areas of the repo, on a rotation so
+  each area gets a look roughly every two weeks — always whichever has gone
+  longest without one. Each sweep makes three passes: check whether this very
+  document's claims about that area are still true against the actual code,
+  look for anything worth simplifying, then fix what it found and tighten the
+  relevant section. The work lands as a pull request on its own branch rather
+  than straight to `main` — the one exception to the project's usual
+  straight-to-main habit, because nobody is watching it happen live — except
+  for the parts of the interface too large for the automated checks to prove
+  correct, which get written up as proposals for a human to apply by hand
+  instead of turned directly into code. A quiet night where nothing needed
+  fixing counts as a success, not a failure to find something to change. The
+  first run swept the project's own documentation and found three
+  inaccuracies — a keybind description, a wrong default setting, and a stale
+  description of how a sent question actually reaches Claude — now sitting in
+  an open pull request.
 - **2026-08-04** — **dreamd opens in front of you now, and the window's top edge
   was rebuilt.** Launching from the terminal used to put the window *behind* the
   terminal you launched it from — it was there, just not in front — while opening
@@ -369,220 +386,35 @@ causes were wrong.
   the two pane-switching keys) now keep their modifier there; everything else
   behaves like an ordinary keystroke while a field has focus.
 
-- **2026-07-30** — **The agent pane learned to dock right, pop out as its own
-  card, and be dragged to a different size — and to register itself with
-  Claude Code.** The pane already drew Claude's replies natively (see the
-  entry below); this batch of sessions made it a real panel rather than a
-  fixed box. It can dock at the bottom or the **right** of the window, be
-  resized by dragging its edge, and **pop out** into a card centred on the
-  window for a quick question instead of a whole conversation — the same
-  live conversation moves between dock and card without losing anything
-  mid-reply, because it is one piece of the page being relocated rather than
-  redrawn. If dreamd's MCP connection (the private channel that lets Claude
-  read your highlight queue) was never set up, the pane now shows a
-  **Register** button that runs the one setup command for you, rather than
-  printing it and leaving you to type it into a terminal.
-
-- **2026-07-30** — **The agent stopped being a terminal.** Until now, asking
-  Claude a question inside dreamd meant a real terminal embedded in the window:
-  Claude Code's own interface, with its own colours, its own typeface, and a
-  text box dreamd could not see into. You read a beautifully typeset document,
-  highlighted a sentence, asked a question about it — and the answer came back
-  looking like a terminal.
-
-  The conversation is now dreamd's. The reply is laid out with the same
-  typography, the same colours and the same code highlighting as the document
-  you asked about, because it goes through exactly the same machinery. Beneath
-  the words there is a quiet one-line-per-step list of what Claude actually did
-  — which files it read, which commands it ran, each ticked when it finished —
-  so you can see the work without it filling the pane.
-
-  The bigger change is **permission cards**. Before, if Claude wanted to do
-  something it had not been pre-approved for, it asked in a terminal nobody was
-  watching, and the request simply sat there looking like nothing had happened.
-  That is why the old pane pre-approved a small fixed set of harmless things and
-  could never safely offer more. Now the request appears as a card in the window
-  you are already reading in, saying what Claude wants to do, with Allow, Always
-  allow, and Deny. "Always" lasts for that conversation only and is never written
-  to your settings.
-
-  Everything about this refuses in the safe direction: if the window is closed,
-  if you never answer, if anything at all goes wrong, the answer is no. There is
-  no way for it to accidentally say yes.
-
-  Two smaller things came with it. **Escape now stops Claude mid-answer** — the
-  old terminal claimed that key, so stopping a reply meant Ctrl+C. And the
-  terminal pane is still there as a fallback, in Settings → Window, for anything
-  the new one cannot draw yet; it will be removed once nobody needs it.
-
-  **Not yet checked by a human:** the new pane has been verified by automated
-  tests down to what the page *knows*, but nobody has yet looked at it in a real
-  window. How it actually looks is still an open question.
-
-- **2026-07-30** — **dreamd 0.2.0 released.** The first release since 0.1.0
-  (2026-07-26) — 91 commits behind it, and a minor version bump rather than a
-  patch because almost none of 0.2.0 existed at 0.1.0: the embedded Claude Code
-  pane, the MCP server and its five tools, marks persisted to
-  `~/.config/dreamd`, and the window-chrome toggles are all new since then.
-  Everything in the release, including the window-chrome toggles and the four
-  reading fixes below, had already landed and been verified the day before —
-  this commit only bumped the version number.
-
-- **2026-07-29** — **Four things that got in the way of reading, fixed.** All four
-  came from using dreamd rather than from testing it.
-
-  The **bottom of the window** was swallowing things. A file's `⋯` menu opened
-  downwards with no check that there was room, so for any file in the lower half of
-  the tree the menu appeared below the edge of the screen — invisible, though it
-  was open. It now flips above the button when it has to. Separately, the Claude
-  Code pane was losing its last row, which is where Claude's input box is drawn:
-  the terminal was being told it had more room than it did, and the pane quietly
-  cut off the difference. Both are exact now.
-
-  A highlight no longer says **"? still pertinent"** unless its text really
-  changed. It used to raise that on files nobody had touched — dreamd looks for the
-  highlighted words in the file, and if you had highlighted across something bold
-  or a link it could never find them, so it assumed the worst every time you
-  reopened the file. It now only asks the question about a passage it once found
-  and can no longer find. That margin strip is meant to be empty almost always,
-  and now it is.
-
-  **Sending a question is the end of it.** Every passage you sent used to put a
-  card in that margin strip saying "with the agent", with an "Answered" button
-  whose only job was to agree that yes, it was dealt with. Five questions meant
-  five cards over the paragraph they were about. The cards are gone; a question you
-  have asked is assumed handled.
-
-  And **highlights that span bold text, links or code now stay highlighted.** They
-  used to appear when you made them and then disappear the next time the page
-  redrew — still counted, still in your stack, just invisible. The highlight is
-  drawn in pieces now, so a phrase with a bold word in the middle gets one
-  continuous wash and keeps its bold. Passages you have sent or taken off the stack
-  also fade to the "done with" shade straight away, rather than waiting for the
-  next time you open dreamd.
-
-- **2026-07-29** — **Two bars of clutter removed from the Linux window, both on
-  a switch.** Opening dreamd on Linux used to cost you two rows of furniture
-  before the first line of prose: a File / Edit / Help menu bar, and directly
-  above it the window's own bar with the close, minimize and maximize buttons.
-  Both are now gone by default, so the window starts at dreamd's own toolbar and
-  the document gets the space.
-
-  Neither is a decision made for you. A new **Window** tab in Settings has a
-  switch for each, and flipping one takes effect straight away — no restart. If
-  you liked the menu bar, turn it back on and it comes back. One thing to know:
-  the menu bar's two "open a folder" shortcuts belong to the bar, so they go away
-  with it. Nothing is lost — click the folder name above the file tree and type a
-  path, and it will complete as you go.
-
-  macOS is untouched. Its menu bar belongs to the application rather than to the
-  window, and its title bar is already drawn *inside* the reading area, so there
-  was never a second bar there to reclaim.
-
-  One deliberate limit: a project you have cloned cannot set either of these,
-  even though it can still set your theme or the width of the file tree. A repo
-  you have not read yet does not get to take the close button off your window.
-
-- **2026-07-29** — **The send got instant, and the pane grew a header worth
-  reading.** Sending your stack of questions to Claude used to wait five seconds
-  before anything happened. The idea was that you could take it back in that
-  window — but you almost never wanted to, and you paid the five seconds every
-  single time. That delay is gone: pressing Ctrl+Enter now sends immediately.
-  It no longer waits for Claude to look idle either, because Claude Code already
-  queues a message typed while it is working. The one wait left is a pane that
-  is still starting up, where typing too early would lose your question
-  entirely; the bar on screen says so while it waits, and offers "Send now" if
-  you would rather not.
-
-  The button in the top-right corner used to be a clipboard icon that actually
-  sent things. Now the clipboard icon copies to your clipboard, and a new
-  paper-plane icon beside it does the sending.
-
-  The pane's header gained two things. **Three model buttons** — opus, sonnet,
-  haiku — that switch model mid-conversation without restarting anything, so you
-  keep everything said so far. And a **status line that appears only when
-  something is wrong**: if Claude cannot reach dreamd, it says so and tells you
-  the one command that fixes it. Before this, that failure was invisible — Claude
-  would answer your questions perfectly well and simply never tick them off,
-  which looked like forgetfulness rather than a missing connection.
-
-  Finally, Claude no longer asks permission to read your stack or the file you
-  are reading. You highlighted the passage and typed the question, so the
-  permission was already given — and the prompt was landing in a terminal you
-  might not be looking at. Anything that *writes* still asks, exactly as before.
-
-- **2026-07-28 (later the same day)** — **The Claude Code pane stopped being a
-  plain terminal and started becoming the actual place the highlight →
-  annotation → stack → send loop ends.** This was the first session against a
-  new plan for that (`docs/plans/agent-ui-implementation.md`), and five of its
-  seven pieces landed.
-
-  The pane can now dock on the **right** side of the window instead of only the
-  bottom, chosen from a dropdown in its own restyled header, alongside a
-  **permission-mode** selector — how much Claude Code is allowed to do without
-  asking you first, from "ask before every edit" up to "never ask". Changing it
-  warns you that it restarts the conversation, and writes the choice to disk
-  *before* restarting, so the pane and the file on disk can never disagree.
-  Escape now closes the pane from inside the terminal, which costs Claude
-  Code's own use of Escape (interrupting it) — a deliberate trade, written down
-  as such rather than discovered later.
-
-  Underneath that, a highlight now remembers two more things: whether a
-  question about it is **sitting with the agent, unanswered** (distinct from
-  "never sent" — the earlier state), and whether it was made in an **earlier
-  session** rather than this one. Prior-session highlights now fade to a duller
-  version of the theme's own highlight colour, so a page you're returning to
-  visually separates what you're still deciding about from what you already
-  knew. A hand-edited or copied marks file can't fake either flag — only
-  actually being loaded by dreamd sets them.
-
-  The reading window also picked up some overdue chrome: the file tree's width
-  can be dragged instead of being fixed, a floating outline of the open
-  document's headings can be popped open and dismissed with a click or a
-  scroll, and the file-tree header is now an editable path field — type a
-  folder, press Tab to autocomplete, and dreamd switches to it.
-
-  The important half of what's *not* done yet: **Ctrl+Enter still doesn't talk
-  to this pane.** Sending the stack still goes out over the tmux path described
-  below. Making Ctrl+Enter open the pane, assemble the prompt itself, and watch
-  for Claude Code going idle to know when to actually submit is the sixth
-  planned piece, saved for a session of its own because it's judged the part
-  most likely to need someone's full attention.
-
-- **(earlier)** — the automatic checks started actually launching the program
-  instead of just compiling and testing it, catching an NVIDIA/Linux startup
-  crash nothing else could (2026-07-28); the Linux build run on a real Linux
-  machine for the first time, fixing "Open With" never offering dreamd, a
-  blurry icon, and a packaging failure caused by a stale tool (2026-07-27);
-  dreamd made to run on Linux at all, with every automatic check now running
-  on both platforms so a Mac-only regression can't hide there again
-  (2026-07-27); Claude Code embedded in a pane inside dreamd, `Ctrl+T` to open
-  it (2026-07-27); highlights, annotations and the stack persisted to
-  `~/.config/dreamd` so they survive quitting, plus `dreamd marks path`/`prune`
-  (2026-07-27); an assistant able to read the highlight queue over a private
-  per-repo socket and mark items resolved as it works through them
-  (2026-07-27); unique, permanent highlight ids as groundwork for that
-  persistence (2026-07-27); the project's first safety net — CI on every push
-  and 99 tests where there had been zero, covering the five security rules
-  (escaping, link/scheme allowlists, repo-root containment) (2026-07-27);
-  in-document search with `/`, `n`/`N` (2026-07-27); an
-  overnight-written batch of reading features reviewed and fixed — contents
-  panel, code-block copy button,
-  print/PDF, vim-style bookmarks, back/forward navigation — after a first pass
-  caught a bug that made distraction-free mode render a blank window
-  (2026-07-27); dreamd 0.1.0 released, signed and notarized, installable via
-  Homebrew or a one-line terminal command, after discovering unsigned macOS
-  builds are reported as "damaged" (2026-07-26); an Apache 2.0 licence
-  (2026-07-25); ten colour themes, each with a light and dark half, replacing
-  the single dark default (2026-07-25); a settings panel for keybindings and
-  themes — the first thing dreamd ever wrote to disk, and only ever
-  preferences (2026-07-25); the highlight-reanchoring bug that misplaced about
-  one highlight in three when the same wording appeared twice in a document,
-  fixed and pinned by a 611-fixture regression test (2026-07-25); the first
-  round of performance work, six changes with 53 numbers improved and none
-  worse (2026-07-25); opening a single file no longer scanning the whole
-  project first (2026-07-25); the public site at fongo.uk/dreamd (2026-07-25);
-  a Rust cleanup pass and the three-tier perf measurement setup; and **v1
-  shipped** — empty scaffold to a working app in one session, with the
-  highlight → annotation → stack → send loop, an XSS fix, and a
-  security-restricted external-link policy (2026-07-24).
+- **(earlier)** — the agent pane learned to dock right, pop out into a card,
+  resize by drag, and show a Register button for the MCP connection
+  (2026-07-30); the agent pane stopped being a plain embedded terminal and
+  became dreamd's own typeset conversation view, with permission cards
+  replacing an invisible terminal prompt (2026-07-30); dreamd 0.2.0 released
+  (2026-07-30); four reading papercuts fixed — a menu that could open off
+  the bottom of the screen, a clipped last row in the old terminal pane, a
+  stale-highlight warning that fired too often, and highlights spanning bold
+  text or links disappearing on redraw (2026-07-29); the Linux menu bar and
+  window-frame bar made optional, off by default (2026-07-29); sending a
+  stack made instant instead of a five-second wait, plus model-switch buttons
+  and a connection-status line in the pane header (2026-07-29); the first
+  pass at replacing the terminal pane with a native one, including a
+  permission-mode selector and per-highlight "sent" state (2026-07-28); the
+  automatic checks made to actually launch the program, catching an
+  NVIDIA/Linux startup crash nothing else could (2026-07-28); dreamd made to
+  run on Linux at all, with checks running on both platforms from then on
+  (2026-07-27); Claude Code embedded in a pane for the first time, `Ctrl+T`
+  to open it (2026-07-27); highlights, annotations and the stack persisted to
+  `~/.config/dreamd`, plus an assistant able to read and resolve them over a
+  private per-repo socket (2026-07-27); the project's first safety net — CI
+  and 99 tests covering the security rules (2026-07-27); in-document search,
+  a reviewed batch of reading features (contents panel, code-block copy,
+  print/PDF, bookmarks, back/forward) (2026-07-27); dreamd 0.1.0 released,
+  signed and notarized (2026-07-26); an Apache 2.0 licence, ten colour
+  themes, and a settings panel — the first thing dreamd ever wrote to disk
+  (2026-07-25); a highlight-reanchoring bug fixed and pinned by a 611-fixture
+  regression test, and the first round of performance work (2026-07-25); the
+  public site at fongo.uk/dreamd (2026-07-25); and **v1 shipped** — empty
+  scaffold to a working app in one session, with the highlight → annotation →
+  stack → send loop, an XSS fix, and a restricted external-link policy
+  (2026-07-24).
