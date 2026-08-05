@@ -65,7 +65,7 @@ Full sample counts, so a reproducible >15% move is a real regression rather than
 noise. Still check it against what actually changed: attribute the move to a specific
 edit, or say plainly that you cannot.
 
-Do **not** update `perf/baseline.json` from this tier — the runner refuses anyway.
+Do **not** update the baseline from this tier — the runner refuses anyway.
 Baselines come from `perf-deep` only — it runs this tier's debug workload as well as
 the release one, which is what gives these numbers something to compare against.
 

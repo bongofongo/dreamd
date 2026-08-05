@@ -8,13 +8,14 @@
 #   ./perf/run.sh deep --update-baseline
 #
 # Writes perf/results/<tier>-<sha>-<stamp>.json and prints a table diffing
-# against perf/baseline.json.
+# against the baseline, if there is one. See "where is the baseline?" below —
+# it is not tracked in this repo, and a tree without one still runs every tier.
 #
 # The baseline is NEVER updated automatically. A baseline that drifts on its own
 # hides exactly the slow regression it exists to catch.
 #
 # Flags:
-#   --update-baseline   deep tier only; overwrite perf/baseline.json
+#   --update-baseline   deep tier only; overwrite the resolved baseline
 #   --verbose           show every metric, not just the ones that moved
 #   --no-window         skip anything that opens a window (loop.sh, first paint)
 
@@ -42,8 +43,44 @@ case "$TIER" in
   *) echo "usage: ./perf/run.sh {quick|pass|deep} [--update-baseline] [--verbose] [--no-window]" >&2; exit 2 ;;
 esac
 
+# ---- where is the baseline? ----------------------------------------------
+# The reference numbers are not tracked in this repo. They are working material
+# — one developer's machine, moved by hand in the commit that justified it — and
+# they live in the private notes repo, cloned at notes/ and gitignored here.
+#
+# Resolution order, first hit wins:
+#   $DREAMD_PERF_BASELINE   explicit override, for A/B against an arbitrary file
+#   notes/perf-baseline.json    the checked-out private notes
+#   perf/baseline.json          a purely local one, also gitignored
+#
+# None of the three is required. A clone without notes/ — which is what a
+# contributor has — runs every tier in full and simply has nothing to diff
+# against, and that is *not* an error: the tier's own exit status is the only
+# thing that can fail this script. Silence about a comparison nobody can make
+# beats a red table about a machine nobody has.
+BASELINE=""
+for candidate in \
+  "${DREAMD_PERF_BASELINE:-}" \
+  "$ROOT/notes/perf-baseline.json" \
+  "$ROOT/perf/baseline.json"
+do
+  if [[ -n "$candidate" && -f "$candidate" ]]; then BASELINE="$candidate"; break; fi
+done
+
+# Where --update-baseline writes. Not the same question: the file may not exist
+# yet, and the first `deep --update-baseline` in a fresh tree has to put it
+# somewhere. Prefer the notes clone when it is present, so the numbers keep
+# moving through that repo's history rather than accumulating untracked here.
+if [[ -n "${DREAMD_PERF_BASELINE:-}" ]]; then
+  BASELINE_WRITE="$DREAMD_PERF_BASELINE"
+elif [[ -d "$ROOT/notes/.git" ]]; then
+  BASELINE_WRITE="$ROOT/notes/perf-baseline.json"
+else
+  BASELINE_WRITE="$ROOT/perf/baseline.json"
+fi
+
 # ---- whose numbers are these? --------------------------------------------
-# perf/baseline.json is one machine's numbers — an arm64 Mac, WKWebView, APFS,
+# The baseline is one machine's numbers — an arm64 Mac, WKWebView, APFS,
 # FSEvents. Diffing a Linux run against it does not measure a regression, it
 # measures the two machines, and every row would come back red on a tree nobody
 # touched. The tiers still RUN on Linux and still write perf/results/ — what is
@@ -56,11 +93,20 @@ BASELINE_APPLIES=1
 if [[ "$(uname -s)" != "Darwin" ]]; then
   BASELINE_APPLIES=0
   if (( UPDATE_BASELINE )); then
-    echo "refusing to update perf/baseline.json from $(uname -s)." >&2
+    echo "refusing to update ${BASELINE_WRITE#"$ROOT"/} from $(uname -s)." >&2
     echo "the baseline is a macOS machine's numbers; overwriting it here would" >&2
     echo "silently re-zero every macOS comparison against a different computer." >&2
     exit 2
   fi
+fi
+
+# A baseline that is not there is a fine state to be in; one named explicitly
+# and then missing is a typo, and saying nothing about it would diff against
+# whatever happened to be next in the list.
+if [[ -n "${DREAMD_PERF_BASELINE:-}" && ! -f "$DREAMD_PERF_BASELINE" ]]; then
+  echo "DREAMD_PERF_BASELINE points at a file that does not exist:" >&2
+  echo "  $DREAMD_PERF_BASELINE" >&2
+  exit 2
 fi
 
 # ---- exclusivity ---------------------------------------------------------
@@ -303,14 +349,22 @@ say "results -> ${OUT#"$ROOT"/}"
 # skipping the `--update-baseline` step below and making the flag a no-op
 # exactly when a run had findings.
 STATUS=0
-if (( BASELINE_APPLIES )); then
-  node perf/lib/compare.mjs "$OUT" "$ROOT/perf/baseline.json" "$VERBOSE" || STATUS=$?
+if [[ -z "$BASELINE" ]]; then
+  # Not an error. The tier ran, the numbers are on disk, there is simply
+  # nothing on this machine to compare them to.
+  echo "" >&2
+  echo "no baseline on this machine — recorded, but not compared." >&2
+  echo "raw numbers: ${OUT#"$ROOT"/}" >&2
+  echo "the reference numbers live in the private notes repo; clone it at notes/" >&2
+  echo "to get them, or establish your own with: ./perf/run.sh deep --update-baseline" >&2
+elif (( BASELINE_APPLIES )); then
+  node perf/lib/compare.mjs "$OUT" "$BASELINE" "$VERBOSE" || STATUS=$?
 else
   echo "" >&2
-  echo "no baseline comparison on $(uname -s) — perf/baseline.json is macOS-only." >&2
+  echo "no baseline comparison on $(uname -s) — ${BASELINE#"$ROOT"/} is macOS-only." >&2
   echo "raw numbers: ${OUT#"$ROOT"/}" >&2
   echo "to detect a regression here, A/B this tree against the one you changed it from" >&2
-  echo "on this same machine — that is what .github/workflows/perf.yml does in CI." >&2
+  echo "on this same machine." >&2
 fi
 
 if (( UPDATE_BASELINE )); then
@@ -320,10 +374,16 @@ if (( UPDATE_BASELINE )); then
     echo "the quick and pass tiers use reduced sample counts, so their numbers are not a reference point." >&2
     exit 2
   fi
-  cp "$OUT" "$ROOT/perf/baseline.json"
+  mkdir -p "$(dirname "$BASELINE_WRITE")"
+  cp "$OUT" "$BASELINE_WRITE"
   echo "" >&2
   echo "baseline updated from $OUT" >&2
-  echo "commit it alongside the change that justified it." >&2
+  echo "  -> ${BASELINE_WRITE#"$ROOT"/}" >&2
+  if [[ "$BASELINE_WRITE" == "$ROOT/notes/"* ]]; then
+    echo "commit it in notes/, alongside the dreamd change that justified it." >&2
+  else
+    echo "this path is gitignored — it is yours alone, and no commit is expected." >&2
+  fi
 fi
 
 exit $STATUS

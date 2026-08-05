@@ -22,7 +22,7 @@ cargo bench --bench render           # one bench target: render | locate | searc
 cargo bench --bench locate -- locate_single/today  # a single case (filter is a regex)
 
 ./perf/run.sh quick|pass|deep [--verbose] [--no-window]
-./perf/run.sh deep --update-baseline # the ONLY way perf/baseline.json changes
+./perf/run.sh deep --update-baseline # the ONLY way the perf baseline changes (it lives in notes/)
 node perf/corpus/gen.mjs             # rebuild fixtures (run.sh does this itself)
 cd perf/harness && npm run setup     # Playwright + Chromium, test-only, never ships
 ```
@@ -692,10 +692,12 @@ highlights from a corpus fixture.
   Run those harnesses locally before pushing — CI is the backstop, not the first
   check. The toolchain is **pinned** (`dtolnay/rust-toolchain@1.97.1`); bumping it
   is a deliberate commit that also clears whatever the new clippy found.
-- `.github/workflows/perf.yml` runs the quick tier and an unsigned
-  `packaging/build.sh` on **both** platforms. Its *numbers* gate nothing and move
-  no baseline — a shared runner is not a quiet machine — but its packaging jobs
-  do fail the workflow. Dispatch it with
+- **The perf workflow is out of tree.** `perf.yml` lives in the private notes
+  repo at `notes/workflows/perf.yml` and runs nowhere by default; copy it to
+  `.github/workflows/` to use it. What it does, when it runs: the quick tier and
+  an unsigned `packaging/build.sh` on **both** platforms. Its *numbers* gate
+  nothing and move no baseline — a shared runner is not a quiet machine — but its
+  packaging jobs do fail the workflow. Dispatch it with
   `compare_ref` set for a same-runner A/B; the `package-smoke` job is the real
   value, because a tagged release is frozen and a broken Linux arm found at tag
   time cannot be re-run. `install-smoke` is the half package-smoke cannot do: it
@@ -736,20 +738,26 @@ highlights from a corpus fixture.
 - Repeatable flows become skills in `.claude/skills/`.
 - Performance is measured, not guessed. `/perf-quick` (~60s) after an edit,
   `/perf-pass` (~5min) before a large commit touching `src-tauri/` or `ui/` (do `/perf-quick` for smaller commits), `/perf-deep`
-  (~20min) to profile or move the baseline only on user request. `perf/baseline.json` changes only via
-  `perf-deep`, in the same commit as the change that justified it.
-  **The baseline is macOS-only and `run.sh` now enforces it**: off Darwin the tiers
-  still run and still write `perf/results/`, but no comparison is made and
-  `--update-baseline` is refused. To detect a regression on Linux, A/B two trees on
-  the same machine — a diff against one arm64 Mac's numbers is noise wearing a
-  regression's clothes.
+  (~20min) to profile or move the baseline only on user request. The baseline
+  changes only via `perf-deep`, alongside the change that justified it.
+  **The baseline is not in this repo.** It is one machine's numbers, so it is
+  working material, and it lives at `notes/perf-baseline.json`. `run.sh` resolves
+  `$DREAMD_PERF_BASELINE`, then `notes/perf-baseline.json`, then a gitignored
+  local `perf/baseline.json`, and **a missing one is not an error** — the tier
+  runs, `perf/results/` is written, the comparison is skipped with a line saying
+  so, and the exit status is the tier's own. That is what a clone without `notes/`
+  gets, and nothing tracked here may assume otherwise.
+  **The baseline is also macOS-only and `run.sh` enforces it**: off Darwin no
+  comparison is made and `--update-baseline` is refused. To detect a regression on
+  Linux, A/B two trees on the same machine — a diff against one arm64 Mac's numbers
+  is noise wearing a regression's clothes.
 - Numbers from `perf/harness/` are Chromium, **not** WKWebView — relative regression
   signal only. Say so whenever quoting one. `perf/harness/ui-check.mjs` is the exception:
   it lives there for the Playwright install, asserts on DOM and IPC rather than timings,
   and feeds no baseline.
 - **A nightly job sweeps one area of the repo per night** — `/upkeep`, driven by a
   Routine at 02:17 UTC. Fifteen areas on rotation, so each is swept about
-  fortnightly; the area due next is the stalest row in `.claude/upkeep/ledger.md`.
+  fortnightly; the area due next is the stalest row in `notes/upkeep/ledger.md`.
   Each sweep does three passes over its area — verify CLAUDE.md's claims against
   the code, simplify, then fix the drift and tighten that section — and the first
   is the valuable one: a false claim here misleads every session that reads it.
@@ -757,47 +765,75 @@ highlights from a corpus fixture.
   `claude/upkeep-<date>` branch as one PR and **never on `main`**, which is the
   one place this repo's straight-to-main rule doesn't hold, because nobody is
   watching. `ui/app.js` is **propose-only** — 5,700 lines the harnesses can't
-  prove the paint of, so those areas write to `docs/upkeep/` and change no code.
-  An empty night is a **success**: a job that must produce a diff churns code to
-  justify itself. And the ledger commit goes to `main` on its own even when the
-  PR doesn't, so an unmerged review can't stall the rotation into re-sweeping the
-  same area nightly. It never runs a perf tier — `run.sh` refuses comparison off
+  prove the paint of, so those areas write to `notes/upkeep-findings/` and change
+  no code. An empty night is a **success**: a job that must produce a diff churns
+  code to justify itself. And the ledger commit lands on its own even when the PR
+  doesn't, so an unmerged review can't stall the rotation into re-sweeping the
+  same area nightly. **Both the ledger and the findings live in the private notes
+  repo**, and that is the fourth safety: an unwatched job can leave a commit in
+  `notes`, but it cannot leave one — or a file waiting to be committed — in a
+  public repo. It never runs a perf tier — `run.sh` refuses comparison off
   Darwin anyway — and flags in the PR when a measured path needs `/perf-quick` on
   your own machine.
 
 ## Docs
 
-- `docs/session-log.md` — running session log, **newest section first**. Written by
-  the `/wrap-up` skill at the end of a session.
-- `engies/project.md` — the human landing page: a 2–3 page plain-language brief
-  written for an entry-level reader, ending with "Recent updates". Refreshed daily by
-  a scheduled job and by the `/update-project-doc` skill. If a session materially
-  changes the project story, update it in the same session rather than waiting.
-- `docs/plan.md` — original design intent. Historical; don't rewrite it.
-- `.claude/upkeep/ledger.md` — rotation state for the nightly sweep, and nothing
-  else: which area is due, when each was last swept, what it found. The area
-  definitions live in the skill. `docs/upkeep/` holds the propose-only findings
-  for `ui/app.js`, which are yours to apply by hand.
-- `README.md` — the user-facing reference, and the one doc that is also a *claim
-  about the code*: every keybind default, config key, CLI flag and theme name it
-  prints is checkable, and several had drifted before anyone checked. Change it
-  in the same commit as the default it documents.
-- `docs/bugs.md` and `docs/patch-log.md` — two newest-first logs with a real
-  split: `bugs.md` is for a bug that reached a *release artifact* (symptom,
-  cause, what would have caught it), `patch-log.md` for a between-release
-  one-change repair that would otherwise leave no trace but a commit subject.
-  `bugs/` is neither — it is where raw notes are filed before triage.
-- `docs/todo.md`, `docs/todo2.md` — queues, not logs. An item is **deleted** when
-  it lands; the history is `session-log.md`'s job. A queue nobody clears reads as
-  a list of things that don't work.
-- `ideas/` (`done/`, `hold/`) and `docs/plans/` — one file per idea, moved
-  between the two subdirectories by hand, and the implementation plans written
-  from them. `docs/agentic-direction.md` and `docs/overnight_plan.md` are
-  historical like `plan.md`: the reasoning behind work that has since shipped.
+**Two repos.** `bongofongo/dreamd` is public and holds the product and the code
+that proves it works. The working material — the session log, the plans and idea
+backlog, the human-facing brief, the perf baseline — is *about working on* the
+project rather than part of it, and lives in the private
+`bongofongo/dreamd-notes`, cloned inside this tree at `notes/` and gitignored
+here. Deliberately an independent clone, **not a submodule**: a submodule would
+publish a pointer to a private repo in a public tree.
+
+The hard rule that follows: **nothing tracked in dreamd may require `notes/` to
+exist.** A fresh clone has no `notes/`, and `cargo build`, `cargo test
+--all-features`, `node --test ui/paths.test.mjs`, `perf/corpus/gen.mjs +
+locate_check` and every tier of `perf/run.sh` all have to work without it. A file
+under `notes/` may be *referenced* in prose; it may not be *read* by a build, a
+test or CI.
+
+In this repo:
+
+- `CLAUDE.md` — this file. The architecture doc, and the best one here.
+- `CONTRIBUTING.md` — the straight-to-main convention and what to run before a PR.
+- `README.md` — the user-facing feature list, install and known limits, and the
+  one doc that is also a *claim about the code*: every keybind default, config
+  key, CLI flag and theme name it prints is checkable, and several had drifted
+  before anyone checked. Change it in the same commit as the default it documents.
 - `perf/README.md` — what each performance tier measures and how much to trust it.
 - `website/CLAUDE.md` — the public site at `fongo.uk/dreamd`. A standalone Astro
   project, deployed separately; source of truth for everything under `website/`.
   Nothing there touches the Rust build.
+- `src-tauri/icons/README.md`, `ui/vendor/README.md`, `packaging/SIGNING.md` —
+  the three narrow runbooks, each next to what it describes.
+
+In `notes/`:
+
+- `notes/session-log.md` — running session log, **newest section first**. Written
+  by the `/wrap-up` skill at the end of a session.
+- `notes/project.md` — the human landing page: a 2–3 page plain-language brief
+  written for an entry-level reader, ending with "Recent updates". Refreshed daily
+  by a scheduled job and by the `/update-project-doc` skill. If a session
+  materially changes the project story, update it in the same session rather than
+  waiting.
+- `notes/plan.md` — original design intent. Historical; don't rewrite it.
+  `notes/agentic-direction.md` and `notes/overnight_plan.md` read the same way:
+  the reasoning behind work that has since shipped.
+- `notes/plans/`, `notes/ideas/{done,hold}/`, `notes/bugs/` — per-feature design
+  notes and the idea backlog, by state. `notes/bugs/` is where raw notes are
+  filed before triage, and is not either log below.
+- `notes/bugs.md` and `notes/patch-log.md` — two newest-first logs with a real
+  split: `bugs.md` is for a bug that reached a *release artifact* (symptom,
+  cause, what would have caught it), `patch-log.md` for a between-release
+  one-change repair that would otherwise leave no trace but a commit subject.
+- `notes/todo.md`, `notes/todo2.md` — queues, not logs. An item is **deleted**
+  when it lands; the history is `session-log.md`'s job. A queue nobody clears
+  reads as a list of things that don't work.
+- `notes/perf-baseline.json` — the perf reference numbers; see Working practices.
+- `notes/workflows/perf.yml` — the perf workflow, parked rather than run.
+- `notes/upkeep/ledger.md`, `notes/upkeep-findings/` — the nightly Routine's
+  output; see Working practices.
 
 Keep this CLAUDE.md terse and machine-facing — human-facing guidance belongs in
-`engies/`.
+`notes/project.md`.

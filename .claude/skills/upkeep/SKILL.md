@@ -1,6 +1,6 @@
 ---
 name: upkeep
-description: Sweeps one area of the dreamd repo — verifying CLAUDE.md's claims about it against the code, simplifying the code, then bringing that section of CLAUDE.md back into line — and opens one PR. Rotation state lives in .claude/upkeep/ledger.md. Invoke when the nightly upkeep job runs this, when the user asks to sweep, debloat, or simplify an area, or runs /upkeep.
+description: Sweeps one area of the dreamd repo — verifying CLAUDE.md's claims about it against the code, simplifying the code, then bringing that section of CLAUDE.md back into line — and opens one PR. Rotation state lives in notes/upkeep/ledger.md, in the private notes repo. Invoke when the nightly upkeep job runs this, when the user asks to sweep, debloat, or simplify an area, or runs /upkeep.
 ---
 
 # Nightly upkeep sweep
@@ -21,7 +21,14 @@ manufacture work.
 
 ## 1. Pick the area
 
-Read `.claude/upkeep/ledger.md`. Take the row with the oldest *last swept*;
+Read `notes/upkeep/ledger.md`. That is in the **private notes repo**, cloned at
+`notes/` and gitignored in this tree — the ledger and the propose-only findings
+both live there, because this job runs unwatched and must not be able to leave a
+commit, or a file waiting to be committed, in a public repo. If `notes/` is not
+checked out there is no rotation state: say so and stop, rather than sweeping an
+arbitrary area or writing a ledger into the tracked tree.
+
+Take the row with the oldest *last swept*;
 while that column is empty, use the `#` column for the first cycle's order. Break
 ties by churn — `git log --oneline --since=<last swept> -- <paths>` — and sweep
 where the code actually moved.
@@ -52,15 +59,17 @@ with its own `CLAUDE.md`, deployed separately.
 | 11 | `ui-agent` | `ui/app.js`: pane, pop-out, pty, MCP strip, gate cards | **propose-only** | medium |
 | 12 | `ui-style` | `ui/theme.css`, `ui/themes/*.css`, `ui/paths.js` | `paths.test.mjs`, `ui-check.mjs` | medium |
 | 13 | `build-release` | `packaging/`, `.github/workflows/` | none run — read and reason | medium |
-| 14 | `perf-harness` | `perf/` (never `baseline.json` or `results/`), `src-tauri/benches/` | `cargo bench --no-run` | medium |
-| 15 | `repo-docs` | `README.md`, `docs/` (minus two), `ideas/`, `bugs/` | — | medium |
+| 14 | `perf-harness` | `perf/` (never `results/`), `src-tauri/benches/` | `cargo bench --no-run` | medium |
+| 15 | `repo-docs` | `README.md`, `CONTRIBUTING.md` | — | medium |
 
 Rust paths are under `src-tauri/src/`.
 
 **`ui/app.js` is propose-only.** It is 5,700 lines and the GUI is verified only
 by hand — `ui-check.mjs` asserts what the page knows, not what it paints. Areas
-9–11 produce a written proposal at `docs/upkeep/<date>-<area>.md` (findings, a
-diff sketch, what would need checking by eye) and change **no** code. That is the
+9–11 produce a written proposal at `notes/upkeep-findings/<date>-<area>.md`
+(findings, a diff sketch, what would need checking by eye) and change **no**
+code. That path is in the notes repo, so a propose-only night touches the dreamd
+tree not at all. That is the
 user's call, and it is the rule most likely to erode in practice: if a change
 there looks obviously safe, it still goes in the proposal.
 
@@ -99,10 +108,15 @@ A sweep may never:
   proposal and changes nothing.
 - **Weaken a test to make a gate pass.** A red gate means revert the hunk. If the
   test is genuinely wrong, that is a finding for the PR body, not an edit.
-- **Run a perf tier or touch `perf/baseline.json`.** The harness is unvalidated
-  off the author's Mac and `run.sh` refuses comparison off Darwin anyway.
-- **Touch** `docs/session-log.md`, `docs/plan.md`, `engies/project.md` (its own
-  job), `ui/vendor/`, or any version string.
+- **Run a perf tier or touch the perf baseline.** The harness is unvalidated off
+  the author's Mac and `run.sh` refuses comparison off Darwin anyway. The
+  baseline is `notes/perf-baseline.json` now, which puts it under the next rule
+  too.
+- **Touch anything under `notes/` except its own two outputs** — the ledger and,
+  for areas 9–11, one findings file. The session log, `plan.md`, `project.md`
+  (its own job), the plans and the idea backlog all live there and are not this
+  job's to edit.
+- **Touch** `ui/vendor/` or any version string.
 - **Edit `ui/app.js`** — areas 9–11 are propose-only.
 - **Exceed 400 changed lines.** Over cap: land the best slice, propose the rest.
   Net line count should be negative or neutral unless fixing a real defect.
@@ -173,24 +187,27 @@ the PR body you would have used in the final report, and record the branch name
 in the ledger's *Open PR* column so the next sweep still counts it against the
 three-PR backlog cap.
 
-**The ledger** goes straight to `main`, in its own commit, whether or not the
-sweep produced code:
+**The ledger** goes straight to `main` **in the notes repo**, in its own commit,
+whether or not the sweep produced code. Use `git -C notes` rather than `cd` — the
+shell's working directory is shared with the user's:
 
 ```sh
-git checkout main && git pull --rebase origin main
-# edit .claude/upkeep/ledger.md
-git commit .claude/upkeep/ledger.md -m "chore(upkeep): <area> swept $(date +%F)"
-git push origin main
+git -C notes pull --rebase origin main
+# edit notes/upkeep/ledger.md   (and notes/upkeep-findings/<date>-<area>.md, if any)
+git -C notes commit upkeep -m "chore(upkeep): <area> swept $(date +%F)"
+git -C notes push origin main
 ```
 
 The ledger is a *scheduling* record, not a work record. If a PR sits unmerged for
 a week the rotation still has to advance — otherwise the same area is re-swept
 every night and duplicate PRs pile up behind the first one.
 
-**Never push code to `main`.** CLAUDE.md says dreamd commits straight to main
-with no branches; that is for supervised work. This job runs with nobody
-watching, so the code half goes to a reviewable PR. The ledger commit is the only
-thing this job puts on `main` directly.
+**Never push code to dreamd's `main`.** CLAUDE.md says dreamd commits straight to
+main with no branches; that is for supervised work, and dreamd is public. This
+job runs with nobody watching, so the code half goes to a reviewable PR. Nothing
+this job produces lands on the public `main` directly — the ledger and the
+findings both go to `notes`, which is private and where an unreviewed automatic
+commit costs nothing.
 
 ## 7. How to work
 

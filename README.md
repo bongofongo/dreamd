@@ -152,9 +152,12 @@ in CI — see **Releasing** below.
 
 ## Performance
 
-Measurement lives in `perf/`. `.github/workflows/perf.yml` runs the quick tier
-on both platforms, but a shared runner is not a quiet machine: its numbers gate
-nothing and move no baseline. The measurements that count are local.
+Measurement lives in `perf/` and runs locally — no CI. There is a workflow that
+runs the quick tier on both platforms, but it is parked out of tree and enabled
+by hand, because a shared runner is not a quiet machine: its numbers gate
+nothing and move no baseline. The reference numbers are one machine's and live
+outside this repo, so a clone without them runs every tier with the comparison
+skipped rather than failing.
 
 ```sh
 ./perf/run.sh quick     # ~60s    after an edit
@@ -587,6 +590,14 @@ because a repo in one of those is normal and the walk will trip TCC. Note the
 asymmetry: launched from Finder, TCC attributes the request to `dreamd.app` and
 shows those strings; launched through the `PATH` symlink from a terminal, it
 generally attributes to the terminal and inherits whatever that already has.
+
+## Contributing
+
+Bug reports and patches are welcome. Note that this repo commits straight to
+`main` and has no branches — that is the maintainer's convention, not a rule for
+you, and a PR from a fork is the right way in. What to run before opening one,
+and which tenets a change is expected not to cross, are in
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Licence
 

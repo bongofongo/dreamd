@@ -17,3 +17,15 @@ token_expiry.md
 
 # agent worktrees, transient
 /.claude/worktrees
+
+# The private working notes — bongofongo/dreamd-notes, cloned here as an
+# independent repo rather than a submodule, since a submodule would publish a
+# pointer to a private repo in a public tree. Nothing tracked here may depend
+# on it existing: a fresh clone has no notes/ and must still build and test.
+/notes
+
+# One machine's perf numbers, and they live in notes/perf-baseline.json now.
+# Ignored rather than merely absent so that `./perf/run.sh deep --update-baseline`
+# in a clone without notes/ leaves a usable local reference instead of a file
+# waiting to be committed back into the public tree.
+/perf/baseline.json

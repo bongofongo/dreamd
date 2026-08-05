@@ -600,7 +600,8 @@ impl Default for Keymap {
             toggle_mode: "Ctrl+Shift+D".into(),
             // Vim's `gg`/`G` would be the obvious pair, but `gg` is a two-key
             // sequence and `matchCombo` only knows single combos — see
-            // docs/plans/jump-top-bottom-keybind.md. `Home`/`End` are single
+            // `plans/jump-top-bottom-keybind.md` in the private notes repo.
+            // `Home`/`End` are single
             // keys with the same effect, and do nothing else in the app, so
             // they cost no keyspace; a vim user rebinds jump_bottom to
             // "Shift+G" in one line.

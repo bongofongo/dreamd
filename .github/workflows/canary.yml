@@ -107,7 +107,7 @@ jobs:
           workspaces: ". -> target"
           key: canary-arch
 
-      # Same pin as release.yml and perf.yml. A bundler change that breaks the
+      # Same pin as release.yml. A bundler change that breaks the
       # release has to break here first, and it cannot do that if the two run
       # different CLIs.
       - name: Install tauri-cli
@@ -176,8 +176,8 @@ jobs:
         run: packaging/build.sh x86_64-unknown-linux-gnu
 
       # build.sh fails on a missing bundle, but not on one that silently stopped
-      # being produced. Same assertion as perf.yml's package-smoke, and for the
-      # same reason.
+      # being produced. Same assertion the out-of-tree perf workflow makes in its
+      # package-smoke job, and for the same reason.
       - name: Assert artifacts
         shell: bash
         run: |
@@ -204,8 +204,10 @@ jobs:
       #
       # The AppImage is the interesting one on Arch: it is the artifact whose
       # whole promise is that it carries its own libraries, and NO_STRIP is what
-      # let linuxdeploy copy them in at all. perf.yml's install-smoke covers the
-      # deb and the tarball across four distros; doing the AppImage here means
+      # let linuxdeploy copy them in at all. The out-of-tree perf workflow's
+      # install-smoke covers the deb and the tarball across four distros — it
+      # lives in the private notes repo now, so this is the one arm of that
+      # coverage running per schedule here; doing the AppImage here means
       # the rolling-distro arm exercises the bundle it is most likely to break.
       - name: Launch the AppImage
         env:

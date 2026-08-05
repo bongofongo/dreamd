@@ -1,11 +1,11 @@
 ---
 name: update-project-doc
-description: Refreshes engies/project.md — the plain-language, entry-level project brief for the human behind dreamd — from the current state of the repo, then commits it to main. Invoke when the user asks to update the project doc / project.md / the team page, when a scheduled job runs this, or when a session materially changed the project story.
+description: Refreshes notes/project.md — the plain-language, entry-level project brief for the human behind dreamd — from the current state of the repo, then commits it to main. Invoke when the user asks to update the project doc / project.md / the team page, when a scheduled job runs this, or when a session materially changed the project story.
 ---
 
-# Update `engies/project.md`
+# Update `notes/project.md`
 
-`engies/project.md` is the daily landing page for the developer on this project.
+`notes/project.md` is the daily landing page for the developer on this project.
 Someone should be able to be away for a week, read it in five minutes, and know
 exactly where dreamd stands. It is written for an **entry-level engineer** — plain
 English, jargon explained on first use, no assumed familiarity with Rust, Tauri, or
@@ -14,6 +14,12 @@ the codebase.
 A scheduled job runs this daily; the user can also invoke it on demand. Both paths
 run the same steps.
 
+**The doc is in a different repo from the code it describes.** `notes/` is a clone
+of the private `dreamd-notes`, gitignored inside the public `dreamd` tree, so the
+reading in step 1 spans both and the commit in step 3 lands in `notes` alone. If
+`notes/` does not exist, there is nothing to update: say so and stop — do not
+write a copy into the public tree.
+
 ## 1. Read the current state
 
 Do this before writing a word — the doc must describe what's *actually* true today,
@@ -21,12 +27,12 @@ not what was true when it was last written:
 
 - `git log --since="<date at the top of project.md>" --stat` (or the last ~20
   commits) — what has actually changed since the last refresh.
-- `docs/session-log.md` — the top few entries, for the narrative and the decisions
+- `notes/session-log.md` — the top few entries, for the narrative and the decisions
   behind the changes.
 - `README.md` — the user-facing feature list and known limits.
-- The current `engies/project.md` — what it already says, and its *Last updated*
+- The current `notes/project.md` — what it already says, and its *Last updated*
   date.
-- `docs/plan.md` for original intent, and the source tree (`src-tauri/src/`, `ui/`)
+- `notes/plan.md` for original intent, and the source tree (`src-tauri/src/`, `ui/`)
   if the architecture section looks stale.
 
 If nothing meaningful changed since the last update, **do not manufacture news**.
@@ -63,24 +69,26 @@ Style rules:
 - Target 2–3 pages. If it's growing past that, cut history, not explanation.
 - No hedging or hype — this is a status page, not a pitch.
 
-## 3. Commit to main
+## 3. Commit to main — in `notes`, not in `dreamd`
 
-This is a docs-only change and goes **straight to main**. Stage
-`engies/project.md` and nothing else (if other files are dirty, leave them alone —
-they belong to whatever session is in flight):
+The doc lives in the private `dreamd-notes` repo, so the commit goes there. Like
+dreamd it takes commits **straight to main**. Use `git -C notes` rather than `cd`;
+the shell's working directory is shared with the user's, and a stray `cd` breaks
+whatever they run next.
 
 ```sh
-git add engies/project.md
-git commit -m "docs: refresh engies/project.md" -m "<one line on what changed>" \
-           -m "Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
-git push origin main
+git -C notes commit project.md \
+  -m "docs: refresh project.md" -m "<one line on what changed>" \
+  -m "Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
+git -C notes push origin main
 ```
 
-If the working tree has unrelated staged changes, unstage nothing — just commit the
-single path with `git commit engies/project.md` so nothing else is swept in.
+Naming the path on `git commit` rather than staging first is deliberate: it
+commits that file alone, so unrelated dirty or staged files in `notes` — a
+session log in flight, say — are left exactly as they are.
 
-If the push is rejected because main moved, `git pull --rebase origin main` and push
-again.
+If the push is rejected because main moved, `git -C notes pull --rebase origin main`
+and push again.
 
 ## 4. Report
 
