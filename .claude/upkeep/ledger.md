@@ -13,7 +13,7 @@ produced code — a PR left unmerged must not stall the rotation.
 
 | # | Area | Last swept | Outcome | Open PR |
 |---|---|---|---|---|
-| 1 | `repo-docs` | — | — | — |
+| 1 | `repo-docs` | 2026-08-05 | swept — README named a keybind that does something else, the wrong `agent.position` default, and the tmux path as the send path | #15 |
 | 2 | `shell` | — | — | — |
 | 3 | `core-text` | — | — | — |
 | 4 | `store` | — | — | — |
