@@ -11,10 +11,6 @@ for history).
       and checked through Chromium and the CSS; the literary faces in particular
       (Iowan Old Style, Charter, Hoefler Text) have never been rendered by the engine
       that will actually draw them.
-- [ ] Verify that WKWebView's `prefers-color-scheme` tracks the effective NSApp
-      appearance inside a Tauri window. The `system` mode rests on it. One
-      `cargo tauri dev` with the OS appearance toggled settles it; the
-      `tauri://theme-changed` listener is the fallback if it doesn't.
 - [ ] `tauri.conf.json`'s `backgroundColor` is a static dark hex covering the
       window-creation → `.setup()` gap, so a light-mode launch flashes dark for that
       instant. Fixing it properly means `"create": false` and building the window in

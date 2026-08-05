@@ -778,6 +778,22 @@ highlights from a corpus fixture.
   else: which area is due, when each was last swept, what it found. The area
   definitions live in the skill. `docs/upkeep/` holds the propose-only findings
   for `ui/app.js`, which are yours to apply by hand.
+- `README.md` — the user-facing reference, and the one doc that is also a *claim
+  about the code*: every keybind default, config key, CLI flag and theme name it
+  prints is checkable, and several had drifted before anyone checked. Change it
+  in the same commit as the default it documents.
+- `docs/bugs.md` and `docs/patch-log.md` — two newest-first logs with a real
+  split: `bugs.md` is for a bug that reached a *release artifact* (symptom,
+  cause, what would have caught it), `patch-log.md` for a between-release
+  one-change repair that would otherwise leave no trace but a commit subject.
+  `bugs/` is neither — it is where raw notes are filed before triage.
+- `docs/todo.md`, `docs/todo2.md` — queues, not logs. An item is **deleted** when
+  it lands; the history is `session-log.md`'s job. A queue nobody clears reads as
+  a list of things that don't work.
+- `ideas/` (`done/`, `hold/`) and `docs/plans/` — one file per idea, moved
+  between the two subdirectories by hand, and the implementation plans written
+  from them. `docs/agentic-direction.md` and `docs/overnight_plan.md` are
+  historical like `plan.md`: the reasoning behind work that has since shipped.
 - `perf/README.md` — what each performance tier measures and how much to trust it.
 - `website/CLAUDE.md` — the public site at `fongo.uk/dreamd`. A standalone Astro
   project, deployed separately; source of truth for everything under `website/`.

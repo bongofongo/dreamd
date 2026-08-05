@@ -17,8 +17,13 @@ items out as they land, see `docs/session-log.md` for history.
       GTK backend will actually draw, not chosen.*
 - [ ] Mac: a settings option to remove the traffic-light window controls
       (close/minimize/fullscreen) entirely.
-- [ ] Mac: make the top bar semi-transparent, Preview-style — content shows
+- [x] Mac: make the top bar semi-transparent, Preview-style — content shows
       through/behind it rather than sitting on a flat panel.
+      *Landed as `ui.titlebar_fade` (`body.chrome-fade`), on by default on macOS.
+      Not Preview's blur, deliberately: `backdrop-filter` was measured at +38%
+      renderer main-thread time per scroll and dropped. What ships is a scrim of
+      the page background masked out along a gradient, which measured free — see
+      the note in `CLAUDE.md`.*
 - [ ] Mac: once the top bar is the semi-transparent style, let it be toggled
       off completely, but only as a package with the traffic lights also
       being off — no title bar and no window buttons, content edge-to-edge.
