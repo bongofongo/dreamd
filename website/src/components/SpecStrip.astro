@@ -2,7 +2,7 @@
 const specs = [
   {
     term: "Rust + Tauri 2",
-    def: "Its own application window with a small binary, not a browser tab pretending to be one.",
+    def: "Its own application window with a small binary, not a browser tab pretending to be one. macOS and Linux from the same source.",
   },
   {
     term: "Rendered server-side",
@@ -14,24 +14,28 @@ const specs = [
   },
   {
     term: "Live on save",
-    def: "A notify watcher reloads the file, keeps your scroll position, and re-anchors highlights. If an edit changed the highlighted text itself, the highlight goes red and asks whether it still stands rather than quietly pointing at the wrong words.",
+    def: "A watcher reloads the file, keeps your scroll position, and re-anchors highlights. If an edit changed the highlighted text itself, the highlight goes red and asks whether it still stands rather than quietly pointing at the wrong words.",
   },
   {
-    term: "Themeable to the CSS",
-    def: "theme.css is a user-facing surface and hot-reloads on save. Reading comfort is the product, so the paint job is a first-class knob.",
+    term: "The agent can read the queue",
+    def: "dreamd is an MCP server as well as a window: your agent pulls the stack, the passage and the open document itself, and marks each question resolved as it goes. The reader updates live while it works.",
+  },
+  {
+    term: "Ten themes, both ways",
+    def: "Every theme ships a light and a dark half, and switching is one attribute. A theme is plain CSS in ~/.config/dreamd/themes, hot-reloaded on save — reading comfort is the product, so the paint job is a first-class knob.",
   },
 ];
 ---
 
-<section class="section" id="under-the-hood">
+<section class="section section-alt" id="under-the-hood">
   <div class="wrap">
     <span class="eyebrow">under the hood</span>
     <h2>Small, quiet, and read-only</h2>
     <p class="lede intro">
-      dreamd never writes to your markdown — editing stays in Neovim, where it
-      belongs. Nothing persists either: highlights, annotations, and the stack
-      live in memory and vanish with the process. It is a working surface for one
-      reading session, not a note-taking database.
+      dreamd never writes to your markdown, and never writes anything inside the
+      repo — editing stays in Neovim, where it belongs. The one place it does
+      write is <code>~/.config/dreamd</code>: your preferences, your themes, and
+      your marks, as plain files and no database.
     </p>
     <dl>
       {

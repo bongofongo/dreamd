@@ -26,64 +26,80 @@ import {
       <span class="eyebrow">what it is</span>
       <p>
         Terminal text is fine for code and miserable for prose. dreamd opens as
-        its own window, shows a file tree of every markdown file in whatever
+        its own window, shows a file tree of every markdown file in the
         repository you are sitting in, and renders the one you click with real
         fonts, real spacing, and syntax-highlighted code blocks.
       </p>
       <p>
-        It was built for a day spent inside a terminal — tmux for windows, Neovim
-        for editing, Claude Code for the rest. Existing markdown previewers dump
-        you into a browser tab, which breaks the flow. This is the reading window
-        that belongs in that setup.
+        It was built for a day spent inside a terminal — tmux, Neovim, Claude
+        Code. Other previewers dump you into a browser tab, which breaks the
+        flow. This is the reading window that belongs in that setup.
       </p>
     </div>
   </section>
 
   <LoopSteps />
-  <SpecStrip />
 
-  <section class="section section-alt get">
+  <section class="section get" id="install">
     <div class="wrap">
       <span class="eyebrow">get it</span>
       <h2>Install</h2>
       <p class="lede">
-        macOS, version {VERSION}. Apple Silicon and Intel.
-      </p>
-      <pre><code>brew install --cask {BREW_CASK}</code></pre>
-      <p class="note">
-        Puts the app in <code>/Applications</code> and <code>dreamd</code> on
-        your <code>PATH</code> — one binary, so the window and the command line
-        are the same program. <code>dreamd</code> opens the repo you are standing
-        in, <code>dreamd notes/todo.md</code> opens a file. Like nvim.
-        <code>brew upgrade --cask dreamd</code> takes you to the next release.
-      </p>
-      <p class="note">
-        Releases are signed with a Developer ID certificate and notarised by
-        Apple, so the app opens straight away however you fetched it — Homebrew,
-        or a zip pulled down by the browser.
+        Version {VERSION}. macOS on Apple Silicon and Intel, Linux on x86_64.
+        One binary either way: <code>dreamd.app</code> or a desktop entry
+        <em>and</em> <code>dreamd</code> on your <code>PATH</code>, so the window
+        and the command line can never be different versions of each other.
       </p>
 
-      <span class="alt">without Homebrew</span>
-      <pre><code>curl -fsSL {INSTALL_URL} | sh</code></pre>
-      <p class="note">
-        The same release artifact, checksum-verified before it installs, in the
-        same two places. Updating means re-running the line.
-      </p>
+      <div class="pkg">
+        <span class="alt">macOS · Homebrew</span>
+        <pre><code>brew install --cask {BREW_CASK}</code></pre>
+        <p class="note">
+          Signed with a Developer ID certificate and notarised by Apple, so it
+          opens straight away. <code>brew upgrade --cask dreamd</code> takes you
+          to the next release.
+        </p>
+      </div>
+
+      <div class="pkg">
+        <span class="alt">macOS or Linux · no package manager, no root</span>
+        <pre><code>curl -fsSL {INSTALL_URL} | sh</code></pre>
+        <p class="note">
+          The release artifact, checksum-verified before it unpacks. Updating
+          means re-running the line.
+        </p>
+      </div>
+
+      <div class="pkg">
+        <span class="alt">Linux · x86_64</span>
+        <pre><code>chmod +x dreamd-*.AppImage && ./dreamd-*.AppImage
+sudo dpkg -i dreamd-*.deb</code></pre>
+        <p class="note">
+          AppImage, <code>.deb</code> and a plain tarball on every release, all
+          carrying the same desktop entry and icons; Arch builds from the
+          PKGBUILD attached alongside them. Nothing here is signed — the
+          <code>.sha256</code> files are the integrity check.
+        </p>
+      </div>
+
       <div class="dl">
         <a class="btn btn-primary" href={RELEASES_URL} rel="noopener noreferrer">
-          Download for macOS
+          Download the latest release
         </a>
         <a class="btn btn-quiet" href={REPO_URL} rel="noopener noreferrer">
           Source on GitHub
         </a>
       </div>
       <p class="note">
-        Linux (x86_64) ships as an AppImage and a <code>.deb</code> on each
-        release, with a PKGBUILD for Arch. Open source under the
+        <code>dreamd</code> opens the repo you are standing in,
+        <code>dreamd notes/todo.md</code> opens a file. Like nvim. Open source
+        under the
         <a href={LICENSE_URL} rel="noopener noreferrer">{LICENSE_NAME} licence</a>.
       </p>
     </div>
   </section>
+
+  <SpecStrip />
   </div>
 </SiteLayout>
 
@@ -105,11 +121,16 @@ import {
     max-width: 34em;
   }
 
-  /* A second eyebrow, one step quieter, marking the fallback route rather than a
-     new section — so it must not read as loud as the section's own label. */
+  /* One block per channel. Each is a label, the command, and what it leaves you
+     with — the command is the thing being pointed at, so it carries the accent. */
+  .pkg {
+    margin-top: 2.6rem;
+  }
+
+  /* A second eyebrow, one step quieter, naming the channel rather than a new
+     section — so it must not read as loud as the section's own label. */
   .alt {
     display: block;
-    margin-top: 2.6rem;
     font-family: var(--font-mono);
     font-size: 0.72rem;
     letter-spacing: 0.14em;
@@ -124,11 +145,12 @@ import {
   pre {
     margin-top: 1.8rem;
     padding: 1.1rem 1.25rem;
-    background: var(--bg);
+    background: var(--bg-deep);
     border: 1px solid var(--border);
+    border-left: 2px solid var(--accent-dim);
     border-radius: 8px;
-    font-size: 0.9rem;
-    line-height: 1.7;
+    font-size: 0.95rem;
+    line-height: 1.8;
     /* Wrap rather than scroll: the clone URL is wider than a phone, and a
        hidden scroll region is a worse way to read a command than a soft wrap. */
     white-space: pre-wrap;
