@@ -1,6 +1,11 @@
-// Assets-only Worker serving the dreamd site at fongo.uk/dreamd*.
-// The rest of fongo.uk is paper_web on Vercel; this zone route shadows just the
-// /dreamd path before Vercel ever sees the request. Assets are free and unmetered.
+// Assets-only Worker serving the dreamd site at fongo.dev/dreamd*.
+// The rest of fongo.dev is paper_web — itself a Worker on a Custom Domain since
+// the 2026-08 move off Vercel. A Worker route takes precedence over another
+// Worker's Custom Domain, so this route still shadows just the /dreamd path.
+// Assets are free and unmetered.
+//
+// No fongo.uk route: that zone 301s wholesale to fongo.dev
+// (paper_web/redirect-worker), old /dreamd links included.
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "dreamd-web",
@@ -12,5 +17,5 @@
     // own <link rel="canonical"> is normalised to match.
     "html_handling": "drop-trailing-slash"
   },
-  "routes": [{ "pattern": "fongo.uk/dreamd*", "zone_name": "fongo.uk" }]
+  "routes": [{ "pattern": "fongo.dev/dreamd*", "zone_name": "fongo.dev" }]
 }

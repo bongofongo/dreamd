@@ -1,11 +1,11 @@
-// Standalone site for dreamd, served at https://fongo.uk/dreamd by a Cloudflare
-// Worker (static assets) on the zone route `fongo.uk/dreamd*`.
+// Standalone site for dreamd, served at https://fongo.dev/dreamd by a Cloudflare
+// Worker (static assets) on the zone route `fongo.dev/dreamd*`.
 // `outDir` nests the build under dist/dreamd so the Worker's 1:1 path→asset
 // mapping lines up with the route prefix (Astro's `base` only prefixes URLs).
 import { defineConfig, fontProviders } from "astro/config";
 
 export default defineConfig({
-  site: "https://fongo.uk",
+  site: "https://fongo.dev",
   base: "/dreamd",
   outDir: "./dist/dreamd",
   // Slashless URLs are canonical, matching the Worker's drop-trailing-slash.
