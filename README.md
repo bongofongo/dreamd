@@ -551,6 +551,14 @@ asymmetry: launched from Finder, TCC attributes the request to `dreamd.app` and
 shows those strings; launched through the `PATH` symlink from a terminal, it
 generally attributes to the terminal and inherits whatever that already has.
 
+## Contributing
+
+Bug reports and patches are welcome. Note that this repo commits straight to
+`main` and has no branches — that is the maintainer's convention, not a rule for
+you, and a PR from a fork is the right way in. What to run before opening one,
+and which tenets a change is expected not to cross, are in
+[CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## Licence
 
 Apache License 2.0 — see [LICENSE](LICENSE).
