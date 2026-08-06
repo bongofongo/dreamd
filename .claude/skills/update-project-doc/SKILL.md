@@ -1,6 +1,6 @@
 ---
 name: update-project-doc
-description: Refreshes notes/project.md — the plain-language, entry-level project brief for the human behind dreamd — from the current state of the repo, then commits it to main. Invoke when the user asks to update the project doc / project.md / the team page, when a scheduled job runs this, or when a session materially changed the project story.
+description: Refreshes notes/project.md — the plain-language, entry-level project brief for the human behind dreamd — from the current state of the repo, then commits it to main. Invoke when the user asks to update the project doc / project.md / the team page, or when a session materially changed the project story.
 ---
 
 # Update `notes/project.md`
@@ -11,8 +11,9 @@ exactly where dreamd stands. It is written for an **entry-level engineer** — p
 English, jargon explained on first use, no assumed familiarity with Rust, Tauri, or
 the codebase.
 
-A scheduled job runs this daily; the user can also invoke it on demand. Both paths
-run the same steps.
+This is invoked by hand now. The daily Routine that used to run it is disabled:
+its cloud checkout is the public repo alone, and after the split the file it
+writes lives only in the private notes clone, which is not there.
 
 **The doc is in a different repo from the code it describes.** `notes/` is a clone
 of the private `dreamd-notes`, gitignored inside the public `dreamd` tree, so the

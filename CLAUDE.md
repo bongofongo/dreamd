@@ -757,22 +757,24 @@ highlights from a corpus fixture.
   and feeds no baseline.
 - **A nightly job sweeps one area of the repo per night** — `/upkeep`, driven by a
   Routine at 02:17 UTC. Fifteen areas on rotation, so each is swept about
-  fortnightly; the area due next is the stalest row in `notes/upkeep/ledger.md`.
+  fortnightly; the area due next is the stalest row in `.claude/upkeep/ledger.md`.
   Each sweep does three passes over its area — verify CLAUDE.md's claims against
   the code, simplify, then fix the drift and tighten that section — and the first
   is the valuable one: a false claim here misleads every session that reads it.
-  Four things make it safe to run unwatched. The work lands on a
+  Four things make it safe to run unwatched. The *code* lands on a
   `claude/upkeep-<date>` branch as one PR and **never on `main`**, which is the
   one place this repo's straight-to-main rule doesn't hold, because nobody is
   watching. `ui/app.js` is **propose-only** — 5,700 lines the harnesses can't
-  prove the paint of, so those areas write to `notes/upkeep-findings/` and change
-  no code. An empty night is a **success**: a job that must produce a diff churns
-  code to justify itself. And the ledger commit lands on its own even when the PR
-  doesn't, so an unmerged review can't stall the rotation into re-sweeping the
-  same area nightly. **Both the ledger and the findings live in the private notes
-  repo**, and that is the fourth safety: an unwatched job can leave a commit in
-  `notes`, but it cannot leave one — or a file waiting to be committed — in a
-  public repo. It never runs a perf tier — `run.sh` refuses comparison off
+  prove the paint of, so those areas write one file to `.claude/upkeep/findings/`
+  on that same branch and change no code. An empty night is a **success**: a job
+  that must produce a diff churns code to justify itself. And the ledger commit
+  lands on `main` on its own even when the PR doesn't, so an unmerged review
+  can't stall the rotation into re-sweeping the same area nightly — one file, and
+  the only exception to the sentence above. **The job runs in a cloud checkout of
+  this repo alone**, which is why both its outputs are tracked here rather than
+  in the private notes clone the local sessions have: `notes/` is not there, and
+  a job that stopped on its absence would never sweep. It never runs a perf tier
+  — the baseline is in `notes/` and `run.sh` refuses comparison off
   Darwin anyway — and flags in the PR when a measured path needs `/perf-quick` on
   your own machine.
 
@@ -807,16 +809,20 @@ In this repo:
   Nothing there touches the Rust build.
 - `src-tauri/icons/README.md`, `ui/vendor/README.md`, `packaging/SIGNING.md` —
   the three narrow runbooks, each next to what it describes.
+- `.claude/upkeep/ledger.md` and `.claude/upkeep/findings/` — the nightly
+  Routine's two outputs; see Working practices. Tracked here because that job's
+  checkout is this repo and nothing else.
 
 In `notes/`:
 
 - `notes/session-log.md` — running session log, **newest section first**. Written
   by the `/wrap-up` skill at the end of a session.
 - `notes/project.md` — the human landing page: a 2–3 page plain-language brief
-  written for an entry-level reader, ending with "Recent updates". Refreshed daily
-  by a scheduled job and by the `/update-project-doc` skill. If a session
-  materially changes the project story, update it in the same session rather than
-  waiting.
+  written for an entry-level reader, ending with "Recent updates". Refreshed by
+  the `/update-project-doc` skill, **by hand**: the daily Routine that used to do
+  it is disabled, because a cloud checkout has no `notes/` and the job's own
+  target moved out of the public tree with the split. If a session materially
+  changes the project story, update it in that session rather than waiting.
 - `notes/plan.md` — original design intent. Historical; don't rewrite it.
   `notes/agentic-direction.md` and `notes/overnight_plan.md` read the same way:
   the reasoning behind work that has since shipped.
@@ -832,8 +838,6 @@ In `notes/`:
   reads as a list of things that don't work.
 - `notes/perf-baseline.json` — the perf reference numbers; see Working practices.
 - `notes/workflows/perf.yml` — the perf workflow, parked rather than run.
-- `notes/upkeep/ledger.md`, `notes/upkeep-findings/` — the nightly Routine's
-  output; see Working practices.
 
 Keep this CLAUDE.md terse and machine-facing — human-facing guidance belongs in
 `notes/project.md`.

@@ -1,6 +1,6 @@
 ---
 name: upkeep
-description: Sweeps one area of the dreamd repo — verifying CLAUDE.md's claims about it against the code, simplifying the code, then bringing that section of CLAUDE.md back into line — and opens one PR. Rotation state lives in notes/upkeep/ledger.md, in the private notes repo. Invoke when the nightly upkeep job runs this, when the user asks to sweep, debloat, or simplify an area, or runs /upkeep.
+description: Sweeps one area of the dreamd repo — verifying CLAUDE.md's claims about it against the code, simplifying the code, then bringing that section of CLAUDE.md back into line — and opens one PR. Rotation state lives in .claude/upkeep/ledger.md. Invoke when the nightly upkeep job runs this, when the user asks to sweep, debloat, or simplify an area, or runs /upkeep.
 ---
 
 # Nightly upkeep sweep
@@ -21,12 +21,11 @@ manufacture work.
 
 ## 1. Pick the area
 
-Read `notes/upkeep/ledger.md`. That is in the **private notes repo**, cloned at
-`notes/` and gitignored in this tree — the ledger and the propose-only findings
-both live there, because this job runs unwatched and must not be able to leave a
-commit, or a file waiting to be committed, in a public repo. If `notes/` is not
-checked out there is no rotation state: say so and stop, rather than sweeping an
-arbitrary area or writing a ledger into the tracked tree.
+Read `.claude/upkeep/ledger.md`. It is tracked in **this** repo, on purpose: the
+nightly job runs in a cloud checkout of `bongofongo/dreamd` and nothing else.
+The private notes clone at `notes/` is a local convenience, is gitignored here,
+and **is not present** when this job runs — never read it, never write it, never
+treat its absence as a reason to stop.
 
 Take the row with the oldest *last swept*;
 while that column is empty, use the `#` column for the first cycle's order. Break
@@ -66,12 +65,12 @@ Rust paths are under `src-tauri/src/`.
 
 **`ui/app.js` is propose-only.** It is 5,700 lines and the GUI is verified only
 by hand — `ui-check.mjs` asserts what the page knows, not what it paints. Areas
-9–11 produce a written proposal at `notes/upkeep-findings/<date>-<area>.md`
+9–11 produce a written proposal at `.claude/upkeep/findings/<date>-<area>.md`
 (findings, a diff sketch, what would need checking by eye) and change **no**
-code. That path is in the notes repo, so a propose-only night touches the dreamd
-tree not at all. That is the
-user's call, and it is the rule most likely to erode in practice: if a change
-there looks obviously safe, it still goes in the proposal.
+code. That file is the whole diff of a propose-only night, and it goes to the
+same branch and PR as any other night — reviewable rather than landed. Whether
+to act on it is the user's call, and it is the rule most likely to erode in
+practice: if a change there looks obviously safe, it still goes in the proposal.
 
 ## 3. The three passes
 
@@ -112,10 +111,11 @@ A sweep may never:
   the author's Mac and `run.sh` refuses comparison off Darwin anyway. The
   baseline is `notes/perf-baseline.json` now, which puts it under the next rule
   too.
-- **Touch anything under `notes/` except its own two outputs** — the ledger and,
-  for areas 9–11, one findings file. The session log, `plan.md`, `project.md`
-  (its own job), the plans and the idea backlog all live there and are not this
-  job's to edit.
+- **Read or write anything under `notes/`.** That is the private working
+  material — the session log, `plan.md`, `project.md`, the plans, the idea
+  backlog, the perf baseline — and it is not in the checkout this job runs in.
+  Its outputs are the two files in this repo instead: `.claude/upkeep/ledger.md`
+  and, for areas 9–11, one findings file beside it.
 - **Touch** `ui/vendor/` or any version string.
 - **Edit `ui/app.js`** — areas 9–11 are propose-only.
 - **Exceed 400 changed lines.** Over cap: land the best slice, propose the rest.
@@ -175,7 +175,11 @@ Commit with a message that says what was simplified and why, ending with the
 `Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>` trailer, then push and
 open one PR against `main`. The body names the area, the drift found (even when
 the fix was one word), what was simplified, the net line delta, and any measured
-path touched.
+path touched. For areas 9–11 the branch carries exactly one file — the findings
+proposal — and the PR body summarises it rather than repeating it.
+
+Keep the ledger edit **out** of that branch. It is a scheduling record, not
+work, and staging it with the sweep would make the rotation wait on review.
 
 **If no PR-creation tool is available, push anyway and report the link.** A
 scheduled session may hold neither the GitHub MCP tools nor `gh` — a fired
@@ -187,27 +191,29 @@ the PR body you would have used in the final report, and record the branch name
 in the ledger's *Open PR* column so the next sweep still counts it against the
 three-PR backlog cap.
 
-**The ledger** goes straight to `main` **in the notes repo**, in its own commit,
-whether or not the sweep produced code. Use `git -C notes` rather than `cd` — the
-shell's working directory is shared with the user's:
+**The ledger** goes straight to `main`, in its own commit, from a clean checkout
+of `main` rather than from the sweep's branch, whether or not the sweep produced
+code:
 
 ```sh
-git -C notes pull --rebase origin main
-# edit notes/upkeep/ledger.md   (and notes/upkeep-findings/<date>-<area>.md, if any)
-git -C notes commit upkeep -m "chore(upkeep): <area> swept $(date +%F)"
-git -C notes push origin main
+git checkout main && git pull --rebase origin main
+# edit .claude/upkeep/ledger.md
+git commit .claude/upkeep/ledger.md -m "chore(upkeep): <area> swept $(date +%F)"
+git push origin main
 ```
 
 The ledger is a *scheduling* record, not a work record. If a PR sits unmerged for
 a week the rotation still has to advance — otherwise the same area is re-swept
 every night and duplicate PRs pile up behind the first one.
 
-**Never push code to dreamd's `main`.** CLAUDE.md says dreamd commits straight to
-main with no branches; that is for supervised work, and dreamd is public. This
-job runs with nobody watching, so the code half goes to a reviewable PR. Nothing
-this job produces lands on the public `main` directly — the ledger and the
-findings both go to `notes`, which is private and where an unreviewed automatic
-commit costs nothing.
+**That one commit is the only thing this job may put on `main`.** CLAUDE.md says
+dreamd commits straight to main with no branches; that is for supervised work,
+and this job runs with nobody watching, so every byte of *code* goes to a
+reviewable PR. The exception is deliberate and is scoped to a single file: the
+rotation cannot live on a branch without stalling, and it cannot live in
+`notes/`, which this checkout does not have. If the push to `main` is rejected,
+pull with `--rebase` and retry; never force, and never widen the commit past
+`.claude/upkeep/ledger.md`.
 
 ## 7. How to work
 
