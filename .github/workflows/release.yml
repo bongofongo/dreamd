@@ -228,6 +228,20 @@ jobs:
           cat tap/Casks/dreamd.rb
 
       - name: Audit
+        env:
+          # `--online` walks the GitHub API (release assets, the livecheck
+          # strategy), and Homebrew makes those calls *unauthenticated* unless
+          # this is set — 60/hour shared across every job on the runner's egress
+          # IP, which v0.2.3 exhausted before it made a single call of its own:
+          #
+          #   exception while auditing dreamd: GitHub API Error: API rate limit
+          #   exceeded for 13.105.117.187.
+          #
+          # It is the job's own GITHUB_TOKEN, so the limit becomes 1000/hour per
+          # repository and stops depending on who else shares the runner. Note
+          # `gh` was already authenticated in the step above and was never the
+          # problem: HOMEBREW_GITHUB_API_TOKEN is the only name brew reads.
+          HOMEBREW_GITHUB_API_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           # `brew audit <path>` is disabled from Homebrew 6 ("Use brew audit
