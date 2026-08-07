@@ -226,10 +226,14 @@ handlers, the builder. All logic lives in the `dreamd` **library** crate (`src/l
 modules) *because a `[[bin]]` target cannot be imported*: the split is what makes
 `src-tauri/benches/` possible. New logic goes in a module, not in `main.rs`.
 
-State is one `AppState`: `repo_root`, `Mutex<Config>`, `Mutex<Store>` (highlights + stack),
-`Mutex<SearchIndex>`. It spans every file opened in the session and dies with the process.
-`Config` is behind a lock because the settings panel rewrites it at runtime — it is the
-only configuration that changes after startup.
+State is one `AppState`: `RwLock<PathBuf>` for the root (every command reads it, only
+File ▸ Open writes), `Mutex<Config>`, `Arc<Mutex<Store>>` (highlights + stack) and
+`Arc<Catalog>` — the tree and the search index, from one walk behind one readiness gate.
+It spans every file opened in the session, and the store is the one part that outlives
+the process, through `marks_file` (tenet 2). The two `Arc`s are exactly the state shared
+with threads that outlive a command: the MCP socket thread holds the store, and a
+deferred walk fills the catalog. `Config` is behind a lock because the settings panel
+rewrites it at runtime — it is the only configuration that changes after startup.
 
 Data flow: `ui/app.js` (plain JS, no build step; `tauri.conf.json` points `frontendDist` at
 `../ui`) calls commands over IPC and listens for watcher events. The CSP is
@@ -345,7 +349,9 @@ the upgrade procedure.
   pure) plus `load`/`save` (mode 0600, temp sibling, rename). `load` never fails
   and never panics; a corrupt file costs the marks, not the launch. `main.rs`
   owns the *scheduling* — a load before the walk, a 500ms debounced save thread,
-  a flush on `RunEvent::ExitRequested`, and the flush + reload `adopt_root` does
+  a flush on `RunEvent::ExitRequested` *and* on `Exit` (the first can be
+  cancelled by a listener, and a second flush costs one atomic read), and the
+  flush + reload `adopt_root` does
   in the same block that swaps config. Only the primary writes: the second
   dreamd on a repo keeps its marks in memory and says so.
 - `mcp` — the agent surface. Six tools: four read (`get_stack`,
