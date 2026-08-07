@@ -19,7 +19,7 @@ use dreamd::{
     notify, perf, prompt, pty, read_source, rootfield, send, theme, watcher,
 };
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
@@ -293,6 +293,31 @@ fn files_with_marks(store: &Store) -> HashSet<String> {
         .collect()
 }
 
+/// Write the marks, reporting a failure on stderr. Returns whether it landed —
+/// only the debounce tick reads that, and only to put its dirty flag back.
+///
+/// A helper because its two callers, the tick and `adopt_root`'s flush of the
+/// root it is leaving, were two copies of one user-facing sentence.
+fn save_marks(root: &Path, store: &Store) -> bool {
+    match marks_file::save(root, store) {
+        Ok(()) => true,
+        Err(e) => {
+            eprintln!("dreamd: cannot save marks for {}: {e}", root.display());
+            false
+        }
+    }
+}
+
+/// Say that this window is a secondary. Startup and `adopt_root` both discover
+/// it — of a repo given on the command line and of one moved to — and a reader
+/// who sees it in one place should see the same words in the other.
+fn warn_secondary(root: &Path) {
+    eprintln!(
+        "dreamd: another dreamd already owns {} — this window will not save marks",
+        root.display()
+    );
+}
+
 /// A reader over the open-document slot, for the MCP server.
 ///
 /// The mirror image of [`notify::to_window`]: that one is the only Tauri
@@ -344,8 +369,7 @@ fn flush_marks(app: &tauri::AppHandle) {
         return;
     }
     let root = state.root();
-    if let Err(e) = marks_file::save(&root, &store) {
-        eprintln!("dreamd: cannot save marks for {}: {e}", root.display());
+    if !save_marks(&root, &store) {
         // Put the flag back: a full disk that clears itself should not have
         // cost the session's marks.
         state.dirty.store(true, Ordering::Relaxed);
@@ -942,14 +966,6 @@ fn set_config(
     Ok(get_settings(state))
 }
 
-/// Pin the *native* appearance, so the traffic lights, scrollbars and the
-/// webview's own `prefers-color-scheme` agree with the palette. `None` hands
-/// control back to the OS.
-///
-/// On macOS tao implements this as `NSApplication.appearance` — it is app-wide
-/// rather than per-window, and while it is pinned `Window::theme()` reports the
-/// pin rather than the system value. Never read the OS appearance back through
-/// it without un-pinning first.
 /// Whether the native appearance needs pinning, and to what.
 ///
 /// `None` — let the OS drive — is right only when we are actually showing what
@@ -1027,6 +1043,19 @@ fn apply_chrome(win: &tauri::WebviewWindow, ui: &config::Ui) {
     }
 }
 
+/// Whatever `Window::theme()` currently reports, as a [`theme::Scheme`].
+///
+/// An unknown or errored theme keeps dreamd's historical dark default rather
+/// than guessing light. Note what this is *not*: while a pin is applied it
+/// reports the pin, so only a caller that knows the window is unpinned — startup,
+/// or [`os_scheme`], which clears it first — is reading the OS.
+fn window_scheme(win: &tauri::WebviewWindow) -> theme::Scheme {
+    match win.theme() {
+        Ok(tauri::Theme::Light) => theme::Scheme::Light,
+        _ => theme::Scheme::Dark,
+    }
+}
+
 /// What the OS asks for, with nothing of dreamd's pinned over the answer.
 ///
 /// `Window::theme()` reports the **pin** while one is applied — tao caches
@@ -1041,14 +1070,17 @@ fn apply_chrome(win: &tauri::WebviewWindow, ui: &config::Ui) {
 /// an explicit light or dark this would clear a pin only to set it again.
 fn os_scheme(win: &tauri::WebviewWindow) -> theme::Scheme {
     pin_native_theme(win, None);
-    match win.theme() {
-        Ok(tauri::Theme::Light) => theme::Scheme::Light,
-        // An unknown or errored theme keeps dreamd's historical dark default
-        // rather than guessing light.
-        _ => theme::Scheme::Dark,
-    }
+    window_scheme(win)
 }
 
+/// Pin the *native* appearance, so the traffic lights, scrollbars and the
+/// webview's own `prefers-color-scheme` agree with the palette. `None` hands
+/// control back to the OS.
+///
+/// On macOS tao implements this as `NSApplication.appearance` — it is app-wide
+/// rather than per-window, and while it is pinned `Window::theme()` reports the
+/// pin rather than the system value. Never read the OS appearance back through
+/// it without un-pinning first.
 fn pin_native_theme(win: &tauri::WebviewWindow, pinned: Option<theme::Scheme>) {
     let _ = win.set_theme(pinned.map(|s| match s {
         theme::Scheme::Light => tauri::Theme::Light,
@@ -1173,12 +1205,11 @@ fn trash_context() -> trash::TrashContext {
 /// an ACL entry to reach the same NSOpenPanel. `rfd` drives GTK3 on Linux — the
 /// toolkit tauri already links there — so the same call covers both.
 fn open_target(app: &tauri::AppHandle, want_file: bool) {
-    let app = app.clone();
+    let handle = app.clone();
     // NSOpenPanel must run its modal loop on the main thread, and so must a GTK
     // dialog. Menu events already arrive there, but going through
     // `run_on_main_thread` says so.
-    let handle = app.clone();
-    let _ = handle.run_on_main_thread(move || {
+    let _ = app.run_on_main_thread(move || {
         let dialog = rfd::FileDialog::new().set_title(if want_file {
             "Open a markdown file"
         } else {
@@ -1192,7 +1223,7 @@ fn open_target(app: &tauri::AppHandle, want_file: bool) {
             dialog.pick_folder()
         };
         if let Some(path) = picked {
-            adopt_root(&app, path);
+            adopt_root(&handle, path);
         }
     });
 }
@@ -1240,12 +1271,7 @@ fn adopt_root(app: &tauri::AppHandle, path: PathBuf) {
     {
         let mut store = state.store.lock().unwrap();
         if state.persists.load(Ordering::Relaxed) && state.has_repo.load(Ordering::Relaxed) {
-            if let Err(e) = marks_file::save(&previous_root, &store) {
-                eprintln!(
-                    "dreamd: cannot save marks for {}: {e}",
-                    previous_root.display()
-                );
-            }
+            save_marks(&previous_root, &store);
         }
         *state.config.lock().unwrap() = cfg;
         *state.repo_root.write().unwrap() = root.clone();
@@ -1260,10 +1286,7 @@ fn adopt_root(app: &tauri::AppHandle, path: PathBuf) {
         *state.pending_reanchor.lock().unwrap() = files_with_marks(&store);
     }
     if claimed {
-        eprintln!(
-            "dreamd: another dreamd already owns {} — this window will not save marks",
-            root.display()
-        );
+        warn_secondary(&root);
     }
 
     // Retire the watcher on the old root before arming one on the new.
@@ -1860,10 +1883,7 @@ fn main() {
     // itself reporting back, which is a change to `mcp::server`'s interface.
     let persists = has_repo && !cli::repo_is_claimed(&repo_root);
     if has_repo && !persists {
-        eprintln!(
-            "dreamd: another dreamd already owns {} — this window will not save marks",
-            repo_root.display()
-        );
+        warn_secondary(&repo_root);
     }
 
     // `dreamd file.md` is a Preview-style "open this one document" gesture: the
@@ -2030,12 +2050,9 @@ fn main() {
             // inline when called from the main thread, which this is.
             if let Some(win) = app.get_webview_window("main") {
                 let state = app.state::<AppState>();
-                let system = match win.theme() {
-                    Ok(tauri::Theme::Light) => theme::Scheme::Light,
-                    // An unknown or errored theme keeps dreamd's historical
-                    // dark default rather than guessing light.
-                    _ => theme::Scheme::Dark,
-                };
+                // Read directly rather than through `os_scheme`: nothing is
+                // pinned yet, so there is no pin to clear first.
+                let system = window_scheme(&win);
                 let (mode, scheme) = {
                     let cfg = state.config.lock().unwrap();
                     (cfg.mode(), theme::scheme_for(&cfg, system))
