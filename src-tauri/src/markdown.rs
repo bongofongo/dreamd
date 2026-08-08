@@ -615,12 +615,12 @@ impl Stripped {
 
     /// Offset into `text` of the first char at or after source byte `src`.
     /// `source_offsets` is non-decreasing, so this is a binary search.
+    ///
+    /// The result needs no rounding to a char boundary: every byte of a char
+    /// repeats that char's offset, so the predicate cannot flip partway through
+    /// one and the partition point can only land on a boundary.
     fn offset_of(&self, src: usize) -> usize {
-        let mut i = self.source_offsets.partition_point(|&o| o < src);
-        while i < self.text.len() && !self.text.is_char_boundary(i) {
-            i += 1;
-        }
-        i
+        self.source_offsets.partition_point(|&o| o < src)
     }
 
     /// Byte offsets in the *original* source of the first and last char of
