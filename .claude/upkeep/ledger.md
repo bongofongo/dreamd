@@ -19,7 +19,7 @@ one-line scheduling record is the **only** thing the nightly job may commit to
 |---|---|---|---|---|
 | 1 | `repo-docs` | 2026-08-05 | swept — README named a keybind that does something else, the wrong `agent.position` default, and the tmux path as the send path | #15 (merged) |
 | 2 | `shell` | 2026-08-07 | swept — `pin_native_theme`'s doc paragraph was sitting on `native_pin`; CLAUDE.md's `AppState` named a `Mutex<SearchIndex>` field that does not exist; three duplicated messages/branches folded | #16 (merged) |
-| 3 | `core-text` | — | — | — |
+| 3 | `core-text` | 2026-08-08 | swept — CLAUDE.md called `locate`'s tiers a three-step chain when tiers 1 and 2 are alternatives gated on context; `untrusted` was missing from both the test-coverage sentence and the module list; one unreachable char-boundary loop dropped from `Stripped::offset_of` | #17 |
 | 4 | `store` | — | — | — |
 | 5 | `config-theme` | — | — | — |
 | 6 | `ui-reading` | — | — | — |
