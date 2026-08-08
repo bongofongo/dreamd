@@ -50,8 +50,10 @@ dreamd --theme nord [path]           # one run, no config write
 ```
 
 `cargo test` covers the pure core and the security tenets: `guard` (scheme
-allowlist, repo-root containment), `markdown` (HTML escaping, slugs, `locate`'s
-three tiers), `theme` (`user_path` traversal, the CSS parser), `annotations`
+allowlist, repo-root containment), `untrusted` (the envelope, and that a body
+which has learned the sentinel still cannot break out of it), `markdown` (HTML
+escaping, slugs, `locate`'s three tiers), `theme` (`user_path` traversal, the
+CSS parser), `annotations`
 (`Store` semantics), `config` (`deep_merge`), `fs_walk::build_tree`, `is_markdown`,
 and `pty` (the base64 round trip, and a real pty driven with `/bin/sh` — never
 with `PANE_COMMAND`, so `cargo test` cannot start a Claude Code session).
@@ -258,6 +260,15 @@ the upgrade procedure.
   `open_external`/`delete_file` commands *because `main.rs` cannot be imported* —
   in `main.rs` the tenets were enforced by code no test could reach.
   `ui/paths.js` is the frontend twin, for relative links and images.
+- `untrusted` — tenet 6's enforcement, in the library for the same reason `guard` is.
+  `delimit` **labels** a body rather than filtering it — a user's own words are the
+  evidence the whole highlight loop exists to carry, and an instruction can be spelled
+  too many ways for a denylist to be anything but theatre. The sentinel it delimits with
+  is per-process random because a document written yesterday cannot contain a value drawn
+  from the OS this morning, which is the only unforgeability available when the parser is
+  a reader. `neutralise` *replaces* a forged sentinel instead of deleting it: deleting
+  would splice the neighbours together and let a body carrying one in two halves
+  reassemble a whole one through the gap.
 - `fs_walk` — `ignore` crate (ripgrep's walker) → nested `FileNode` tree, markdown only.
 - `search` — `nucleo` fuzzy index over **paths only**; content search is v2.
 - `markdown` — pulldown-cmark → HTML, syntect for fenced code. Raw source HTML is
@@ -614,10 +625,14 @@ header at all** — the dock's status text has nowhere to go there, so
 and a session that cannot start says why instead of saying "starting" forever.
 
 **Highlight anchoring is the subtle part.** A quote is located in the *source* by
-`markdown::locate` in three fallbacks: exact `prefix+quote+suffix`, exact quote, then
-whitespace-stripped match. The frontend sends what `getSelection().toString()` returns —
-**rendered DOM text**, never raw source — so the whitespace-normalized path is the hot one
-and the only realistic thing to benchmark. `reanchor_file` re-runs this on save; failure
+`markdown::locate` in three tiers, the first two alternatives rather than a chain: with
+context, exact `prefix+quote+suffix`; without it, the exact quote alone. A quote carrying
+context that misses tier 1 skips tier 2 and drops straight to tier 3, the
+whitespace-stripped match — an exact search would take the earliest occurrence while
+ignoring the very context saying the quote came from a later copy. The frontend sends what
+`getSelection().toString()` returns — **rendered DOM text**, never raw source — so the
+whitespace-normalized path is the hot one and the only realistic thing to benchmark.
+`reanchor_file` re-runs this on save; failure
 marks the highlight `Stale` rather than dropping it — **but only if it ever
 anchored.** A quote spanning inline markdown (`**bold**`, a link) is DOM text
 `locate` cannot find in the source at any tier, so `add_anchored` keeps it at
