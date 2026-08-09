@@ -232,9 +232,10 @@ State is one `AppState`: `RwLock<PathBuf>` for the root (every command reads it,
 File ▸ Open writes), `Mutex<Config>`, `Arc<Mutex<Store>>` (highlights + stack) and
 `Arc<Catalog>` — the tree and the search index, from one walk behind one readiness gate.
 It spans every file opened in the session, and the store is the one part that outlives
-the process, through `marks_file` (tenet 2). The two `Arc`s are exactly the state shared
-with threads that outlive a command: the MCP socket thread holds the store, and a
-deferred walk fills the catalog. `Config` is behind a lock because the settings panel
+the process, through `marks_file` (tenet 2). Every `Arc` in it is state shared with a
+thread that outlives a command, and there are four: the MCP socket thread holds the
+store and a reader over `open_doc`, a deferred walk fills the catalog, and the
+debounced marks-save thread reads `dirty`. `Config` is behind a lock because the settings panel
 rewrites it at runtime — it is the only configuration that changes after startup.
 
 Data flow: `ui/app.js` (plain JS, no build step; `tauri.conf.json` points `frontendDist` at
@@ -282,7 +283,7 @@ the upgrade procedure.
   both gone — a question that has been asked is assumed dealt with, and five cards
   asking to confirm that was five cards over the paragraph they were about.
   `sent_at`, `Store::resolve` and the MCP `resolve_highlight` stay: they are the
-  agent's record of what it closed, and `list_highlights` filters on it.
+  agent's record of what it closed, and `list_highlights` filters on `resolved`.
   **One highlight per passage, and `retarget` is the price of it.** Overlapping
   marks were all in the store and all on the stack, but only the topmost was
   reachable by a click, so the ones underneath became annotations nobody could
