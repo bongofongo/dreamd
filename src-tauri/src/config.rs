@@ -206,12 +206,12 @@ pub struct Ui {
     /// is a stale or hand-typed number, and the useful answer is the nearest
     /// usable tree, not a rejected config file that takes every other key down
     /// with it.
-    #[serde(deserialize_with = "de_tree_width")]
+    #[serde(deserialize_with = "de_clamped::<_, { TREE_WIDTH_MIN }, { TREE_WIDTH_MAX }>")]
     pub tree_width: u32,
 
     /// Stack panel width in CSS pixels, as left by its drag handle. Clamped on
     /// the way in for the same reason [`Ui::tree_width`] is.
-    #[serde(deserialize_with = "de_stack_width")]
+    #[serde(deserialize_with = "de_clamped::<_, { STACK_WIDTH_MIN }, { STACK_WIDTH_MAX }>")]
     pub stack_width: u32,
 
     /// The agent pane's width when it is docked right (`agent.position =
@@ -221,12 +221,12 @@ pub struct Ui {
     /// orientation with the dock: the width you left it at on the right is not
     /// a height, and switching position should restore the size you last chose
     /// *there* rather than reinterpret the other one.
-    #[serde(deserialize_with = "de_pane_width")]
+    #[serde(deserialize_with = "de_clamped::<_, { PANE_WIDTH_MIN }, { PANE_WIDTH_MAX }>")]
     pub pane_width: u32,
 
     /// The agent pane's height when it is docked below the reader, in CSS
     /// pixels. See [`Ui::pane_width`] for why it is its own key.
-    #[serde(deserialize_with = "de_pane_height")]
+    #[serde(deserialize_with = "de_clamped::<_, { PANE_HEIGHT_MIN }, { PANE_HEIGHT_MAX }>")]
     pub pane_height: u32,
 
     /// Whether the window draws the native menubar — File / Edit / Help on
@@ -335,32 +335,18 @@ impl Default for Ui {
     }
 }
 
-fn de_tree_width<'de, D>(de: D) -> Result<u32, D::Error>
+/// Clamp a panel size into its range on the way in — see [`Ui::tree_width`] for
+/// why clamping rather than rejecting.
+///
+/// The range rides on the field's own attribute rather than in a per-key
+/// function, so the pair a key is clamped to is readable beside the key itself.
+/// That is what makes "a range copied onto the wrong field" a visible mistake;
+/// each key still gets its own instantiation, so no two share a bound.
+fn de_clamped<'de, D, const MIN: u32, const MAX: u32>(de: D) -> Result<u32, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
-    Ok(u32::deserialize(de)?.clamp(TREE_WIDTH_MIN, TREE_WIDTH_MAX))
-}
-
-fn de_stack_width<'de, D>(de: D) -> Result<u32, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    Ok(u32::deserialize(de)?.clamp(STACK_WIDTH_MIN, STACK_WIDTH_MAX))
-}
-
-fn de_pane_width<'de, D>(de: D) -> Result<u32, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    Ok(u32::deserialize(de)?.clamp(PANE_WIDTH_MIN, PANE_WIDTH_MAX))
-}
-
-fn de_pane_height<'de, D>(de: D) -> Result<u32, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    Ok(u32::deserialize(de)?.clamp(PANE_HEIGHT_MIN, PANE_HEIGHT_MAX))
+    Ok(u32::deserialize(de)?.clamp(MIN, MAX))
 }
 
 /// The user's appearance preference. [`Mode::System`] is not a thing CSS can be

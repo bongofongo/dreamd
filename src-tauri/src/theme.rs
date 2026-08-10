@@ -544,6 +544,14 @@ fn strip_comments(css: &str) -> String {
 
 fn parse_hex(value: &str) -> Option<(u8, u8, u8)> {
     let hex = value.strip_prefix('#')?;
+    // A hex colour is ASCII by definition, and the check is load-bearing rather
+    // than tidy: the arms below slice by *byte* offset, so `#aé` — three bytes,
+    // matching the `3 | 4` arm — used to slice into the middle of the `é` and
+    // panic. `background` runs inside `.setup()` before the window is shown, so
+    // that panic in a hand-edited palette cost the launch rather than the colour.
+    if !hex.is_ascii() {
+        return None;
+    }
     let pair = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).ok();
     match hex.len() {
         6 | 8 => Some((pair(0)?, pair(2)?, pair(4)?)),
@@ -770,6 +778,21 @@ mod tests {
         for value in ["rebeccapurple", "rgb(1,2,3)", "#gg0011", "#12345", "", "#"] {
             assert_eq!(parse_hex(value), None, "should refuse {value:?}");
         }
+    }
+
+    #[test]
+    fn a_non_ascii_colour_is_refused_rather_than_sliced_into() {
+        // Each of these has a *byte* length one of the arms accepts, and each
+        // puts a multi-byte character across a slice boundary that arm takes:
+        // the first two through the `3 | 4` arm, the third through `6 | 8`.
+        // Before the ASCII guard all three panicked, and `background` is called
+        // in `.setup()` before the window is shown — so a hand-edited palette
+        // took the launch down rather than losing its window colour.
+        for value in ["#aé", "#aéb", "#aébcd"] {
+            assert_eq!(parse_hex(value), None, "should refuse {value:?}");
+        }
+        // And through the parser the app actually calls.
+        assert_eq!(background(":root { --bg: #aé; }", Scheme::Dark), None);
     }
 
     #[test]

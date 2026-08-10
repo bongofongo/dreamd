@@ -309,12 +309,15 @@ the upgrade procedure.
   not furniture inside it — `titlebar = false` from a cloned repo would take away
   the close button. All four refusals live in `strip_untrusted`, a pure function
   over the local table, so a new denied key is a test rather than a code path only
-  `config_check` reaches. `ui.titlebar` is the one preference whose *default* is
-  per-platform (`TITLEBAR_DEFAULT`, true only on macOS, where the bar is an
-  overlay); that is a value rather than a `cfg` arm precisely so `apply_chrome`
-  stays one code path on both. The four panel sizes — `ui.tree_width` (140–600),
-  `stack_width` (200–720), `pane_width` (240–1200) and `pane_height` (120–1200) —
-  are *clamped* on deserialize rather than
+  `config_check` reaches. `ui.titlebar` and `ui.titlebar_fade` are the two
+  preferences whose *defaults* are per-platform (`TITLEBAR_DEFAULT` and
+  `TITLEBAR_FADE_DEFAULT`, both true only on macOS, and in the same direction
+  for opposite reasons: the bar there is an overlay, so there is none to reclaim
+  and dreamd's own row is the only edge worth dissolving); both are values
+  rather than `cfg` arms precisely so `apply_chrome` stays one code path on both.
+  The four panel sizes — `ui.tree_width` (140–600), `stack_width` (200–720),
+  `pane_width` (240–1200) and `pane_height` (120–1200) — are *clamped* on
+  deserialize rather than
   validated — a drag persists without a round trip through a validator, and a stale
   number costs a nearest-usable panel, not the rest of the file. The pane keeps a
   width *and* a height because its drag handle changes axis with `agent.position`:
