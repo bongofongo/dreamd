@@ -22,7 +22,7 @@ one-line scheduling record is the **only** thing the nightly job may commit to
 | 3 | `core-text` | 2026-08-08 | swept — CLAUDE.md called `locate`'s tiers a three-step chain when tiers 1 and 2 are alternatives gated on context; `untrusted` was missing from both the test-coverage sentence and the module list; one unreachable char-boundary loop dropped from `Stripped::offset_of` | #17 (merged) |
 | 4 | `store` | 2026-08-09 | swept — `annotations.rs`'s module doc still said the store dies with the process, and froze five items "for consumers that arrive later" that have all landed; CLAUDE.md's `AppState` named two `Arc`s where there are four; the `(0, 0)` anchoring fallback deduplicated into one `anchor` fn | #18 |
 | 5 | `config-theme` | 2026-08-10 | swept — `parse_hex` sliced `--bg` by byte offset after matching on byte length, so a non-ASCII byte there panicked inside `.setup()` and cost the launch; CLAUDE.md called `ui.titlebar` the only per-platform default when `titlebar_fade` is one too; `config_check`'s header still claimed the crate has no unit tests; four clamp deserializers folded into one | #19 |
-| 6 | `ui-reading` | — | — | — |
+| 6 | `ui-reading` | 2026-08-11 | swept (propose-only) — CLAUDE.md's placement, resize and `prior` claims all hold; the line count and the multi-mark rule's named consumers drifted. Proposed: `wrapRange`'s `stale` param is dead with unreachable CSS behind it, `applyHighlights` flattens twice for one job, and the delete path skips `refreshOutline`/`resetFind` because it nulls `currentFile` before the watcher sees it | #20 |
 | 7 | `agent` | — | — | — |
 | 8 | `mcp` | — | — | — |
 | 9 | `index-io` | — | — | — |
