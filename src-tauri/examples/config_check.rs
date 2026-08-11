@@ -1,10 +1,13 @@
 //! Correctness harness for config layering and write-back. Exits non-zero on
 //! the first failure.
 //!
-//! This crate has no `#[cfg(test)]` unit tests — correctness lives in runnable
-//! examples (see `locate_check.rs`). Config layering earns one because it is
-//! pure, table-driven logic whose failure mode is silent: a merge that quietly
-//! resets a user's keybinds looks exactly like a config that loaded fine.
+//! The pure table plumbing — `deep_merge`, `nest`, `strip_untrusted`, the
+//! clamps — is unit-tested in `config.rs`. This harness owns what a unit test
+//! must not touch: `config_dir()` reads the *real* `~/.config/dreamd`, so
+//! layering two files on disk and reading a write back needs a process that can
+//! point `XDG_CONFIG_HOME` at a scratch directory without racing tests running
+//! in parallel threads. The failure mode it guards is silent: a merge that
+//! quietly resets a user's keybinds looks exactly like a config that loaded fine.
 //!
 //! ```sh
 //! cargo run --example config_check
