@@ -1,16 +1,17 @@
 //! In-memory highlight + annotation store and the send stack.
 //!
-//! The store lives in process memory, spans every file opened during the
-//! session, and is destroyed when dreamd exits. Switching files does NOT clear
-//! it.
+//! The store lives in process memory and spans every file opened during the
+//! session; switching files does NOT clear it. It no longer dies with the
+//! process: [`crate::marks_file`] projects it to disk and reads it back, which
+//! is the one place tenet 2 lets session state outlive a run.
 //!
-//! The shape below is deliberately wider than what today's callers read.
-//! [`Origin`], [`Resolution`], the `Deserialize` derives, [`Store::from_parts`]
-//! and the `reanchored` gate all exist for consumers that arrive later (the MCP
-//! tools and the marks file). They landed here in one go because this is the
-//! worst file in the repo to merge, and freezing the shape once lets several
-//! threads work against it in parallel. A field with no reader yet is not an
-//! oversight.
+//! The shape below was frozen wider than its first caller needed, and every
+//! consumer it was widened for has since landed: [`Origin`] and [`Resolution`]
+//! are read by `mcp::view`, [`Store::from_parts`] by `marks_file::admit` and
+//! `cli`'s prune, the `Deserialize` derives by the marks file, and the
+//! `reanchored` gate by `get_highlights`. Freezing it in one go was deliberate —
+//! this is the worst file in the repo to merge, and several threads of work
+//! needed to build against the same struct at once.
 
 use crate::markdown;
 use serde::{Deserialize, Serialize};
@@ -193,6 +194,21 @@ fn is_false(b: &bool) -> bool {
     !*b
 }
 
+/// Locate `quote` in `source`, falling back to `(0, 0)` when no tier of
+/// [`markdown::locate`] finds it.
+///
+/// One function rather than a copy per caller, because
+/// [`Store::add_anchored`] and [`Store::retarget`] have to agree about what an
+/// unlocatable quote costs. Losing the mark because the DOM's whitespace
+/// collapsing — or its stripping of `**bold**` — beat `locate` is worse than an
+/// imprecise line number, and the next save re-anchors it anyway. Past that, the
+/// `line_start > 0` guard in [`Store::reanchor_file`] is what keeps `Stale` from
+/// accusing a file nobody touched.
+fn anchor(source: &str, prefix: &str, quote: &str, suffix: &str) -> (usize, usize) {
+    markdown::locate(source, prefix, quote, suffix)
+        .map_or((0, 0), |loc| (loc.line_start, loc.line_end))
+}
+
 /// A queued (highlight + annotation) pair, as sent to the frontend stack panel.
 #[derive(Debug, Clone, Serialize)]
 pub struct Pair {
@@ -253,9 +269,8 @@ impl Store {
 
     /// Anchor `quote` in `source` and add it.
     ///
-    /// Unlocatable text still becomes a highlight, at `(0, 0)` — losing the
-    /// mark because the DOM's whitespace collapsing beat `locate` is worse than
-    /// an imprecise line number, and the next save re-anchors it anyway.
+    /// Unlocatable text still becomes a highlight, at `(0, 0)` — see [`anchor`]
+    /// for why that beats losing the mark.
     ///
     /// This lives here rather than at the command layer because `main.rs` is a
     /// `[[bin]]` and cannot be imported, so the fallback above had no test at
@@ -270,8 +285,7 @@ impl Store {
         suffix: String,
         origin: Origin,
     ) -> Id {
-        let (line_start, line_end) = markdown::locate(source, &prefix, &quote, &suffix)
-            .map_or((0, 0), |loc| (loc.line_start, loc.line_end));
+        let (line_start, line_end) = anchor(source, &prefix, &quote, &suffix);
         self.push(
             file_path, line_start, line_end, quote, prefix, suffix, origin,
         )
@@ -321,12 +335,9 @@ impl Store {
     /// [`Highlight::prior`]), resizing moves nothing on or off it, and
     /// brightening a mark here would put the two surfaces back in disagreement.
     ///
-    /// Anchoring is [`add_anchored`](Store::add_anchored)'s, including its
-    /// `(0, 0)` fallback and for the same reason — a new extent that spans
-    /// inline markdown is rendered DOM text `locate` cannot find in the source,
-    /// and losing the mark over it would be worse than an imprecise line. Past
-    /// that the `line_start > 0` guard in
-    /// [`reanchor_file`](Store::reanchor_file) keeps `Stale` honest about it.
+    /// Anchoring is [`anchor`], the same function
+    /// [`add_anchored`](Store::add_anchored) uses and for the same reason — a
+    /// new extent can span inline markdown just as a first one can.
     ///
     /// Returns false if the id names nothing.
     pub fn retarget(
@@ -337,8 +348,7 @@ impl Store {
         prefix: String,
         suffix: String,
     ) -> bool {
-        let (line_start, line_end) = markdown::locate(source, &prefix, &quote, &suffix)
-            .map_or((0, 0), |loc| (loc.line_start, loc.line_end));
+        let (line_start, line_end) = anchor(source, &prefix, &quote, &suffix);
         let Some(h) = self.highlights.iter_mut().find(|h| h.id == id) else {
             return false;
         };
