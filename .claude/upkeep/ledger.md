@@ -23,7 +23,7 @@ one-line scheduling record is the **only** thing the nightly job may commit to
 | 4 | `store` | 2026-08-09 | swept — `annotations.rs`'s module doc still said the store dies with the process, and froze five items "for consumers that arrive later" that have all landed; CLAUDE.md's `AppState` named two `Arc`s where there are four; the `(0, 0)` anchoring fallback deduplicated into one `anchor` fn | #18 (merged) |
 | 5 | `config-theme` | 2026-08-10 | swept — `parse_hex` sliced `--bg` by byte offset after matching on byte length, so a non-ASCII byte there panicked inside `.setup()` and cost the launch; CLAUDE.md called `ui.titlebar` the only per-platform default when `titlebar_fade` is one too; `config_check`'s header still claimed the crate has no unit tests; four clamp deserializers folded into one | #19 (merged) |
 | 6 | `ui-reading` | 2026-08-11 | swept (propose-only) — CLAUDE.md's placement, resize and `prior` claims all hold; the line count and the multi-mark rule's named consumers drifted. Proposed: `wrapRange`'s `stale` param is dead with unreachable CSS behind it, `applyHighlights` flattens twice for one job, and the delete path skips `refreshOutline`/`resetFind` because it nulls `currentFile` before the watcher sees it | #20 (merged) |
-| 7 | `agent` | — | — | — |
+| 7 | `agent` | 2026-08-12 | swept — `GRANTS` grew 6→7 in 6c56e74 and four prose sites still said six (`gate`'s module doc twice, a stale test cross-reference in `claude`, `agent_spawn`'s doc, and CLAUDE.md); `gate_server::serve_connection` wrapped a `BufReader` it then read straight past with `get_mut()`; a test counter that was never wired to the gate's asker asserted nothing | #21 |
 | 8 | `mcp` | — | — | — |
 | 9 | `index-io` | — | — | — |
 | 10 | `ui-panels` | — | — | — |
