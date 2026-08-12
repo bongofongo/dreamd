@@ -1,10 +1,10 @@
 //! Who decides whether a tool call runs, and how the reader gets asked.
 //!
-//! The pane's answer to permissions was an argument list: six tools pre-granted
-//! and everything else left to Claude Code's own prompt, drawn in a terminal the
-//! reader may not be looking at. A prompt nobody sees is a send that appears to
-//! have gone nowhere, which is why the six were pre-granted in the first place —
-//! and why nothing that writes could ever be added to them.
+//! The pane's answer to permissions was an argument list: seven tools
+//! pre-granted and everything else left to Claude Code's own prompt, drawn in a
+//! terminal the reader may not be looking at. A prompt nobody sees is a send
+//! that appears to have gone nowhere, which is why the seven were pre-granted in
+//! the first place — and why nothing that writes could ever be added to them.
 //!
 //! This module is the other half. `--permission-prompt-tool` was removed from
 //! the CLI before 2.1.220, so the only programmatic gate left is a **`PreToolUse`
@@ -376,12 +376,12 @@ mod tests {
         assert!(!gate.granted("Edit"), "and only for that tool");
 
         // Which is the whole point of a standing grant: the next one is free.
-        let asked = Arc::new(AtomicUsize::new(0));
+        // Nobody is answering this one, so a card would park it until `WAIT`
+        // elapsed — returning at all is the assertion that none was raised.
         assert_eq!(
             gate.request("t8", "Bash", serde_json::json!({"command": "pwd"})),
             Verdict::Allow
         );
-        assert_eq!(asked.load(Ordering::Relaxed), 0);
     }
 
     #[test]

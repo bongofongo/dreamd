@@ -546,7 +546,7 @@ mod tests {
     fn the_grants_are_the_arguments_after_allowed_tools() {
         // `--allowed-tools` takes them as separate arguments, so a grant that
         // grew a space would silently become two — and one of the halves might
-        // be a tool. `exactly_six_tools_…` pins the consts; this pins the
+        // be a tool. `exactly_seven_tools_…` pins the consts; this pins the
         // vector they land in.
         let args = spawn_args(PermissionMode::Plan, None, None);
         let at = args.iter().position(|a| a == "--allowed-tools").unwrap();
