@@ -4,7 +4,7 @@
 //! `AppHandle`, no `AppState`, no Tauri type at all.** That is not tidiness —
 //! it is what lets every tool be driven from a unit test with the same `Store`
 //! fixtures `annotations.rs` uses, with no window, no socket and no event loop.
-//! The transport that calls in here lives elsewhere (step 3c).
+//! The transport that calls in here lives in [`super::server`].
 //!
 //! ## The shape of the surface
 //!
@@ -199,16 +199,15 @@ fn get_stack(store: &Store, root: &Path) -> ToolResult {
 /// [`OpenDocument::none`], and none of them says which failure it was — the
 /// same reason `resolve_in_root` gives one message for two causes.
 fn get_open_document(open_doc: Option<&Path>, root: &Path) -> ToolResult {
+    // One canonical root, used by both the containment test and the path that
+    // comes back — the same root has to answer both questions, or a document
+    // could be judged inside one spelling of the repo and made relative to
+    // another.
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     let answer = open_doc
         .and_then(|p| p.canonicalize().ok())
-        .filter(|p| {
-            let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-            guard::inside_root(&root, p)
-        })
-        .map(|p| {
-            let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-            OpenDocument::new(&p, &root)
-        })
+        .filter(|p| guard::inside_root(&root, p))
+        .map(|p| OpenDocument::new(&p, &root))
         .unwrap_or_else(OpenDocument::none);
     to_value(&answer)
 }

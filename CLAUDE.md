@@ -387,7 +387,10 @@ the upgrade procedure.
   shape and for the same reason as `notify::Notifier`: `AppState` is a name this
   module may not speak, so `main.rs` supplies a reader and `mcp_check` supplies
   its own. `jsonrpc`/`schema`/`tools`/`view` are pure and
-  Tauri-free; `server` is the Unix socket the GUI listens on
+  Tauri-free; `jsonrpc` owns the NDJSON framing for **both** transports, the
+  `MAX_LINE` cap included — an unbounded `read_line` on either end is a memory
+  DoS, so the reader enforcing it is one function rather than one per stream.
+  `server` is the Unix socket the GUI listens on
   (`~/.config/dreamd/run/<16hex>.sock`, mode 0600, the same FNV-1a root hash
   `marks_file` uses) and `shim` is `dreamd mcp`, the process Claude Code spawns.
   **The shim answers `initialize`/`tools/list` from the compiled-in `schema`
@@ -407,7 +410,8 @@ the upgrade procedure.
   session accusing a healthy window and offered a Register button whose success
   it could not observe, which is how pressing it led to a Restart that
   repainted Register. It stays as a diagnostic `mcp_check` asserts on, never as
-  a verdict. `register` no longer runs anything: `config_json` is the
+  a verdict. `register` no longer *writes* anything — `registered` below still
+  runs a `claude` — and what replaced the write is two documents: `config_json` is the
   `--mcp-config` document `agent_spawn` hands the session, and `add_command` is
   `claude mcp add dreamd --scope user -- <launcher> mcp` as *text*, for the
   surfaces dreamd does not launch (a Claude Code in tmux, or the terminal pane,
@@ -423,7 +427,7 @@ the upgrade procedure.
   **exit status**, three-valued — a `claude` that could not be run at all is
   not the same answer as one that ran and said no — cached per process, and
   read only by the terminal surface. **And now asked only by it**: that probe is
-  a whole Claude Code startup (measured 1.0–1.3s), `mcp_status` fires on the
+  a whole Claude Code startup (measured 0.8–1.5s), `mcp_status` fires on the
   pane's first open, and on the native surface it was a second `claude` racing
   the session that open had just spawned for an answer that surface cannot use —
   it is handed `--mcp-config` and has no registration to be missing.

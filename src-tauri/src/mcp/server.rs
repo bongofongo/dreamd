@@ -14,8 +14,9 @@
 //!
 //! Binding is how a dreamd claims a repo. `AddrInUse` is disambiguated by
 //! connecting: a socket that answers belongs to a live dreamd and this process
-//! stands down as a **secondary** (no MCP, and in step 4 no persistence
-//! either); a socket that refuses is a leftover from a crash and is unlinked
+//! stands down as a **secondary** — no MCP, and no marks written either, which
+//! is the read `cli::repo_is_claimed` makes of this same lock. A socket that
+//! refuses is a leftover from a crash and is unlinked
 //! and rebound. If the transport ever stops being a UDS, that lock has to
 //! become an explicit lockfile — the coupling is deliberate but it is real.
 //!
@@ -30,7 +31,7 @@ use crate::mcp::{jsonrpc, schema, tools, OpenDoc};
 use crate::notify::{MarksChanged, Notifier};
 use crate::{config, marks_file};
 use serde_json::{json, Value};
-use std::io::{self, BufRead, BufReader, Read, Write};
+use std::io::{self, BufReader, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -251,10 +252,10 @@ fn serve_connection(
 
     while !cancel.load(Ordering::Relaxed) {
         line.clear();
-        match read_capped(&mut reader, &mut line) {
+        match jsonrpc::read_capped(&mut reader, &mut line) {
             Ok(0) => return,
             Ok(_) => {}
-            Err(Capped::TooLong) => {
+            Err(jsonrpc::Capped::TooLong) => {
                 // An unbounded `read_line` on a socket is a memory DoS, so the
                 // cap is enforced before the bytes are kept. The connection
                 // goes with it: the rest of that line is unbounded too, and a
@@ -268,7 +269,7 @@ fn serve_connection(
                     writer.write_all(jsonrpc::Response::error(Value::Null, e).line().as_bytes());
                 return;
             }
-            Err(Capped::Io(e)) => {
+            Err(jsonrpc::Capped::Io(e)) => {
                 if e.kind() != io::ErrorKind::UnexpectedEof {
                     eprintln!("dreamd: MCP connection ended: {e}");
                 }
@@ -285,24 +286,6 @@ fn serve_connection(
             }
         }
     }
-}
-
-enum Capped {
-    TooLong,
-    Io(io::Error),
-}
-
-/// `read_line`, refusing to allocate past [`jsonrpc::MAX_LINE`].
-///
-/// Reading through a `take` is the point: a plain `read_line` would buffer the
-/// whole oversized line first and only then let anyone object.
-fn read_capped<R: BufRead>(reader: &mut R, out: &mut String) -> Result<usize, Capped> {
-    let cap = jsonrpc::MAX_LINE as u64;
-    let read = reader.take(cap + 1).read_line(out).map_err(Capped::Io)?;
-    if read as u64 > cap {
-        return Err(Capped::TooLong);
-    }
-    Ok(read)
 }
 
 /// Route one JSON-RPC method.
@@ -625,38 +608,6 @@ mod tests {
             )
         });
         assert!(reply.is_none(), "a notification gets silence");
-    }
-
-    #[test]
-    fn an_over_long_line_is_refused_without_being_buffered() {
-        let mut oversized = Vec::with_capacity(jsonrpc::MAX_LINE + 64);
-        oversized.extend(std::iter::repeat(b'x').take(jsonrpc::MAX_LINE + 8));
-        oversized.push(b'\n');
-        let mut reader = BufReader::new(&oversized[..]);
-        let mut out = String::new();
-        assert!(matches!(
-            read_capped(&mut reader, &mut out),
-            Err(Capped::TooLong)
-        ));
-        assert!(
-            out.len() <= jsonrpc::MAX_LINE + 1,
-            "the cap must bound what is kept, not just what is reported"
-        );
-    }
-
-    #[test]
-    fn a_line_at_the_cap_is_still_read() {
-        // The boundary in the other direction: the cap refuses what is *over*
-        // it, and an off-by-one here would reject legitimate traffic.
-        let mut line = String::with_capacity(jsonrpc::MAX_LINE);
-        line.push_str(&"x".repeat(jsonrpc::MAX_LINE - 1));
-        line.push('\n');
-        let mut reader = BufReader::new(line.as_bytes());
-        let mut out = String::new();
-        assert_eq!(
-            read_capped(&mut reader, &mut out).ok(),
-            Some(jsonrpc::MAX_LINE)
-        );
     }
 
     #[test]
