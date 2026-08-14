@@ -26,7 +26,7 @@
 //! failure mode instead of an escape hatch: no launch is better than a launch
 //! whose hook line means something other than it says.
 
-use std::io::{self, BufReader, Read, Write};
+use std::io::{self, Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -137,17 +137,15 @@ pub fn spawn(session: &str, gate: Arc<Gate>, cancel: Arc<AtomicBool>) -> io::Res
 
 /// One hook process: read its payload, rule on it, write the verdict back.
 fn serve_connection(stream: UnixStream, gate: &Gate) {
-    let mut reader = BufReader::new(match stream.try_clone() {
+    // Read to EOF rather than to a newline — the hook half-closes when its
+    // payload is complete, which is the framing rule — so there is nothing here
+    // for a `BufReader` to buffer.
+    let source = match stream.try_clone() {
         Ok(s) => s,
         Err(_) => return,
-    });
+    };
     let mut line = String::new();
-    if reader
-        .get_mut()
-        .take(MAX_LINE)
-        .read_to_string(&mut line)
-        .is_err()
-    {
+    if source.take(MAX_LINE).read_to_string(&mut line).is_err() {
         return;
     }
 
@@ -250,6 +248,7 @@ fn shell_single_quoted(path: &Path) -> Option<String> {
 mod tests {
     use super::*;
     use crate::agent::gate::Ask;
+    use std::io::BufReader;
     use std::sync::Mutex;
 
     fn silent() -> Arc<Gate> {

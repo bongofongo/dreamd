@@ -1522,7 +1522,7 @@ impl Drop for NativeAgent {
 /// open, and closing the pane is a `display: none` rather than a kill.
 ///
 /// **A gate that cannot be built refuses the launch.** There is no arm here that
-/// starts an agent without one: `--allowed-tools` would still hold the six
+/// starts an agent without one: `--allowed-tools` would still hold the seven
 /// pre-granted tools, so the failure would be quiet and survivable rather than
 /// obvious, which is exactly what makes it worth refusing. A pane that will not
 /// open is a bug report; an agent silently unable to ask for anything is a

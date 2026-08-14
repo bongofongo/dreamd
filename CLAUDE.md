@@ -451,7 +451,7 @@ the upgrade procedure.
   for free. `gate` is the permission policy: **`--permission-prompt-tool` no
   longer exists**, so the gate is a `PreToolUse` hook, which measured against
   2.1.220 fires *even under `bypassPermissions`* and outranks the mode. That
-  makes the six pre-granted tools a fast path rather than the whole policy, and
+  makes the seven pre-granted tools a fast path rather than the whole policy, and
   **deny is the answer to every kind of silence** — closed pane, retired
   server, unparseable payload, elapsed wait. `gate_server` is a **per-session**
   socket, not the per-repo MCP one: a secondary window's agent must not raise
