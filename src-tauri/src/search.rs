@@ -5,7 +5,7 @@
 //! Note: this reproduces Telescope's *feel* — real Telescope is a Neovim Lua
 //! plugin and cannot render inside a webview.
 
-use crate::fs_walk::FileNode;
+use crate::fs_walk::{rel_of, FileNode};
 use nucleo::pattern::{CaseMatching, Normalization, Pattern};
 use nucleo::{Config, Matcher};
 use std::path::{Path, PathBuf};
@@ -51,11 +51,7 @@ impl SearchIndex {
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_default(),
                 path: p.to_string_lossy().into_owned(),
-                rel: p
-                    .strip_prefix(repo_root)
-                    .unwrap_or(p)
-                    .to_string_lossy()
-                    .into_owned(),
+                rel: rel_of(p, repo_root),
             })
             .collect();
         Self { entries }

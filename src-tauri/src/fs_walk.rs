@@ -34,7 +34,12 @@ struct Dir {
     files: BTreeMap<String, PathBuf>,
 }
 
-fn rel_of(path: &Path, repo_root: &Path) -> String {
+/// A path as the frontend keys on it: relative to the root, or whole when it
+/// lies outside. Shared with `search`, whose index and this tree must agree on
+/// `rel` — the frontend looks a search hit up in the tree by exactly this
+/// string, so two copies of the rule that drifted apart would break the lookup
+/// for the paths they disagreed on.
+pub(crate) fn rel_of(path: &Path, repo_root: &Path) -> String {
     path.strip_prefix(repo_root)
         .unwrap_or(path)
         .to_string_lossy()

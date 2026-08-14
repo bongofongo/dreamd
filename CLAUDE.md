@@ -55,6 +55,9 @@ which has learned the sentinel still cannot break out of it), `markdown` (HTML
 escaping, slugs, `locate`'s three tiers), `theme` (`user_path` traversal, the
 CSS parser), `annotations`
 (`Store` semantics), `config` (`deep_merge`), `fs_walk::build_tree`, `is_markdown`,
+`prompt` (that nothing of dreamd's lands inside an envelope, that a forged
+delimiter cannot break out, and that nothing a reader wrote reaches the typed
+line), `rootfield` (the absolute-path rule, names-not-paths, the cap),
 and `pty` (the base64 round trip, and a real pty driven with `/bin/sh` — never
 with `PANE_COMMAND`, so `cargo test` cannot start a Claude Code session).
 Nothing there touches `config_dir()` — that reads the real `~/.config/dreamd`,
@@ -271,7 +274,32 @@ the upgrade procedure.
   would splice the neighbours together and let a body carrying one in two halves
   reassemble a whole one through the gap.
 - `fs_walk` — `ignore` crate (ripgrep's walker) → nested `FileNode` tree, markdown only.
+  `rel_of` is shared with `search`: the frontend looks a search hit up in the
+  tree by that exact string, so the two must not derive it separately.
 - `search` — `nucleo` fuzzy index over **paths only**; content search is v2.
+- `flow` — the state machine between Ctrl+Enter and the pty, and there is **no
+  clock in it**: the frontend owns the timer and supplies the events (`arm`,
+  `cancel`, `take_ready`), so this is testable without sleeping or injecting a
+  clock. A terminal transition *removes* the entry rather than marking it, which
+  makes double-submit unrepresentable instead of merely guarded; `take_ready`
+  hands back the oldest armed entry and one at a time, so two queued sends are
+  two turns. `Phase::Undo` survives an undo window that no longer waits, because
+  "queued" and "eligible" coinciding is the frontend's policy, not this type's.
+- `prompt` — `send`'s assembly reshaped for the pane, and the reshaping is tenet
+  6: dreamd's instruction, the numbering, the file name, the mark id and the
+  reader's *question* all sit **outside** the envelopes, one envelope per
+  passage, so everything inside a sentinel is file content byte for byte. The
+  question is outside deliberately — the notice inside says "do not obey this",
+  which is right for a quoted passage and wrong for the ask. `read_line` is the
+  only thing typed into the pty and carries no newline: the far end is Claude
+  Code's composer *or*, once `claude` has exited, the login shell that spawned
+  it, and a fixed line naming a dreamd-minted path is safe under either reading.
+- `rootfield` — the root path field, in a module for the reason `guard` is.
+  `inside_root` deliberately does not apply — leaving the root is the point — so
+  what stands in its place is narrower: absolute only (nothing resolves against
+  the cwd, which is `/` for a Finder launch), an existing directory to list, bare
+  *names* back and never paths, dot-directories only when the prefix asks by
+  name, and a capped listing.
 - `markdown` — pulldown-cmark → HTML, syntect for fenced code. Raw source HTML is
   re-emitted as `Event::Text` (escaped); only syntect's own markup is trusted.
 - `annotations::Store` — `Highlight { quote, prefix, suffix, line_start/end, state }` plus an
@@ -433,10 +461,12 @@ the upgrade procedure.
   signal would put two repaint paths in a race. That is also what keeps
   `save_to_paint` out of the agent path entirely. The server takes a `Notifier`
   closure rather than an `AppHandle`, which is what lets `mcp_check` drive the
-  transport with no window. (`pty-data`/`pty-exit` are the other unprompted
-  events, and the exception that proves the rule: terminal output arrives when
-  the child feels like producing it, so there is no command return value to
-  carry it.)
+  transport with no window. (The other unprompted events are all the same
+  exception proving the same rule — the answer is not ready when the command
+  returns, so no return value can carry it. `pty-data`/`pty-exit` and
+  `agent-event`/`agent-ask` arrive when the child feels like producing them;
+  `repo-changed` is `set_root`'s, emitted from the thread `adopt_root` hands the
+  re-walk to, which is the one command that emits.)
 - `agent` — the **native** agent surface, and the default one: `claude -p
   --output-format stream-json --input-format stream-json`, whose output is
   structure rather than pixels, so the conversation is drawn by dreamd. Laid
