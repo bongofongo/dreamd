@@ -2,9 +2,12 @@
 //!
 //! Every other repaint in the app is pulled: a command returns, and its return
 //! value *is* the frontend's source of truth for the mutation it just asked
-//! for. That is how all ~33 commands work, and it is why none of them emit —
-//! a second signal would mean two repaint paths racing, which `refreshStack`'s
-//! `stackSeq` guard already exists to survive once.
+//! for. That is how the ~54 commands work, and it is why they do not emit — a
+//! second signal would mean two repaint paths racing, which `refreshStack`'s
+//! `stackSeq` guard already exists to survive once. The one command that does
+//! is `set_root`, and it proves the rule: `adopt_root` finishes the re-walk on
+//! a background thread long after the command has returned, so there is no
+//! return value left to carry the answer and `repo-changed` is emitted instead.
 //!
 //! The MCP layer is the exception, and the only one: it mutates the store from
 //! a socket thread, on behalf of an agent the window never heard from. Without
@@ -42,14 +45,6 @@ impl MarksChanged {
     pub fn file(path: impl Into<String>, stack: bool) -> Self {
         Self {
             file_path: Some(path.into()),
-            stack,
-        }
-    }
-
-    /// A change whose file is unknown. The frontend repaints whatever is open.
-    pub fn anywhere(stack: bool) -> Self {
-        Self {
-            file_path: None,
             stack,
         }
     }
