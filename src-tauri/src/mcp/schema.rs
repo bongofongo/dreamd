@@ -18,8 +18,8 @@
 
 use serde_json::Value;
 
-/// The MCP revision dreamd speaks. A `const` so step 3c's shim and the GUI
-/// server report the same thing; bumping it is a deliberate one-line change.
+/// The MCP revision dreamd speaks. A `const` so the shim and the GUI server
+/// report the same thing; bumping it is a deliberate one-line change.
 pub const PROTOCOL_VERSION: &str = "2025-06-18";
 
 pub const SERVER_NAME: &str = "dreamd";
@@ -266,7 +266,7 @@ mod tests {
     }
 
     #[test]
-    fn the_read_only_hints_match_the_three_read_two_write_split() {
+    fn the_read_only_hints_match_the_four_read_two_write_split() {
         let tools = tools();
         let read_only: Vec<&str> = tools
             .as_array()

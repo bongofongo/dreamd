@@ -9,6 +9,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::io::{BufRead, Read};
 
 pub const VERSION: &str = "2.0";
 
@@ -152,6 +153,32 @@ impl Response {
             ),
         }
     }
+}
+
+/// Why a line could not be read.
+pub enum Capped {
+    /// The line ran past [`MAX_LINE`] before it ended.
+    TooLong,
+    Io(std::io::Error),
+}
+
+/// `read_line`, refusing to allocate past [`MAX_LINE`].
+///
+/// Reading through a `take` is the point: a plain `read_line` would buffer the
+/// whole oversized line first and only then let anyone object.
+///
+/// Both transports read through this one function. What they do *about* an
+/// over-long line differs — the socket drops the connection, the shim answers
+/// and reads on — but the cap itself is one implementation, because it is the
+/// only thing standing between a peer and an unbounded allocation and a second
+/// copy of it is a second thing to keep correct.
+pub fn read_capped<R: BufRead>(reader: &mut R, out: &mut String) -> Result<usize, Capped> {
+    let cap = MAX_LINE as u64;
+    let read = reader.take(cap + 1).read_line(out).map_err(Capped::Io)?;
+    if read as u64 > cap {
+        return Err(Capped::TooLong);
+    }
+    Ok(read)
 }
 
 /// Parse one line into a [`Request`].
@@ -310,6 +337,35 @@ mod tests {
             "a".repeat(1024)
         );
         assert!(parse(&fine).is_ok());
+    }
+
+    #[test]
+    fn an_over_long_line_is_refused_without_being_buffered() {
+        let mut oversized = Vec::with_capacity(MAX_LINE + 64);
+        oversized.extend(std::iter::repeat(b'x').take(MAX_LINE + 8));
+        oversized.push(b'\n');
+        let mut reader = std::io::BufReader::new(&oversized[..]);
+        let mut out = String::new();
+        assert!(matches!(
+            read_capped(&mut reader, &mut out),
+            Err(Capped::TooLong)
+        ));
+        assert!(
+            out.len() <= MAX_LINE + 1,
+            "the cap must bound what is kept, not just what is reported"
+        );
+    }
+
+    #[test]
+    fn a_line_at_the_cap_is_still_read() {
+        // The boundary in the other direction: the cap refuses what is *over*
+        // it, and an off-by-one here would reject legitimate traffic.
+        let mut line = String::with_capacity(MAX_LINE);
+        line.push_str(&"x".repeat(MAX_LINE - 1));
+        line.push('\n');
+        let mut reader = std::io::BufReader::new(line.as_bytes());
+        let mut out = String::new();
+        assert_eq!(read_capped(&mut reader, &mut out).ok(), Some(MAX_LINE));
     }
 
     #[test]

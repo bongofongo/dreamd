@@ -63,9 +63,3 @@ pub type OpenDoc = Arc<dyn Fn() -> Option<PathBuf> + Send + Sync>;
 pub fn no_open_doc() -> OpenDoc {
     Arc::new(|| None)
 }
-
-/// A reader that always names the same file. For harnesses.
-pub fn fixed_open_doc(path: impl Into<PathBuf>) -> OpenDoc {
-    let path = path.into();
-    Arc::new(move || Some(path.clone()))
-}

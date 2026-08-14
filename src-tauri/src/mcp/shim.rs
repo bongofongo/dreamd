@@ -40,26 +40,26 @@ pub fn run(root: &Path) -> Result<(), String> {
 
     loop {
         line.clear();
-        // Same cap as the socket side, for the same reason: nothing on either
-        // end of this pipe should be able to make dreamd allocate without
-        // bound.
-        let read = (&mut reader)
-            .take(jsonrpc::MAX_LINE as u64 + 1)
-            .read_line(&mut line)
-            .map_err(|e| format!("cannot read stdin: {e}"))?;
-        if read == 0 {
-            return Ok(());
-        }
-        if read > jsonrpc::MAX_LINE {
-            let e = jsonrpc::Error::parse_error(format!(
-                "line exceeds the {}-byte cap",
-                jsonrpc::MAX_LINE
-            ));
-            write(
-                &mut writer,
-                &jsonrpc::Response::error(Value::Null, e).line(),
-            )?;
-            continue;
+        // The same reader the socket side uses, for the same reason: nothing on
+        // either end of this pipe should be able to make dreamd allocate
+        // without bound. What differs is the response — this end answers and
+        // reads on, where the socket drops the connection, because stdin is the
+        // session and there is nothing to reconnect to.
+        match jsonrpc::read_capped(&mut reader, &mut line) {
+            Ok(0) => return Ok(()),
+            Ok(_) => {}
+            Err(jsonrpc::Capped::TooLong) => {
+                let e = jsonrpc::Error::parse_error(format!(
+                    "line exceeds the {}-byte cap",
+                    jsonrpc::MAX_LINE
+                ));
+                write(
+                    &mut writer,
+                    &jsonrpc::Response::error(Value::Null, e).line(),
+                )?;
+                continue;
+            }
+            Err(jsonrpc::Capped::Io(e)) => return Err(format!("cannot read stdin: {e}")),
         }
 
         if let Some(reply) = jsonrpc::handle_line(&line, |request| answer(root, request)) {
