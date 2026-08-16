@@ -150,14 +150,11 @@ pub fn write_query_file(content: &str) -> std::io::Result<PathBuf> {
     Ok(path)
 }
 
-fn tmux_available() -> bool {
-    Command::new("tmux")
-        .args(["list-panes", "-a"])
-        .output()
-        .is_ok_and(|o| o.status.success())
-}
-
 /// Find a tmux pane whose running command or title mentions `claude`.
+///
+/// Also the availability check: a missing `tmux` fails the spawn and a stopped
+/// server exits non-zero, so both answer `None` here rather than needing a
+/// probe of their own ahead of it.
 fn detect_claude_pane() -> Option<String> {
     let out = Command::new("tmux")
         .args([
@@ -218,13 +215,10 @@ pub fn send(config: &Config, repo_root: &Path, pairs: &[Pair]) -> Result<SendRes
     let temp_str = temp_path.to_string_lossy().into_owned();
 
     // Explicit configured target wins.
-    let target = config.tmux_target.clone().or_else(|| {
-        if config.tmux_autodetect && tmux_available() {
-            detect_claude_pane()
-        } else {
-            None
-        }
-    });
+    let target = config
+        .tmux_target
+        .clone()
+        .or_else(|| config.tmux_autodetect.then(detect_claude_pane).flatten());
 
     if let Some(pane) = target {
         match tmux_send(&pane, &temp_path) {

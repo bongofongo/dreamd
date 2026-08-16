@@ -188,14 +188,17 @@ to the crate version, verified.
    `config.toml` and saved themes, written by the settings panel and the
    `config`/`theme` subcommands. Still no database, and still nothing written
    anywhere else — a third thing that wants to persist needs its own decision.
-   **There is no longer any write outside it.** `mcp::register` used to run
-   `claude mcp add` from a button on the pane's MCP strip; that button is gone,
-   because `agent_spawn` hands the session `--mcp-config` and the surface dreamd
-   launches no longer needs a registration to exist. What the module still owns
-   is the *text* of that command, for the surfaces dreamd does not launch.
+   **There is no longer any write outside it into another program's
+   configuration.** `mcp::register` used to run `claude mcp add` from a button on
+   the pane's MCP strip; that button is gone, because `agent_spawn` hands the
+   session `--mcp-config` and the surface dreamd launches no longer needs a
+   registration to exist. What the module still owns is the *text* of that
+   command, for the surfaces dreamd does not launch. The query file `send` puts
+   in the system temp directory is transport rather than state — tenet 3 is why
+   it exists, and a later day's first send removes it.
 3. **No shell interpolation of user content.** Sent queries go through a temp file and
    a fixed `read @<file>` prompt. Highlighted text never enters a command line.
-   The pane's `$SHELL -l -c "exec claude"` is the second shell dreamd spawns and
+   The pane's `$SHELL -l -i -c "exec claude"` is the second shell dreamd spawns and
    obeys the same rule: `PANE_COMMAND` is a `const`, not a template, and a test
    pins it. `concat!` of two literals in the same file is still a `const`; the
    `--allowed-tools` grant and the `/model` lines are both written that way.
@@ -550,7 +553,10 @@ the upgrade procedure.
   machine-wide `fs.inotify.max_user_watches` budget — the one place the same call
   has a materially different cost per platform.
 - `send` — assembles markdown, writes a temp file, then tmux `send-keys` a fixed
-  `read @<file>` prompt (falling back to clipboard). See tenet 3.
+  `read @<file>` prompt (falling back to clipboard). See tenet 3. The session's
+  first send also deletes *earlier days'* query files from the temp directory —
+  today's are kept because the path inside a prompt has to stay readable for as
+  long as the agent might act on it, and a second dreamd is pointing at its own.
 - `chrome` — the other half of `apply_chrome`: `ui.titlebar`, the window
   manager's bar, `set_decorations`. **A no-op on macOS, and that is the whole
   module.** tao rebuilds the style mask from scratch on every
@@ -595,9 +601,12 @@ the upgrade procedure.
   existing `WEBKIT_DISABLE_DMABUF_RENDERER` always wins, including `=0`.
 
 **Platform surface.** After Linux became a shipping target the whole
-`#[cfg(target_os = "macos")]` surface is four things: `menu::build`'s two arms,
+`#[cfg(target_os = "macos")]` surface is five things: `menu::build`'s two arms,
 `chrome::set_titlebar`'s two arms (one of which is empty on purpose),
-`trash_context`'s `DeleteMethod::NsFileManager`, and `pty`'s `DEFAULT_SHELL`.
+`trash_context`'s `DeleteMethod::NsFileManager`, and `DEFAULT_SHELL` in both
+`pty` and `agent::claude` — the two modules that spawn one. `config`'s
+`TITLEBAR_DEFAULT` and `TITLEBAR_FADE_DEFAULT` are cfg'd too but are *values*,
+which is the point of them: no code path forks on either.
 Everything else — including `adopt_root`, which carries the config reload,
 re-walk, watcher re-arm, marks flush and socket retirement — compiles on both, on
 purpose: gating it was what kept it from ever being built off macOS.
