@@ -19,7 +19,10 @@ if [[ "$got" != "$WANT" ]]; then
   fail=1
 fi
 
-site="$(grep -oE 'export const VERSION = "[^"]*"' "$ROOT/website/src/consts.ts" | grep -oE '"[^"]*"' | tr -d '"')"
+# Anchored to the start of the line, so this cannot match some other const that
+# happens to mention a version. set-version.sh reads it back with the same
+# expression, which is what keeps the writer and the asserter agreeing.
+site="$(sed -n 's/^export const VERSION = "\([^"]*\)".*/\1/p' "$ROOT/website/src/consts.ts")"
 if [[ "$site" != "$WANT" ]]; then
   echo "website/src/consts.ts says $site, tag says $WANT" >&2
   fail=1

@@ -4,9 +4,9 @@
 # `packaging/build.sh`, which runs identically on a laptop. A release can be
 # reproduced and debugged locally without pushing a tag.
 #
-#   git tag v0.2.0 && git push --tags   ->  builds both arches, creates a DRAFT
+#   git tag v0.2.0 && git push --tags   ->  builds all three targets, DRAFT release
 #   (verify the app on a clean machine) ->  publish the release by hand
-#   publishing                          ->  bumps the Homebrew cask
+#   publishing                          ->  bumps the Homebrew cask, renders the PKGBUILD
 #
 # The draft step is the point: a release is public the instant it exists and
 # Homebrew users pull it within minutes, so nothing reaches them until a human
