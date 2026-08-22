@@ -1,15 +1,20 @@
-# Turning signing on
+# Signing and notarization
 
-A runbook for taking dreamd from **unsigned, curl-only** to **signed, notarized,
-and distributed through Homebrew and browser downloads**. Follow it top to bottom;
-the order matters in one place (step 5 before step 6) and is noted there.
+**This is done.** Signing went on 2026-07-26; every release since is signed,
+notarized and stapled, and `brew install --cask` and browser downloads are both
+live channels. Cutting a release today is `git push --tags` plus publishing the
+draft — nothing below is on a schedule.
 
-Everything here is done once. After it lands, cutting a release is `git push --tags`
-plus publishing the draft.
+What is still live is at the end: **Rotating or renewing later** and **Backing it
+out**. Both send you back into the numbered steps — a certificate renewal is steps
+1, 2, 5 and 6 again, verbatim — which is why all twelve stay here in full rather
+than collapsed into a summary. Read them as the record of how it was turned on,
+in the order it had to happen; the order still matters in one place (step 5 before
+step 6) and is noted there.
 
 ---
 
-## Why this is currently off
+## Why it was off, and what the two switches are
 
 `com.apple.quarantine` is written by the *downloading application*, not by the
 server. `curl` never writes it, so an unsigned `.app` fetched by
@@ -18,34 +23,33 @@ and `brew install --cask` both **do** quarantine, so an unsigned app arriving th
 way opens as *"dreamd is damaged and can't be opened"* — which reads to a user as a
 broken release rather than as a signing policy.
 
-So the two quarantining channels are deliberately paused, and curl is the only
-supported one. This document undoes that. It is not fixing a bug; it is making a
-different choice, which becomes available once there is a Developer ID certificate
+So the two quarantining channels were deliberately paused and curl was the only
+supported one. This document undid that. It was not fixing a bug; it was making a
+different choice, which became available once there was a Developer ID certificate
 to sign with.
 
-Two switches hold it in place:
+Two switches hold the decision, in whichever direction it is set:
 
-- `NO_SIGN: "1"` at the top of `.github/workflows/release.yml`. It makes
-  `check-signing.sh` stand down and `build.sh` pass `--no-sign`. One variable
-  governs the whole pipeline, so a workflow condition here can never disagree with
-  a flag over there.
-- The `PUBLISH_CASK` repository variable, which the `tap` job is gated on and which
-  is not set.
+- `NO_SIGN` in `.github/workflows/release.yml`. It makes `check-signing.sh` stand
+  down and `build.sh` pass `--no-sign`. One variable governs the whole pipeline,
+  so a workflow condition here can never disagree with a flag over there. **It is
+  absent now, and that absence is the switch** — do not reintroduce it to get past
+  a red build; run `check-signing.sh` against the secrets instead.
+- The `PUBLISH_CASK` repository variable, which the `tap` job is gated on. **Now
+  `true`.** `PUBLISH_AUR` gates the `aur` job the same way and is its own decision.
 
 ---
 
-## What you already have
-
-Verified on this machine, 2026-07-26:
+## Current state
 
 | Thing | State |
 |---|---|
 | Developer ID Application certificate | **present** in the login keychain — `Developer ID Application: OLIVER ONSTOTT FONG (34VGHNCG6J)` |
 | Team ID | `34VGHNCG6J` |
-| Six `APPLE_*` repo secrets | **set** (2026-07-25) but **never validated** — `NO_SIGN` means `check-signing.sh` has never actually inspected them |
-| `TAP_GITHUB_TOKEN` secret | **missing** |
-| `PUBLISH_CASK` variable | **unset** |
-| `bongofongo/homebrew-tap` repo | exists, public |
+| Six `APPLE_*` repo secrets | **set and validated** — `verify` runs `check-signing.sh` against them before every build matrix |
+| `TAP_GITHUB_TOKEN` secret | **set** (step 7) |
+| `PUBLISH_CASK` variable | **`true`** |
+| `bongofongo/homebrew-tap` repo | exists, public, and carries a `Casks/dreamd.rb` generated from `packaging/cask.rb.tmpl` |
 
 Confirm the certificate for yourself with:
 
@@ -58,9 +62,10 @@ or **Apple Distribution** certificate is not a substitute — both sign happily 
 are then rejected by the notary twenty minutes into the build. `check-signing.sh`
 asserts this specifically for that reason.
 
-Because the six secrets already exist but have never been checked, treat them as
-unknown. Steps 1–6 regenerate and re-upload all of them. That is cheaper than
-guessing which one is wrong.
+If a rotation ever leaves you unsure which secret is stale, redo steps 1–6 and
+re-upload all six rather than guessing. That is cheaper than bisecting a
+twenty-minute matrix — which is how these steps came to be written in that order
+in the first place.
 
 ---
 
@@ -252,17 +257,19 @@ gh secret set TAP_GITHUB_TOKEN      # paste the token, then Ctrl-D
 
 ## 8. Flip the two switches
 
-**a.** Delete the `env` block at the top of `.github/workflows/release.yml`
-(currently lines 37–38):
+This is the step "Backing it out" inverts, so both directions are written here.
+
+**a.** Delete the `env` block at the top of `.github/workflows/release.yml`:
 
 ```yaml
 env:
   NO_SIGN: "1"
 ```
 
-Rewrite the long comment above it (lines 26–36) — it currently explains why
-releases are unsigned, which stops being true the moment you delete the key. Say
-instead that signing is on, and point at this file for how to rotate the secrets.
+Rewrite the long comment above it — it explained why releases were unsigned,
+which stops being true the moment you delete the key. Say instead that signing is
+on, and point at this file for how to rotate the secrets. (Done: that comment now
+says the *absence* of the key is the switch.)
 
 **b.** Arm the cask job:
 
@@ -272,9 +279,10 @@ gh variable list                      # confirm
 ```
 
 **c.** The root `CLAUDE.md` **Packaging** section and `website/CLAUDE.md`'s
-"There is no download button" gotcha both document unsigned-on-purpose as the
+"There is no download button" gotcha both documented unsigned-on-purpose as the
 standing decision. Update both in the same commit, or the next session will read
-them and re-derive the wrong state of the world.
+them and re-derive the wrong state of the world. (Both done — and this file was
+the one that was missed, which is the whole argument for the sentence above.)
 
 Commit these together:
 

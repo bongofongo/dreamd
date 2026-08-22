@@ -35,7 +35,11 @@ perl -pi -e "s/^(export const VERSION = )\"[^\"]*\";/\${1}\"$NEW\";/" \
 
 GOT="$("$ROOT/packaging/version.sh")"
 [[ "$GOT" == "$NEW" ]] || { echo "set-version.sh: Cargo.toml still reads $GOT" >&2; exit 1; }
-grep -q "\"$NEW\"" "$ROOT/website/src/consts.ts" || {
-  echo "set-version.sh: website/src/consts.ts was not updated" >&2; exit 1; }
+# Read it back the way check-version.sh does, rather than grepping the file for
+# the string just written: a bare grep also passes when the perl above matched
+# nothing and some *other* line happens to carry the new version.
+SITE="$(sed -n 's/^export const VERSION = "\([^"]*\)".*/\1/p' "$ROOT/website/src/consts.ts")"
+[[ "$SITE" == "$NEW" ]] || {
+  echo "set-version.sh: website/src/consts.ts reads ${SITE:-nothing}" >&2; exit 1; }
 
 echo "==> done. Now: cargo build && git commit -am \"release: $NEW\" && git tag v$NEW"
