@@ -2,8 +2,8 @@
 //!
 //! One process, one pty, held by [`AppState`](../main/struct.AppState.html) as
 //! `Mutex<Option<Pty>>` and created on the pane's first open — never at boot.
-//! `portable-pty` is the only new dependency tree in step 5, and everything
-//! platform-specific lives inside it.
+//! `portable-pty` is the only dependency tree this surface brought in, and
+//! everything platform-specific lives inside it.
 //!
 //! **Signing.** dreamd ships `hardenedRuntime: true` with no entitlements file,
 //! deliberately. Allocating a pty and forking a child into it needs none: the
@@ -68,10 +68,12 @@ pub struct Pty {
 /// are spelled out rather than wildcarded so that a seventh tool added to
 /// `mcp::schema` is a deliberate line here rather than a silent grant.
 ///
-/// Named `mcp__dreamd__*` because `dreamd mcp` is registered under the server
-/// name `dreamd` (`claude mcp add dreamd -- dreamd mcp`), which is also
-/// `schema::SERVER_NAME`. A reader who registered it under another name gets
-/// the prompts back, which is the safe direction to be wrong in.
+/// Named `mcp__dreamd__*` because `dreamd mcp` is registered under
+/// `schema::SERVER_NAME`, which is what `mcp::register::add_args` puts on the
+/// `claude mcp add` line — quoted there rather than spelled out again here, so
+/// this cannot drift from the command a reader is told to run. A reader who
+/// registered it under another name gets the prompts back, which is the safe
+/// direction to be wrong in.
 ///
 /// A `macro_rules!` rather than a `const` only because `concat!` takes
 /// literals: this expands to one at compile time, so the four commands below
@@ -335,24 +337,27 @@ fn pump(mut reader: Box<dyn Read + Send>, sink: Sink) {
     }
 }
 
+/// RFC 4648's alphabet, written once: the encoder and the decoder have to agree
+/// on it, and two copies of a 64-byte literal are two chances not to.
+const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
 /// Standard base64, padded. Twenty lines rather than a dependency: this is the
 /// whole of dreamd's need for one, and a wire format the frontend reads with
 /// `atob` is not worth a crate.
 pub fn b64(bytes: &[u8]) -> String {
-    const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for c in bytes.chunks(3) {
         let b = [c[0], *c.get(1).unwrap_or(&0), *c.get(2).unwrap_or(&0)];
         let n = u32::from(b[0]) << 16 | u32::from(b[1]) << 8 | u32::from(b[2]);
-        out.push(A[(n >> 18 & 63) as usize] as char);
-        out.push(A[(n >> 12 & 63) as usize] as char);
+        out.push(ALPHABET[(n >> 18 & 63) as usize] as char);
+        out.push(ALPHABET[(n >> 12 & 63) as usize] as char);
         out.push(if c.len() > 1 {
-            A[(n >> 6 & 63) as usize] as char
+            ALPHABET[(n >> 6 & 63) as usize] as char
         } else {
             '='
         });
         out.push(if c.len() > 2 {
-            A[(n & 63) as usize] as char
+            ALPHABET[(n & 63) as usize] as char
         } else {
             '='
         });
@@ -367,12 +372,11 @@ pub fn b64(bytes: &[u8]) -> String {
 /// Strict on purpose: this decodes what the frontend's `btoa` produced, so
 /// anything else is a bug, not input to be salvaged.
 pub fn from_b64(s: &str) -> Result<Vec<u8>, String> {
-    const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = Vec::with_capacity(s.len() / 4 * 3);
     let mut acc = 0u32;
     let mut bits = 0u8;
     for ch in s.bytes().filter(|c| *c != b'=') {
-        let v = A
+        let v = ALPHABET
             .iter()
             .position(|c| *c == ch)
             .ok_or("keystrokes were not base64")? as u32;

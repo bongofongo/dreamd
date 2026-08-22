@@ -1363,7 +1363,7 @@ fn open_external(url: String) -> Result<(), String> {
 
 // ---- the embedded Claude Code pane -----------------------------------------
 //
-// Four commands over `pty::Pty`, all under `core:default` — no plugin, no
+// Five commands over `pty::Pty`, all under `core:default` — no plugin, no
 // capability entry. The pty is created here on the pane's *first open*, never at
 // boot: `portable-pty` costs nothing in a session that never opens a terminal,
 // and a cold-start regression would mean the pane is being constructed eagerly.
