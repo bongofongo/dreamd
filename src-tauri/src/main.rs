@@ -1230,6 +1230,31 @@ fn open_target(app: &tauri::AppHandle, want_file: bool) {
 
 /// Point the whole app at `path`: swap the root, re-read config for the new
 /// repo, re-walk, re-arm the watcher, and tell the frontend to reload.
+/// Let the webview load images out of `root`, and out of nowhere else.
+///
+/// The other half of tenet 4's image rule. `ui/paths.js` decides which `<img
+/// src>` in a document is allowed to resolve at all; this decides what the
+/// `asset://` protocol will actually open, and the two are deliberately
+/// independent — the frontend guard is a rewrite the document cannot reach, and
+/// this one is a scope the *page* cannot reach, so a bug in either alone opens
+/// nothing.
+///
+/// Recursive, because a repo's images are wherever its author put them, and
+/// scoped to the root because that is already dreamd's containment boundary
+/// everywhere else (`guard::inside_root`, `insideRepo`, the socket's name).
+///
+/// The previous root is **not** forbidden on a move. A forbid is permanent for
+/// the process and takes precedence over every later allow, so returning to a
+/// repo would find its images dead for the rest of the session; and nothing can
+/// reach the leftover permission anyway, because the only URLs that ever become
+/// `asset://` are the relative ones `interceptLinks` resolved inside the root
+/// that is open now.
+fn allow_asset_root(app: &tauri::AppHandle, root: &Path) {
+    if let Err(e) = app.asset_protocol_scope().allow_directory(root, true) {
+        eprintln!("dreamd: images will not load from {}: {e}", root.display());
+    }
+}
+
 fn adopt_root(app: &tauri::AppHandle, path: PathBuf) {
     // A picked *file* roots the tree at its own repo, not at the process cwd
     // the way the CLI does. The cwd is meaningless here — for a Finder launch
@@ -1288,6 +1313,11 @@ fn adopt_root(app: &tauri::AppHandle, path: PathBuf) {
     if claimed {
         warn_secondary(&root);
     }
+
+    // Before the walk and before `repo-changed`: the frontend renders the new
+    // document off that event, and an image whose scope had not been opened yet
+    // is a 403 the page has no reason to retry.
+    allow_asset_root(app, &root);
 
     // Retire the watcher on the old root before arming one on the new.
     {
@@ -2098,6 +2128,15 @@ fn main() {
                     let _ = win.set_focus();
                 }
             }
+            // Images. A launch with no repo has no root to open — `adopt_root`
+            // does it when File -> Open gives the window one.
+            {
+                let state = app.state::<AppState>();
+                if state.has_repo.load(Ordering::Relaxed) {
+                    allow_asset_root(&app.handle().clone(), &state.root());
+                }
+            }
+
             // Where `claude` is, asked now rather than on the pane's first open.
             // It is one login shell on a thread of its own, started after the
             // window is up so it competes with nothing on the way to first

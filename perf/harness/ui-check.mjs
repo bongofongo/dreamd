@@ -64,14 +64,14 @@ await page.addInitScript(({ base, palettes }) => {
     config: {
       theme: "dreamd", mode: "system",
       tmux_autodetect: true, extra_ignores: [], keymap: { ...KEYMAP },
-      // `config::Ui` is a plain struct, so Rust always sends all seven —
+      // `config::Ui` is a plain struct, so Rust always sends all eight —
       // spelling them out here is what keeps the Window tab's checks below
       // asserting on the payload the real backend produces. `titlebar_fade`
       // is the macOS default rather than this runner's, so the class it drives
       // is exercised on both.
       ui: {
         tree_width: 260, stack_width: 280, pane_width: 380, pane_height: 240,
-        menubar: false, titlebar: false, titlebar_fade: true,
+        menubar: false, titlebar: false, titlebar_fade: true, zoom: 100,
       },
       // `config::Agent` is a plain struct too, and the Window tab now renders
       // two of its fields. Spelled out for the same reason `ui` is.
@@ -133,6 +133,17 @@ await page.addInitScript(({ base, palettes }) => {
   window.__PRINTS__ = 0;
   window.__TAURI__ = {
     core: {
+      // Tauri's own, and the only URL a local image ever gets: the CSP
+      // admits `asset:` and not `file:`. The test image resolves to a
+      // data URI so Chromium can actually decode one; every other path
+      // comes back in the real shape, and `__ASSET__` records what the
+      // containment guard handed over.
+      convertFileSrc(path) {
+        (window.__ASSET__ ||= []).push(path);
+        return path.endsWith("pic.png")
+          ? window.__PNG__
+          : "asset://localhost/" + encodeURIComponent(path);
+      },
       async invoke(cmd, args) {
         switch (cmd) {
           case "perf_enabled": return false;
@@ -586,6 +597,109 @@ check(
   (await page.evaluate(() => document.documentElement.dataset.mode)) === modeBefore,
 );
 
+// --- document zoom ---
+// The whole feature is one custom property and two inline `calc()`s, so this is
+// what there is to assert: that the keys move it, that the chrome does *not*
+// move with it, and that the number reaches the config. The gestures cannot be
+// checked here — WebKit's `gesture*` events do not exist in Chromium — but
+// Ctrl+wheel is the same code path and is.
+//
+// `accel` rather than a hardcoded Control: `zoomKey` claims ⌘ on a page whose
+// UA says Macintosh, which is what a developer running this locally has.
+const accel = isMacPage ? "Meta" : "Control";
+const zoomVar = () => page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue("--zoom").trim());
+const zoomShown = () => page.locator("#zoom-pct").textContent();
+
+check("the document starts unzoomed", (await zoomVar()) === "1", await zoomVar());
+check(
+  "and the size that scales is inline on #content, where no palette can outrank it",
+  await page.evaluate(() =>
+    document.getElementById("content").style.fontSize.includes("--zoom") &&
+    document.getElementById("content").style.maxWidth.includes("--zoom")),
+);
+
+await page.keyboard.press(`${accel}+=`);
+await page.waitForTimeout(80);
+check("a zoom-in key steps the ladder", (await zoomVar()) === "1.1", await zoomVar());
+check("and the readout says so", (await zoomShown()) === "110%", await zoomShown());
+check("and the pill is on screen", await page.locator("#zoom-pill.show").isVisible());
+
+await page.keyboard.press(`${accel}+=`);
+await page.keyboard.press(`${accel}+=`);
+await page.waitForTimeout(80);
+check("three steps land on 150%", (await zoomShown()) === "150%", await zoomShown());
+check(
+  "the chrome does not scale with the document",
+  await page.evaluate(() => {
+    const tree = getComputedStyle(document.getElementById("tree")).fontSize;
+    return tree === getComputedStyle(document.body).fontSize;
+  }),
+);
+// The config write is debounced by 400ms — the whole point of the debounce is
+// that a pinch is one write, so this is also the assertion that three steps did
+// not become three round trips.
+await page.waitForTimeout(600);
+check(
+  "the zoom persists to config",
+  (await page.evaluate(() => window.__STATE__.config.ui.zoom)) === 150,
+  String(await page.evaluate(() => window.__STATE__.config.ui.zoom)),
+);
+
+// Ctrl+wheel: the mouse's spelling of a pinch, and the one gesture Chromium can
+// be made to send. Over the document, and it must not scroll it.
+const scrolledBefore = await page.evaluate(() => document.getElementById("content-scroll").scrollTop);
+await page.mouse.move(600, 400);
+await page.keyboard.down("Control");
+await page.mouse.wheel(0, -120);
+await page.keyboard.up("Control");
+await page.waitForTimeout(120);
+check(
+  "Ctrl+wheel zooms rather than scrolls",
+  (await zoomVar()) !== "1.5" &&
+    (await page.evaluate(() => document.getElementById("content-scroll").scrollTop)) === scrolledBefore,
+  await zoomVar(),
+);
+
+await page.keyboard.press(`${accel}+0`);
+await page.waitForTimeout(80);
+check("and 0 resets", (await zoomVar()) === "1", await zoomVar());
+
+// Clamped at both ends, from the keyboard, so a reader leaning on the key
+// cannot send the config something Rust has to clamp back.
+for (let i = 0; i < 14; i++) await page.keyboard.press(`${accel}+-`);
+await page.waitForTimeout(80);
+check("the ladder stops at the floor", (await zoomShown()) === "50%", await zoomShown());
+for (let i = 0; i < 20; i++) await page.keyboard.press(`${accel}+=`);
+await page.waitForTimeout(80);
+check("and at the ceiling", (await zoomShown()) === "300%", await zoomShown());
+
+// The settings row is the same control seen twice: it reads what the gestures
+// left and writes back through the same clamp.
+await page.keyboard.press("Control+,");
+await page.waitForSelector("#settings-overlay.open");
+await page.locator('.st-tab[data-pane="window"]').click();
+const zoomField = page.locator("#st-window .st-row", { hasText: "Zoom" }).locator("input");
+await zoomField.fill("140");
+await zoomField.press("Enter");
+await page.waitForTimeout(200);
+check("the settings field zooms the document", (await zoomVar()) === "1.4", await zoomVar());
+check(
+  "and writes the number it applied",
+  (await page.evaluate(() => window.__STATE__.config.ui.zoom)) === 140,
+  String(await page.evaluate(() => window.__STATE__.config.ui.zoom)),
+);
+await zoomField.fill("900");
+await zoomField.press("Enter");
+await page.waitForTimeout(200);
+check("an out-of-range number snaps back in the field", (await zoomField.inputValue()) === "300");
+// Claimed above the overlay guard on purpose: a panel you cannot read is the
+// case for zooming, not a reason to be denied it.
+await page.keyboard.press(`${accel}+0`);
+await page.waitForTimeout(80);
+check("the zoom keys work with the panel open", (await zoomVar()) === "1", await zoomVar());
+await page.keyboard.press("Escape");
+await page.waitForTimeout(150);
+
 // --- sidebar default, single-file branch ---
 // A second page, because the boot decision is made once per load. The tree
 // resolves late on purpose: that is the deferred walk, and the point is that
@@ -602,6 +716,17 @@ await solo.addInitScript(({ base }) => {
   };
   window.__TAURI__ = {
     core: {
+      // Tauri's own, and the only URL a local image ever gets: the CSP
+      // admits `asset:` and not `file:`. The test image resolves to a
+      // data URI so Chromium can actually decode one; every other path
+      // comes back in the real shape, and `__ASSET__` records what the
+      // containment guard handed over.
+      convertFileSrc(path) {
+        (window.__ASSET__ ||= []).push(path);
+        return path.endsWith("pic.png")
+          ? window.__PNG__
+          : "asset://localhost/" + encodeURIComponent(path);
+      },
       async invoke(cmd) {
         switch (cmd) {
           case "perf_enabled": return false;
@@ -680,6 +805,17 @@ await nav.addInitScript(({ base }) => {
     "<p>filler</p>".repeat(200) + `<h2 id="deep">deep</h2>` + "<p>filler</p>".repeat(200);
   window.__TAURI__ = {
     core: {
+      // Tauri's own, and the only URL a local image ever gets: the CSP
+      // admits `asset:` and not `file:`. The test image resolves to a
+      // data URI so Chromium can actually decode one; every other path
+      // comes back in the real shape, and `__ASSET__` records what the
+      // containment guard handed over.
+      convertFileSrc(path) {
+        (window.__ASSET__ ||= []).push(path);
+        return path.endsWith("pic.png")
+          ? window.__PNG__
+          : "asset://localhost/" + encodeURIComponent(path);
+      },
       async invoke(cmd, args) {
         switch (cmd) {
           case "perf_enabled": return false;
@@ -1053,6 +1189,17 @@ await agent.addInitScript(({ base }) => {
 
   window.__TAURI__ = {
     core: {
+      // Tauri's own, and the only URL a local image ever gets: the CSP
+      // admits `asset:` and not `file:`. The test image resolves to a
+      // data URI so Chromium can actually decode one; every other path
+      // comes back in the real shape, and `__ASSET__` records what the
+      // containment guard handed over.
+      convertFileSrc(path) {
+        (window.__ASSET__ ||= []).push(path);
+        return path.endsWith("pic.png")
+          ? window.__PNG__
+          : "asset://localhost/" + encodeURIComponent(path);
+      },
       async invoke(cmd, args) {
         switch (cmd) {
           case "perf_enabled": return false;
@@ -1370,6 +1517,17 @@ const paneStub = ({ base, position, surface, popout }) => {
   };
   window.__TAURI__ = {
     core: {
+      // Tauri's own, and the only URL a local image ever gets: the CSP
+      // admits `asset:` and not `file:`. The test image resolves to a
+      // data URI so Chromium can actually decode one; every other path
+      // comes back in the real shape, and `__ASSET__` records what the
+      // containment guard handed over.
+      convertFileSrc(path) {
+        (window.__ASSET__ ||= []).push(path);
+        return path.endsWith("pic.png")
+          ? window.__PNG__
+          : "asset://localhost/" + encodeURIComponent(path);
+      },
       async invoke(cmd, args) {
         calls.push({ cmd, args });
         switch (cmd) {
@@ -2610,6 +2768,17 @@ await chrome.addInitScript(({ base }) => {
 
   window.__TAURI__ = {
     core: {
+      // Tauri's own, and the only URL a local image ever gets: the CSP
+      // admits `asset:` and not `file:`. The test image resolves to a
+      // data URI so Chromium can actually decode one; every other path
+      // comes back in the real shape, and `__ASSET__` records what the
+      // containment guard handed over.
+      convertFileSrc(path) {
+        (window.__ASSET__ ||= []).push(path);
+        return path.endsWith("pic.png")
+          ? window.__PNG__
+          : "asset://localhost/" + encodeURIComponent(path);
+      },
       async invoke(cmd, args) {
         switch (cmd) {
           case "perf_enabled": return false;
@@ -3075,6 +3244,17 @@ await hl.addInitScript(({ base }) => {
   const find = (id) => store.marks.find((m) => m.id === id);
   window.__TAURI__ = {
     core: {
+      // Tauri's own, and the only URL a local image ever gets: the CSP
+      // admits `asset:` and not `file:`. The test image resolves to a
+      // data URI so Chromium can actually decode one; every other path
+      // comes back in the real shape, and `__ASSET__` records what the
+      // containment guard handed over.
+      convertFileSrc(path) {
+        (window.__ASSET__ ||= []).push(path);
+        return path.endsWith("pic.png")
+          ? window.__PNG__
+          : "asset://localhost/" + encodeURIComponent(path);
+      },
       async invoke(cmd, args) {
         switch (cmd) {
           case "perf_enabled": return false;
@@ -3276,6 +3456,174 @@ check("a resize onto another mark is refused", state.resizes === 1, `${state.res
 check("and the mode stays armed for another try",
   await hl.evaluate(() => document.body.classList.contains("resizing")));
 await hl.keyboard.press("Escape");
+
+// --- images and the viewer ---
+// A page of its own because it needs a document with real `<img>` elements in
+// it, and the image has to actually decode: `measureImage` reads
+// `naturalWidth`, and the viewer's fit is computed from it, so a stub that
+// handed back an unloadable URL would assert nothing about either.
+//
+// 120x60, deep pink, inline. Small enough to sit in this file and big enough
+// that fit-to-window is 1:1, which is what makes the "0 means fit" check below
+// distinguishable from "0 means 100%".
+const PNG =
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAHgAAAA8CAIAAAAiz+n/AAAAhklEQVR4nO3QAQkAIADAMCMax4j" +
+  "GsoXCHTzA2dhz6ULj+cEngQbdCjToVqBBtwINuhVo0K1Ag24FGnQr0KBbgQbdCjToVqBBtwINuhVo0K1Ag24FGnQr0KBbgQbd" +
+  "CjToVqBBtwINuhVo0K1Ag24FGnQr0KBbgQbdCjToVqBBtwINuhVo0K0Oz9/0hg2WDpYAAAAASUVORK5CYII=";
+
+const pix = await newPage();
+pix.on("pageerror", (e) => results.push("FAIL pageerror (images): " + e.message));
+pix.on("console", (m) => {
+  if (m.type() === "error") results.push("FAIL console.error (images): " + m.text());
+});
+await pix.addInitScript(({ base, png }) => {
+  window.__PNG__ = png;
+  const tree = {
+    name: "repo", is_dir: true, path: "/repo", rel: "",
+    children: [{ name: "doc.md", is_dir: false, path: "/repo/doc.md", rel: "doc.md", children: [] }],
+  };
+  // Three images: one inside the repo, one that climbs out of it with `../`,
+  // and one already absolute in a scheme of its own. What each is *for* is the
+  // assertion — the first must be rewritten, the second must be refused, the
+  // third must be left exactly as the document wrote it.
+  const body =
+    `<p><img src="img/pic.png" alt="a picture"></p>` +
+    `<p><img src="../../etc/secret.png" alt="escapee"></p>` +
+    `<p><img src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==" alt="inline"></p>`;
+  window.__TAURI__ = {
+    core: {
+      convertFileSrc(path) {
+        (window.__ASSET__ ||= []).push(path);
+        return path.endsWith("pic.png") ? window.__PNG__ : "asset://localhost/" + encodeURIComponent(path);
+      },
+      async invoke(cmd) {
+        switch (cmd) {
+          case "perf_enabled": return false;
+          case "repo_info": return { root: "/repo", name: "repo", display: "~/repo" };
+          case "get_keymap": return {
+            palette: "Ctrl+F", highlight: "Ctrl+H", settings: "Ctrl+,",
+            toggle_stack: "Ctrl+O", toggle_outline: "Ctrl+I", toggle_tree: "Ctrl+B",
+            toggle_view: "Ctrl+M", find: "/", quick_highlight: true,
+          };
+          case "get_theme": return { css: base, mode: "system", scheme: "dark", syntax_theme: null };
+          case "get_ui": return {
+            tree_width: 260, stack_width: 280, pane_width: 380, pane_height: 240,
+            menubar: false, titlebar: false, titlebar_fade: false, zoom: 100,
+          };
+          case "initial_file": return "/repo/doc.md";
+          case "render_markdown": return body;
+          case "list_markdown_files": return tree;
+          case "get_highlights": case "reanchor": case "get_stack": return [];
+          default: return null;
+        }
+      },
+    },
+    event: { async listen() { return () => {}; } },
+  };
+}, { base, png: PNG });
+await pix.goto(pathToFileURL(join(UI, "index.html")).href);
+await pix.waitForSelector("#content img");
+await pix.waitForTimeout(300);
+
+check(
+  "a relative image resolves against the repo root, through the asset protocol",
+  (await pix.evaluate(() => window.__ASSET__ || [])).includes("/repo/img/pic.png"),
+  JSON.stringify(await pix.evaluate(() => window.__ASSET__ || [])),
+);
+check(
+  "and it is the asset URL that lands on the element — never file:",
+  await pix.evaluate(() => {
+    const src = document.querySelector('#content img[alt="a picture"]').getAttribute("src");
+    return src && !src.startsWith("file:");
+  }),
+);
+check(
+  "an image that climbs out of the repo loses its src entirely",
+  await pix.evaluate(() => !document.querySelector('#content img[alt="escapee"]').hasAttribute("src")),
+);
+check(
+  "and it was never handed to the protocol either",
+  !(await pix.evaluate(() => window.__ASSET__ || [])).some((p) => p.includes("secret")),
+);
+check(
+  "a data: image is left alone",
+  await pix.evaluate(() =>
+    document.querySelector('#content img[alt="inline"]').getAttribute("src").startsWith("data:")),
+);
+
+// Measurement, which is what lets an image scale with the prose. The refused
+// one must *not* be measured: `width: calc(0px * z)` would collapse its alt
+// text to nothing.
+check(
+  "a loaded image records its natural width",
+  (await pix.evaluate(() => document.querySelector('#content img[alt="a picture"]').dataset.w)) === "120",
+);
+check(
+  "a refused image is not measured",
+  await pix.evaluate(() => !document.querySelector('#content img[alt="escapee"]').dataset.w),
+);
+const shotWidth = () =>
+  pix.evaluate(() =>
+    Math.round(document.querySelector('#content img[alt="a picture"]').getBoundingClientRect().width));
+check("and is drawn at that size unzoomed", (await shotWidth()) === 120, String(await shotWidth()));
+await pix.evaluate(() => applyZoom(200));
+await pix.waitForTimeout(120);
+check("and grows with the document zoom", (await shotWidth()) === 240, String(await shotWidth()));
+await pix.evaluate(() => applyZoom(100));
+await pix.waitForTimeout(120);
+
+// The viewer.
+await pix.locator('#content img[alt="a picture"]').click();
+await pix.waitForSelector("#lightbox.open");
+check("clicking an image opens the viewer", await pix.locator("#lightbox.open").isVisible());
+check(
+  "at fit, which for an image smaller than the window is 1:1",
+  (await pix.locator("#lb-pct").textContent()) === "100%",
+  await pix.locator("#lb-pct").textContent(),
+);
+check(
+  "on the src the document already had — the viewer resolves nothing of its own",
+  await pix.evaluate(() =>
+    document.getElementById("lightbox-img").getAttribute("src") ===
+    document.querySelector('#content img[alt="a picture"]').getAttribute("src")),
+);
+
+const pixAccel = (await pix.evaluate(() => document.body.classList.contains("mac"))) ? "Meta" : "Control";
+await pix.keyboard.press(`${pixAccel}+=`);
+await pix.waitForTimeout(120);
+check(
+  "the zoom keys reach the image while it is open",
+  (await pix.locator("#lb-pct").textContent()) === "125%",
+  await pix.locator("#lb-pct").textContent(),
+);
+check(
+  "and leave the document behind it alone",
+  (await pix.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue("--zoom").trim())) === "1",
+);
+await pix.keyboard.press(`${pixAccel}+0`);
+await pix.waitForTimeout(120);
+check("and 0 is back to fit rather than to 100%", (await pix.locator("#lb-pct").textContent()) === "100%");
+
+// Every binding below the viewer is suspended while it is up: they all act on a
+// document it is covering.
+await pix.keyboard.press("Control+B");
+await pix.waitForTimeout(120);
+check(
+  "the reader's keys do not reach through the viewer",
+  await pix.evaluate(() => document.body.classList.contains("nav-collapsed")),
+);
+
+await pix.keyboard.press("Escape");
+await pix.waitForTimeout(150);
+check("Escape closes it", !(await pix.locator("#lightbox.open").isVisible()));
+check(
+  "and drops the decoded bitmap rather than holding it for the session",
+  await pix.evaluate(() => !document.getElementById("lightbox-img").hasAttribute("src")),
+);
+check(
+  "and view mode is not what Escape ended",
+  await pix.evaluate(() => !document.body.classList.contains("view-mode")),
+);
 
 await browser.close();
 console.log(results.join("\n"));

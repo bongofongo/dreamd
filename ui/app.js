@@ -2,6 +2,12 @@
 
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
+// `/abs/path.png` -> `asset://localhost/%2Fabs%2Fpath.png`, the one origin the
+// CSP admits for a file on disk. Not cosmetic: `file:` is absent from
+// `img-src` on purpose — that origin can read the whole disk — so an image in
+// the reader's repo has no other way in. The Rust side decides which paths the
+// protocol will actually open; see `allow_asset_root` in main.rs.
+const { convertFileSrc } = window.__TAURI__.core;
 
 // ---- appearance ----------------------------------------------------------
 // Set before anything paints. `mode = "system"` is the default, and matching the
@@ -159,6 +165,7 @@ async function init() {
     const [km, ui] = await Promise.all([invoke("get_keymap"), invoke("get_ui")]);
     if (km) keymap = km;
     applyPanelSizes(ui);
+    applyDocumentZoom(ui);
     applyWindowChrome(ui);
   } catch (e) {}
   // `displayCombo`, not the raw value: what is stored is `Ctrl+F` in every key
@@ -169,6 +176,7 @@ async function init() {
 
   wireEvents();
   wireKeys();
+  wireZoom();
   wireUi();
   wireTooltips();
   perf.at("wired");
@@ -790,6 +798,9 @@ async function renderCurrent({ preserveScroll, reanchor }) {
   decorateCodeBlocks();
   perf.span("decorate_code", t);
 
+  // After `interceptLinks`, which is what resolved (or refused) each `src`.
+  prepareImages();
+
   t = perf.now();
   const highlights = reanchor
     ? await invoke("reanchor", { path: currentFile })
@@ -862,11 +873,464 @@ function interceptLinks() {
     if (src && !/^[a-z]+:\/\//i.test(src) && !src.startsWith("data:") && !src.startsWith("/")) {
       const base = currentFile.replace(/[^\/]*$/, "");
       const abs = normalizePath(base + src);
-      // Only load local images that live inside the repo root.
-      if (insideRepo(abs, repoRoot)) img.src = "file://" + abs;
+      // Only load local images that live inside the repo root. The URL is the
+      // asset protocol's, never `file://`: that scheme is not in the CSP's
+      // `img-src` and never was, so every local image in every document was
+      // silently blocked until this line changed.
+      if (insideRepo(abs, repoRoot)) img.src = convertFileSrc(abs);
       else img.removeAttribute("src");
     }
   });
+}
+
+// ---- images --------------------------------------------------------------
+//
+// Two things a rendered `<img>` needs that markdown cannot say. Both are DOM
+// decoration after the render, like `decorateCodeBlocks` and for the same
+// reason: neither belongs in the HTML `markdown::render` produces, and
+// `renderCurrent`'s `innerHTML` write throws the previous document's listeners
+// away with the elements that carried them, so there is nothing to clean up.
+
+/// Measure every image, and make each one open in the viewer.
+///
+/// Runs after `interceptLinks`, so the `src` here is the resolved one — an
+/// image the containment guard refused has had its `src` removed and is skipped
+/// by both halves. That ordering is what keeps this function from being a
+/// second, weaker copy of the guard.
+function prepareImages() {
+  for (const img of contentEl.querySelectorAll("img[src]")) {
+    img.addEventListener("click", () => openLightbox(img));
+    // `complete` covers a cached image, which is the common case on a re-render
+    // of the file the reader is already looking at: the `load` event for one of
+    // those has usually already fired by the time this runs.
+    if (img.complete) measureImage(img);
+    else img.addEventListener("load", () => measureImage(img), { once: true });
+  }
+}
+
+/// Record an image's natural width so it can scale with the document.
+///
+/// An `<img>` is the one thing in a rendered document sized in device pixels
+/// rather than in `em`, so it is the one thing that would sit unchanged while
+/// the prose around it grew. `--img-w` and the `[data-w]` marker are what the
+/// rule in index.html multiplies by `--zoom`; nothing else reads either.
+///
+/// A broken image measures 0 and is left alone: `width: calc(0px * z)` would
+/// collapse the alt text to nothing.
+function measureImage(img) {
+  if (!img.naturalWidth) return;
+  img.style.setProperty("--img-w", `${img.naturalWidth}px`);
+  img.dataset.w = String(img.naturalWidth);
+}
+
+// ---- document zoom -------------------------------------------------------
+//
+// One number, three ways in — the trackpad, the keyboard and the pill — and one
+// place it lands: `--zoom` on <html>, which `#content`'s two inline `calc()`s
+// and the image rule in index.html read. The chrome is deliberately not in that
+// set: the tree, the stack and the agent pane are the same size at 300% as at
+// 50%, because a reader asking for bigger prose is not asking for a bigger
+// sidebar. That is also why this is not `WebviewWindow::set_zoom`, which would
+// scale the window and perturb every rect the placement code measures.
+//
+// The range mirrors `config::ZOOM_MIN`/`ZOOM_MAX`, and Rust clamps on the way
+// in for the same reason it clamps the panel sizes: the ladder here is what
+// stops a gesture ever *sending* something out of range.
+const ZOOM_MIN = 50;
+const ZOOM_MAX = 300;
+const ZOOM_DEFAULT = 100;
+// The keyboard's stops. A browser's ladder, near enough, and deliberately not
+// a fixed multiplier: the useful resolution is fine around 100% and coarse at
+// the ends, which a constant step gets backwards in both directions.
+const ZOOM_STOPS = [50, 67, 75, 80, 90, 100, 110, 125, 150, 175, 200, 250, 300];
+
+let zoomPct = ZOOM_DEFAULT;
+let zoomSaveTimer = null;
+let zoomHideTimer = null;
+// The zoom a pinch started from. WebKit's `gesturechange` reports `scale`
+// relative to the *start* of the gesture, not to the previous event, so
+// compounding it per event would accelerate away.
+let gestureFrom = 0;
+
+/// Write the multiplier, keep the reader's place, and show the readout.
+///
+/// The scroll correction is proportional rather than exact: an anchor line
+/// would be better and needs a rect per candidate paragraph on a path that runs
+/// once per pinch frame. Without any correction at all a zoom from the middle of
+/// a long document lands somewhere else entirely, because the page it is
+/// scrolled through just changed height.
+function applyZoom(pct, { persist = true, show = true } = {}) {
+  const want = Math.round(Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, Number(pct) || ZOOM_DEFAULT)));
+  const moved = want !== zoomPct;
+  // Read before the write, and only when something is about to move: this is a
+  // forced layout, and at boot there is no scroll position to keep anyway.
+  const span = moved ? scrollEl.scrollHeight - scrollEl.clientHeight : 0;
+  const ratio = span > 0 ? scrollEl.scrollTop / span : 0;
+  zoomPct = want;
+  document.documentElement.style.setProperty("--zoom", String(zoomPct / 100));
+  if (moved) {
+    const after = scrollEl.scrollHeight - scrollEl.clientHeight;
+    if (after > 0) scrollEl.scrollTop = Math.round(ratio * after);
+    if (persist) persistZoom();
+  }
+  if (show) showZoomPill();
+}
+
+/// The document's zoom at boot, from the one `get_ui` init already does.
+///
+/// Beside `applyPanelSizes` rather than in it: those four are panels and this is
+/// the document. `undefined` is fine — `applyZoom` falls back to 100, which is
+/// what the CSS paints with no `--zoom` at all, so a config that has never
+/// mentioned it costs no reflow.
+///
+/// It only writes the variable. The inline `calc()`s that consume it are
+/// `zoomContent`'s, installed from `wireZoom`, which runs whether or not this
+/// one did: a `get_ui` that failed should cost the persisted zoom, not the
+/// gesture.
+function applyDocumentZoom(ui) {
+  applyZoom(ui && ui.zoom, { persist: false, show: false });
+}
+
+/// The two properties that actually resize the document, set once.
+///
+/// Inline, because theme.css sets `font` on `#content` as a shorthand and is
+/// injected *after* index.html's stylesheet — a rule there would lose to every
+/// palette. Written as `calc()`s over `--zoom` so that changing the zoom is one
+/// custom-property write on <html> rather than a second inline write here, and
+/// so a theme reload (which rewrites `--font-size`) needs no recalculation of
+/// its own.
+function zoomContent() {
+  contentEl.style.fontSize = "calc(var(--font-size, 16px) * var(--zoom, 1))";
+  contentEl.style.maxWidth = "calc(var(--content-width, 700px) * var(--zoom, 1))";
+}
+
+/// Move one stop along the ladder, in the direction given.
+function stepZoom(dir) {
+  const at = ZOOM_STOPS.findIndex((v) => (dir > 0 ? v > zoomPct : v >= zoomPct));
+  const next = dir > 0
+    ? (at === -1 ? ZOOM_MAX : ZOOM_STOPS[at])
+    : (at <= 0 ? ZOOM_MIN : ZOOM_STOPS[at - 1]);
+  applyZoom(next);
+}
+
+/// Debounced, and separate from the size patch on purpose: a pinch is forty
+/// events and one config write, and the two timers never coalesce into a patch
+/// that carries a half-finished drag as well.
+function persistZoom() {
+  clearTimeout(zoomSaveTimer);
+  zoomSaveTimer = setTimeout(() => {
+    invoke("set_config", { patch: { ui: { zoom: zoomPct } } }).catch((e) => console.error(e));
+  }, 400);
+}
+
+/// The readout, shown on every change and hidden a moment after the last one —
+/// unless the pointer is on it, which is the case where the reader is using its
+/// buttons and hiding it mid-click would be taking the control away.
+function showZoomPill() {
+  const pill = $("zoom-pill");
+  $("zoom-pct").textContent = `${zoomPct}%`;
+  pill.classList.add("show");
+  clearTimeout(zoomHideTimer);
+  zoomHideTimer = setTimeout(() => {
+    if (!pill.matches(":hover")) pill.classList.remove("show");
+    else showZoomPill();
+  }, 1600);
+}
+
+/// Ctrl/Cmd with `+`, `-` or `0`.
+///
+/// Not keymap entries, and the one place in the reader that is deliberately not
+/// rebindable: the combo is the platform's rather than dreamd's, and matching it
+/// means accepting several physical keys per action (`=` and `+` are the same
+/// key with and without Shift; `-` and `_` likewise; a numeric keypad sends its
+/// own). The combo grammar in `matchCombo` spells one key per binding, so this
+/// would be three bindings that each only half worked.
+///
+/// Cmd only on macOS: dreamd's own `Ctrl+…` binds are spelled ⌘ there, and
+/// claiming both would take a modifier away from a keymap that uses it.
+function zoomKey(e) {
+  const accel = document.body.classList.contains("mac") ? e.metaKey : e.ctrlKey && !e.metaKey;
+  if (!accel || e.altKey) return false;
+  const cx = window.innerWidth / 2;
+  const cy = window.innerHeight / 2;
+  const viewing = lightboxOpen();
+  if (e.key === "+" || e.key === "=") { viewing ? lbZoomBy(1.25, cx, cy) : stepZoom(1); return true; }
+  if (e.key === "-" || e.key === "_") { viewing ? lbZoomBy(0.8, cx, cy) : stepZoom(-1); return true; }
+  // `0` is "back to the size you started at", which in the viewer is the fit
+  // rather than 100%: an image is opened to be looked at whole.
+  if (e.key === "0") { viewing ? lbFit() : applyZoom(ZOOM_DEFAULT); return true; }
+  return false;
+}
+
+/// A wheel notch, or a pinch reported as one.
+///
+/// Exponential, so a notch is the same proportional step wherever on the range
+/// it starts, and a trackpad's much smaller deltas stay smooth.
+function onZoomWheel(e) {
+  if (!e.ctrlKey && !e.metaKey) return;
+  // Only when it can be: this handler runs passively as well (see
+  // `armZoomWheel`), and calling it there is a console warning per event.
+  if (e.cancelable) e.preventDefault();
+  const factor = Math.exp(-e.deltaY * 0.004);
+  if (lightboxOpen()) lbZoomBy(factor, e.clientX, e.clientY);
+  else applyZoom(zoomPct * factor);
+}
+
+// Whether the blocking wheel listener is installed, and whether it is installed
+// for good. See `armZoomWheel`.
+let zoomWheelArmed = false;
+let pinchIsSynthetic = false;
+
+/// Install the *blocking* wheel listener, and only when it can earn its cost.
+///
+/// **A non-passive `wheel` listener takes scrolling off the compositor
+/// thread.** Every wheel event has to wait for JavaScript before the page may
+/// move, because until the handler has run the engine cannot know whether it
+/// will call `preventDefault`. Measured here, on the 2MB scroll scenario: +33%
+/// wall and roughly double the composite time, for a handler that returns
+/// immediately on all but a fraction of a percent of events. That is the whole
+/// scroll budget of a reader spent on a gesture they make twice a session.
+/// (Chromium-relative, like everything from `perf/harness` — but the mechanism
+/// is WebKit's too.)
+///
+/// So it is armed while a Ctrl or Cmd key is physically down and removed on the
+/// way back up, which covers every Ctrl+wheel a mouse can produce and costs an
+/// ordinary scroll nothing. The gap that leaves is a *touchpad* pinch, which
+/// some engines deliver as a wheel event with `ctrlKey` set and no key ever
+/// pressed: the passive sniffer below sees the first one, zooms on it (it
+/// cannot preventDefault — it is passive), and arms this one permanently. So a
+/// machine whose pinch works that way pays the cost, a machine whose pinch
+/// arrives as a `gesture*` event (macOS) never does, and neither needs to be
+/// detected in advance.
+function armZoomWheel(permanent) {
+  if (permanent) pinchIsSynthetic = true;
+  if (zoomWheelArmed) return;
+  zoomWheelArmed = true;
+  window.addEventListener("wheel", onZoomWheel, { passive: false });
+}
+
+function disarmZoomWheel() {
+  if (!zoomWheelArmed || pinchIsSynthetic) return;
+  zoomWheelArmed = false;
+  window.removeEventListener("wheel", onZoomWheel);
+}
+
+/// The trackpad, and the mouse wheel held under Ctrl.
+///
+/// Bound to the *window* rather than to the scroller: a pinch anywhere in the
+/// window is the reader asking for bigger prose, and — more to the point — a
+/// pinch the engine is left to handle itself zooms the whole webview, chrome
+/// included, with no control anywhere in dreamd to undo it. Claiming the
+/// gesture is what keeps that from being reachable.
+///
+/// Two mechanisms because no platform has both: WebKit fires `gesture*` with a
+/// cumulative `scale` (macOS), and everything else reports a pinch as a wheel
+/// event with `ctrlKey` set, which is also how a Ctrl+wheel mouse arrives.
+function wireZoom() {
+  zoomContent();
+  $("zoom-in").onclick = () => stepZoom(1);
+  $("zoom-out").onclick = () => stepZoom(-1);
+  $("zoom-pct").onclick = () => applyZoom(ZOOM_DEFAULT);
+
+  // The modifier is the arming signal, not the gesture. `keyup` is not enough
+  // on its own — a window that loses focus mid-chord never sees one — so blur
+  // disarms too.
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "Control" || e.key === "Meta") armZoomWheel(false);
+  });
+  window.addEventListener("keyup", (e) => {
+    if (e.key === "Control" || e.key === "Meta") disarmZoomWheel();
+  });
+  window.addEventListener("blur", () => disarmZoomWheel());
+
+  // The sniffer. Passive, so it costs a scroll nothing, and its whole job is to
+  // notice a `ctrlKey` wheel event that arrived with no key down — a synthetic
+  // pinch — and hand the rest of the session to the blocking listener.
+  window.addEventListener("wheel", (e) => {
+    if (zoomWheelArmed || (!e.ctrlKey && !e.metaKey)) return;
+    onZoomWheel(e);
+    armZoomWheel(true);
+  }, { passive: true });
+
+  window.addEventListener("gesturestart", (e) => {
+    e.preventDefault();
+    gestureFrom = lightboxOpen() ? lb.scale : zoomPct;
+  });
+  window.addEventListener("gesturechange", (e) => {
+    e.preventDefault();
+    if (lightboxOpen()) lbZoomTo(gestureFrom * e.scale, window.innerWidth / 2, window.innerHeight / 2);
+    else applyZoom(gestureFrom * e.scale);
+  });
+  window.addEventListener("gestureend", (e) => e.preventDefault());
+
+  wireLightbox();
+}
+
+// ---- the image viewer ----------------------------------------------------
+//
+// A diagram in a repo is usually wider than the measure, so `max-width: 100%`
+// has already shrunk it before the reader ever sees it — zooming the *document*
+// to read one would blow up the prose around it too. This is the other answer:
+// the image alone, over the window, at whatever size and offset the reader
+// drags it to.
+//
+// State is a plain object rather than DOM attributes because a pan is a
+// pointermove per frame. `x`/`y` are the top-left corner in client pixels and
+// `scale` multiplies the natural size, so `transform-origin: 0 0` makes the
+// paint one `translate` and one `scale` with no layout in between.
+const lb = { scale: 1, fit: 1, x: 0, y: 0, w: 0, h: 0, drag: null };
+
+function lightboxOpen() { return $("lightbox").classList.contains("open"); }
+
+/// Open the viewer on an image already in the document.
+///
+/// The `src` is taken from the element rather than re-derived from the markdown:
+/// `interceptLinks` is the only thing entitled to turn a document's path into a
+/// URL, and an image it refused has no `src` to take.
+function openLightbox(img) {
+  const src = img.getAttribute("src");
+  if (!src) return;
+  const el = $("lightbox-img");
+  el.src = src;
+  el.alt = img.getAttribute("alt") || "";
+  $("lightbox-name").textContent = img.getAttribute("alt") || decodeURIComponent(src.split("/").pop());
+  $("lightbox").classList.add("open");
+  const sized = () => {
+    lb.w = el.naturalWidth || el.width;
+    lb.h = el.naturalHeight || el.height;
+    el.style.width = `${lb.w}px`;
+    el.style.height = `${lb.h}px`;
+    lbFit();
+  };
+  if (el.complete && el.naturalWidth) sized();
+  else el.addEventListener("load", sized, { once: true });
+}
+
+function closeLightbox() {
+  $("lightbox").classList.remove("open");
+  $("lightbox").classList.remove("dragging");
+  lb.drag = null;
+  // Dropped rather than kept: the element outlives the viewing, and a decoded
+  // 4000px bitmap held for the rest of the session is the kind of memory nobody
+  // goes looking for.
+  $("lightbox-img").removeAttribute("src");
+}
+
+/// The scale at which the whole image is on screen, never above 1:1 — blowing a
+/// small image up to fill the window is not "fit", it is a decision.
+function lbFit() {
+  if (!lb.w || !lb.h) return;
+  const avail = lbViewport();
+  lb.fit = Math.min(1, avail.w / lb.w, avail.h / lb.h);
+  lb.scale = lb.fit;
+  lbCentre();
+  lbPaint();
+}
+
+function lbViewport() {
+  return { w: Math.max(80, window.innerWidth - 64), h: Math.max(80, window.innerHeight - 96) };
+}
+
+function lbCentre() {
+  lb.x = (window.innerWidth - lb.w * lb.scale) / 2;
+  lb.y = (window.innerHeight - lb.h * lb.scale) / 2;
+}
+
+/// Zoom about a point, so the pixel under the cursor stays under the cursor —
+/// the difference between magnifying an image and losing the detail you were
+/// looking at.
+function lbZoomTo(scale, cx, cy) {
+  if (!lb.w) return;
+  const next = Math.min(8, Math.max(lb.fit / 4, scale));
+  const k = next / lb.scale;
+  lb.x = cx - (cx - lb.x) * k;
+  lb.y = cy - (cy - lb.y) * k;
+  lb.scale = next;
+  lbClamp();
+  lbPaint();
+}
+
+function lbZoomBy(factor, cx, cy) { lbZoomTo(lb.scale * factor, cx, cy); }
+
+/// Keep the image reachable. An axis the image no longer fills is centred; one
+/// it overflows may be dragged, but not past its own edge — a pan that could
+/// lose the picture off the corner is a pan with no way back.
+function lbClamp() {
+  const w = lb.w * lb.scale;
+  const h = lb.h * lb.scale;
+  lb.x = w <= window.innerWidth
+    ? (window.innerWidth - w) / 2
+    : Math.min(0, Math.max(window.innerWidth - w, lb.x));
+  lb.y = h <= window.innerHeight
+    ? (window.innerHeight - h) / 2
+    : Math.min(0, Math.max(window.innerHeight - h, lb.y));
+}
+
+function lbPaint() {
+  $("lightbox-img").style.transform =
+    `translate(${Math.round(lb.x)}px, ${Math.round(lb.y)}px) scale(${lb.scale})`;
+  $("lb-pct").textContent = `${Math.round(lb.scale * 100)}%`;
+}
+
+function wireLightbox() {
+  const box = $("lightbox");
+  const el = $("lightbox-img");
+
+  $("lb-close").onclick = closeLightbox;
+  $("lb-in").onclick = () => lbZoomBy(1.25, window.innerWidth / 2, window.innerHeight / 2);
+  $("lb-out").onclick = () => lbZoomBy(0.8, window.innerWidth / 2, window.innerHeight / 2);
+  // The readout is the way back to fit, the way `#zoom-pct` is the way back to
+  // 100%: the one command worth a target rather than a gesture.
+  $("lb-pct").onclick = () => lbFit();
+
+  // Inside the viewer a bare wheel zooms — there is nothing else for it to
+  // mean, and reaching for a modifier over a full-window image is a step
+  // nobody expects. The blocking listener is on `#lightbox` rather than on the
+  // window for the reason `armZoomWheel` explains at length: this element is
+  // `display: none` until an image is clicked, so an ordinary scroll never
+  // meets it.
+  box.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    lbZoomBy(Math.exp(-e.deltaY * 0.004), e.clientX, e.clientY);
+  }, { passive: false });
+
+  // A click on the scrim closes; a click on the image does not. `contains`
+  // rather than `target === box` so the bar's own padding does not close it.
+  box.addEventListener("pointerdown", (e) => {
+    if (e.target === box) closeLightbox();
+  });
+
+  el.addEventListener("dblclick", (e) => {
+    // Fit and 1:1 are the two sizes worth a shortcut, and which one this
+    // gesture means is decided by where it already is.
+    if (Math.abs(lb.scale - lb.fit) < 0.01) lbZoomTo(1, e.clientX, e.clientY);
+    else lbFit();
+  });
+
+  el.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    lb.drag = { x: e.clientX - lb.x, y: e.clientY - lb.y, id: e.pointerId };
+    el.setPointerCapture(e.pointerId);
+    box.classList.add("dragging");
+  });
+  el.addEventListener("pointermove", (e) => {
+    if (!lb.drag || lb.drag.id !== e.pointerId) return;
+    lb.x = e.clientX - lb.drag.x;
+    lb.y = e.clientY - lb.drag.y;
+    lbClamp();
+    lbPaint();
+  });
+  const endDrag = (e) => {
+    if (!lb.drag || lb.drag.id !== e.pointerId) return;
+    lb.drag = null;
+    box.classList.remove("dragging");
+  };
+  el.addEventListener("pointerup", endDrag);
+  el.addEventListener("pointercancel", endDrag);
+
+  // The window changing size under an open viewer leaves the image off-centre
+  // or, at fit, the wrong size for the space. Cheap enough to just re-fit.
+  window.addEventListener("resize", () => { if (lightboxOpen()) lbFit(); });
 }
 
 // ---- code blocks ---------------------------------------------------------
@@ -4576,6 +5040,15 @@ function wireEvents() {
       // being swapped out from under it.
       resetFind();
       await loadTheme();
+      // The new repo's zoom, for the same reason the theme is re-read: a
+      // `.dreamd.toml` may carry its own, and Rust has already re-applied the
+      // part of `[ui]` that belongs to the native window (`apply_chrome`,
+      // inside `adopt_root`). Zoom and not the four panel sizes, deliberately:
+      // this one is a statement about the *material* — dense reference notes
+      // asking to be drawn a size larger — where a panel width is a statement
+      // about the reader's window, and moving those under them on a File ▸ Open
+      // would be the app rearranging itself.
+      try { applyDocumentZoom(await invoke("get_ui")); } catch (err) {}
       await adoptRepoInfo();
       await loadTree();
       const file = e.payload;
@@ -4762,6 +5235,16 @@ function wireKeys() {
     // `attachCustomKeyEventHandler` in `buildTerminal` for why this branch
     // cannot be where that happens, and what claiming Escape costs.
     if (inTerminal(e.target)) return;
+
+    // Zoom is claimed above everything, Escape included, and above the
+    // terminal's own keys only because that branch returned first: it is a
+    // platform combo rather than a dreamd binding, it means the same thing in
+    // every mode and every overlay, and a reader who cannot read the card in
+    // front of them should not have to close it to make it bigger. When the
+    // image viewer is up the keys are its, which is the one place "zoom" means
+    // something other than the document.
+    if (zoomKey(e)) { e.preventDefault(); return; }
+
     if (e.key === "Escape") {
       // Recording a keybind swallows Escape as "cancel", not "close panel".
       if (cancelRecording()) { e.preventDefault(); return; }
@@ -4793,10 +5276,15 @@ function wireKeys() {
       // and pressing it again does close the card. Interrupting a running turn
       // outranks both and never reaches this handler; the composer's own
       // keydown claims that one.
+      // `lightbox` is in the list and closes with the rest. It cannot be open
+      // beside any of them — it is opened by clicking an image in the document,
+      // which every overlay above covers — so its place in this order is a
+      // formality rather than a ranking.
       const claimed = ["palette-overlay", "annot-overlay", "confirm-overlay",
                        "settings-overlay", "file-menu", "find-bar", "pty-pane",
-                       "agent-popout"]
+                       "agent-popout", "lightbox"]
         .some((id) => $(id).classList.contains("open"));
+      if (lightboxOpen()) closeLightbox();
       closePalette();
       closeFileMenu();
       if (popoutOpen()) escapePopout();
@@ -4812,8 +5300,12 @@ function wireKeys() {
       if (!claimed) { if (resizing) cancelResize(); else exitView(); }
       return;
     }
-    // While an overlay is open, let its own inputs handle keys.
-    if ($("palette-overlay").classList.contains("open") ||
+    // While an overlay is open, let its own inputs handle keys. The image
+    // viewer is here for the mirror-image reason — it has no inputs, and every
+    // binding below acts on a document it is covering. Its own two keys are
+    // Escape and the zoom pair, both claimed above this line.
+    if (lightboxOpen() ||
+        $("palette-overlay").classList.contains("open") ||
         $("annot-overlay").classList.contains("open") ||
         $("confirm-overlay").classList.contains("open") ||
         $("settings-overlay").classList.contains("open")) return;
@@ -5596,6 +6088,37 @@ function renderWindow() {
   // pixels. This tab is where it does least harm: the panel is already the
   // place you go for the things you do once.
   box.appendChild(sectionHeader("Document"));
+
+  // Zoom, as a number you can type. The gestures are the everyday way in and
+  // this is the one that can be *read*: a reader who pinched to something they
+  // liked has nowhere else to find out what it was, and one who wants exactly
+  // 140% cannot pinch to it. Writes through `applyZoom` rather than straight to
+  // config, so the panel and the pill are the same control seen twice.
+  const zoomRow = document.createElement("div");
+  zoomRow.className = "st-row";
+  zoomRow.innerHTML =
+    `<span class="lbl">Zoom` +
+    `<span class="sub">How large the document is drawn, ${ZOOM_MIN}–${ZOOM_MAX}%. The tree, the stack and the ` +
+    `agent pane keep their own size. Pinch the trackpad or press ` +
+    `<b>${document.body.classList.contains("mac") ? "⌘" : "Ctrl"}</b> with <b>+</b>, <b>−</b> or <b>0</b>.</span></span>`;
+  const zoomIn = document.createElement("input");
+  zoomIn.type = "number";
+  zoomIn.min = String(ZOOM_MIN);
+  zoomIn.max = String(ZOOM_MAX);
+  zoomIn.step = "10";
+  zoomIn.value = String(settings.config.ui.zoom ?? ZOOM_DEFAULT);
+  zoomIn.style.width = "84px";
+  zoomIn.onchange = async () => {
+    // `applyZoom` clamps and paints; the field is then set from what it
+    // actually did, so a typed 900 snaps back to 300 in front of the reader
+    // rather than sitting there disagreeing with the document.
+    applyZoom(zoomIn.value, { persist: false });
+    zoomIn.value = String(zoomPct);
+    await applyPatch({ ui: { zoom: zoomPct } });
+  };
+  zoomRow.appendChild(zoomIn);
+  box.appendChild(zoomRow);
+
   const printRow = document.createElement("div");
   printRow.className = "st-row";
   printRow.innerHTML =

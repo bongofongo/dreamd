@@ -213,7 +213,11 @@ to the crate version, verified.
    rather than escaping if either could break out.
 4. **Escape, don't execute.** Raw HTML in markdown is escaped. External links are
    restricted to `http`/`https`/`mailto`; relative images must resolve inside the repo
-   root.
+   root. That last one is enforced twice, in two layers that cannot cover for
+   each other: `ui/paths.js` decides which `<img src>` becomes a URL at all, and
+   the `asset://` protocol's scope decides what the process will open. The CSP
+   carries no `file:` — an image reaches the page through the asset protocol or
+   not at all.
 5. **Themeable to the CSS level.** A theme is `ui/theme.css` (base rules) plus a palette
    from `ui/themes/*.css` or `~/.config/dreamd/themes/*.css`. A palette is a *family*:
    a bare `:root` of shared type metrics plus `:root[data-mode="light"]` and
@@ -266,7 +270,15 @@ the upgrade procedure.
   `/w/notes` rejects `/w/notes-private`). They live here rather than in the
   `open_external`/`delete_file` commands *because `main.rs` cannot be imported* —
   in `main.rs` the tenets were enforced by code no test could reach.
-  `ui/paths.js` is the frontend twin, for relative links and images.
+  `ui/paths.js` is the frontend twin, for relative links and images. The
+  *image* half of that twin has a second enforcement point with no code in
+  common: `main.rs`'s `allow_asset_root` opens the `asset://` scope on the repo
+  root and on nothing else, at `.setup()` and again in `adopt_root`. It never
+  *forbids* the old root — a forbid outranks every later allow for the life of
+  the process, so returning to a repo would find its images dead — and nothing
+  can reach the leftover permission anyway, because the only paths that ever
+  become `asset://` are the ones `interceptLinks` resolved inside the root that
+  is open now.
 - `untrusted` — tenet 6's enforcement, in the library for the same reason `guard` is.
   `delimit` **labels** a body rather than filtering it — a user's own words are the
   evidence the whole highlight loop exists to carry, and an instruction can be spelled
@@ -354,6 +366,15 @@ the upgrade procedure.
   number costs a nearest-usable panel, not the rest of the file. The pane keeps a
   width *and* a height because its drag handle changes axis with `agent.position`:
   one shared key would reinterpret a tall bottom pane as a wide right one.
+  `ui.zoom` (50–300, percent) is clamped the same way and is the fifth size,
+  but the only one about the *document*: it multiplies `--font-size` **and**
+  `--content-width`, so the measure in characters is what stays constant and
+  the prose reflows instead of growing a scrollbar. Deliberately not
+  `WebviewWindow::set_zoom` — that scales the chrome too and moves every rect
+  the placement code measures. A repo may set it, next to the four sizes and
+  `titlebar_fade`, and unlike them the frontend re-reads it on `repo-changed`:
+  it is a claim about the *material*, where a panel width is a claim about the
+  reader's window.
   `agent.position` defaults to `right`, and the reason is the stack: both panels
   dock to the same edge, so sending from the stack panel is a *substitution* —
   the queue closes, the pane opens where it was — rather than a jump across the
@@ -642,6 +663,26 @@ derive a see-through `--bg` — that matters, `color-mix` is Safari 16.2 and
 `minimumSystemVersion` is 10.15. A consequence: the scroller is 38px *taller*
 than `#main-wrap` in this mode, so a geometry assertion meaning "full height"
 must measure against the wrapper.
+
+**Zoom is one custom property, and the chrome is not in it.** `--zoom` on
+`<html>` (inline, so it outranks any palette's `:root`) times two inline
+`calc()`s on `#content` — `font-size` and `max-width` — plus one rule for
+images. Inline on `#content` because theme.css sets `font` there as a shorthand
+and is injected *after* index.html's stylesheet, so a rule there loses to every
+palette; and written as calcs over the variable so a pinch is one property write
+rather than a walk of the document. Images are the one thing in a rendered
+document sized in device pixels rather than `em`, which is why `measureImage`
+records `--img-w` per image and the `[data-w]` rule multiplies it — without that
+the diagram the reader zoomed in for is the only thing that would not have
+grown. The three ways in (trackpad, `Cmd`/`Ctrl` `+`/`−`/`0`, the pill and the
+settings field) all land in `applyZoom`; the keys are claimed **above** Escape
+and above the overlay guard, because a panel you cannot read is the case for
+zooming rather than a reason to be denied it. The wheel and gesture handlers are
+on `window` and preventDefault unconditionally: a pinch WebKit handles itself
+zooms the whole webview, chrome included, and dreamd has no control that undoes
+that. The image viewer (`#lightbox`) claims the same keys while it is open and
+zooms the image instead; `@media print` sets `--zoom: 1 !important`, an author
+`!important` being the one thing that outranks the inline style.
 
 **Do not add `backdrop-filter` to that bar.** Preview and the Claude desktop app
 blur what passes under theirs, and it was tried here: **+38% renderer main-thread

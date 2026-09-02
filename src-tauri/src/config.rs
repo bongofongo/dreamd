@@ -229,6 +229,23 @@ pub struct Ui {
     #[serde(deserialize_with = "de_clamped::<_, { PANE_HEIGHT_MIN }, { PANE_HEIGHT_MAX }>")]
     pub pane_height: u32,
 
+    /// How large the *document* is drawn, as a percentage. 100 is the palette's
+    /// own `--font-size` and `--content-width`; 150 is both of them half as big
+    /// again, so the measure in characters is what stays constant and the prose
+    /// reflows rather than growing a horizontal scrollbar.
+    ///
+    /// The document alone, never the chrome: the tree, the stack panel and the
+    /// agent pane are the same size at 300% as at 50%. That is the difference
+    /// between this and the webview's own page zoom, and it is the reason this
+    /// is a number in `[ui]` rather than a call to `WebviewWindow::set_zoom` —
+    /// a reader who wants bigger prose is not asking for a bigger sidebar.
+    ///
+    /// Clamped on the way in like the four sizes above, and for the same
+    /// reason: a pinch that outran the range costs the nearest readable
+    /// document, not a rejected config file.
+    #[serde(deserialize_with = "de_zoom")]
+    pub zoom: u32,
+
     /// Whether the window draws the native menubar — File / Edit / Help on
     /// Linux, and nothing at all on macOS, where the bar belongs to the
     /// application rather than to the window and cannot be hidden per-window.
@@ -292,6 +309,13 @@ pub const PANE_HEIGHT_DEFAULT: u32 = 240;
 pub const PANE_HEIGHT_MIN: u32 = 120;
 pub const PANE_HEIGHT_MAX: u32 = 1200;
 
+/// Document zoom, in percent. The range is the same one every browser offers,
+/// and for the same reason: below 50% the prose is decoration and above 300%
+/// the measure is a handful of words per line whatever the window is doing.
+pub const ZOOM_DEFAULT: u32 = 100;
+pub const ZOOM_MIN: u32 = 50;
+pub const ZOOM_MAX: u32 = 300;
+
 /// macOS keeps its titlebar; nothing else does.
 ///
 /// The asymmetry is real, not taste: `tauri.conf.json` asks for
@@ -328,6 +352,7 @@ impl Default for Ui {
             stack_width: STACK_WIDTH_DEFAULT,
             pane_width: PANE_WIDTH_DEFAULT,
             pane_height: PANE_HEIGHT_DEFAULT,
+            zoom: ZOOM_DEFAULT,
             menubar: false,
             titlebar: TITLEBAR_DEFAULT,
             titlebar_fade: TITLEBAR_FADE_DEFAULT,
@@ -347,6 +372,13 @@ where
     D: serde::Deserializer<'de>,
 {
     Ok(u32::deserialize(de)?.clamp(MIN, MAX))
+}
+
+fn de_zoom<'de, D>(de: D) -> Result<u32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(u32::deserialize(de)?.clamp(ZOOM_MIN, ZOOM_MAX))
 }
 
 /// The user's appearance preference. [`Mode::System`] is not a thing CSS can be
@@ -724,9 +756,13 @@ impl Config {
 ///   settings panel to get the frame back. The pair travels together: one key
 ///   deciding your chrome is the shape of the problem, not the direction.
 ///
-/// `agent.position`, `agent.surface`, `agent.popout`, `ui.titlebar_fade` and the
-/// four `ui` sizes — `tree_width`, `stack_width`, `pane_width`, `pane_height` —
-/// are left alone: they move furniture *inside* the window and read nothing.
+/// `agent.position`, `agent.surface`, `agent.popout`, `ui.titlebar_fade`,
+/// `ui.zoom` and the four `ui` sizes — `tree_width`, `stack_width`,
+/// `pane_width`, `pane_height` — are left alone: they move furniture *inside*
+/// the window and read nothing. `zoom` is the newest of them and belongs with
+/// the sizes rather than with the frame: a repo of dense reference material
+/// asking to be drawn a size larger takes nothing away, is visible the instant
+/// it applies, and stops applying the moment you open another repo.
 /// `titlebar_fade` sits next to a stripped key and is not one of them: it takes
 /// no button away and hides no control, it only decides whether dreamd's own bar
 /// ends at a border or a gradient, and walking to another repo undoes it.
@@ -1298,6 +1334,27 @@ mod tests {
             PANE_HEIGHT_MAX
         );
         assert_eq!(ui("[ui]\npane_height = 300\n").pane_height, 300);
+    }
+
+    #[test]
+    fn zoom_is_clamped_like_a_size_and_defaults_to_unzoomed() {
+        // The pinch gesture is continuous and the keyboard ladder is not, so
+        // both ends of this range are reachable by accident; the file holding
+        // 900 should cost a document at 300%, not a config that fails to load.
+        assert_eq!(Config::default().ui.zoom, ZOOM_DEFAULT);
+        assert_eq!(config_of("[ui]\nzoom = 0\n").ui.zoom, ZOOM_MIN);
+        assert_eq!(config_of("[ui]\nzoom = 900\n").ui.zoom, ZOOM_MAX);
+        assert_eq!(config_of("[ui]\nzoom = 125\n").ui.zoom, 125);
+    }
+
+    #[test]
+    fn zoom_is_a_repo_local_choice_like_the_sizes_beside_it() {
+        // It moves nothing but the document's own type size, and walking to
+        // another repo undoes it — the argument `titlebar_fade` is allowed on.
+        let mut local = table("[ui]\nzoom = 125\n");
+        assert!(strip_untrusted(&mut local).is_empty());
+        let cfg = Config::deserialize(Value::Table(local)).expect("stripped config");
+        assert_eq!(cfg.ui.zoom, 125);
     }
 
     #[test]

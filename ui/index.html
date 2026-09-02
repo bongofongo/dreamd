@@ -1367,6 +1367,112 @@
         border: 1px solid var(--border, #2e2940); border-radius: 6px; padding: 5px 8px;
       }
 
+      /* Document zoom.
+       *
+       * `--zoom` is a bare multiplier on <html>, written by `applyZoom` as an
+       * inline style so it outranks any `:root` a palette carries — the same
+       * arrangement the four panel sizes use.
+       *
+       * The document's own two properties are *also* inline, on `#content`, and
+       * written once at boot as `calc()`s that read `--zoom`: theme.css sets
+       * `font` on `#content` as a shorthand and is injected after this
+       * stylesheet, so a rule here would lose the cascade to every palette. An
+       * inline property loses to nothing, and because the calc reads the
+       * variable, a pinch is one custom-property write rather than a walk of
+       * the document. See `applyZoom` in app.js.
+       *
+       * The measure scales with the type on purpose: at 200% a fixed 700px
+       * column would hold about five words a line. Growing both keeps the line
+       * length in *characters* where the theme put it, which is what a browser's
+       * page zoom does and what a reader means by "bigger". */
+
+      /* Images scale with the same multiplier, and cannot without help: an
+         `<img>` has an intrinsic pixel size and no `em` in it, so the one thing
+         on the page that would *not* have grown is the diagram the reader
+         zoomed in to look at. `--img-w` is the natural width, measured once per
+         image on load (`measureImage`); `[data-w]` is what says it has been.
+         The `max-width` still caps it at the measure, so a screenshot wider
+         than the column stays inside it at every level. */
+      #content img[data-w] {
+        width: calc(var(--img-w) * var(--zoom, 1)); height: auto; max-width: 100%;
+      }
+      /* An image big enough to be worth opening says so on hover; a small one
+         opens too, it just does not advertise. */
+      #content img { cursor: zoom-in; }
+
+      /* The zoom readout. Transient like the toast, and in the same corner
+         family, but it has buttons — so `pointer-events` stay on and it holds
+         itself open while the pointer is over it, which is what makes clicking
+         `+` three times possible. Bottom *right* rather than centre, because the
+         toast and the send bar own the middle and a zoom that hid an undo would
+         be the wrong trade. */
+      #zoom-pill {
+        position: fixed; right: 18px; bottom: 20px; z-index: 81;
+        display: flex; align-items: center; gap: 2px;
+        background: var(--btn-bg, #1f1c2b); border: 1px solid var(--border, #2e2940);
+        border-radius: 8px; padding: 3px; font-size: 12px;
+        /* `visibility` as well as `opacity`, and it is not belt and braces: an
+           element left at `opacity: 0` with a transition on it is still a live
+           compositing layer, and this one sits over the scroller for the whole
+           session. Measured at +41% composite time on the 2MB scroll scenario
+           (Chromium-relative). `visibility` is transitionable — it flips at the
+           end of the fade out, and immediately on the way in — so the fade
+           survives being free. */
+        opacity: 0; visibility: hidden;
+        transition: opacity 0.18s, visibility 0.18s; pointer-events: none;
+      }
+      #zoom-pill.show {
+        opacity: 1; visibility: visible; pointer-events: auto;
+        transition: opacity 0.18s, visibility 0s;
+      }
+      #zoom-pill button {
+        font: inherit; background: none; border: none; color: inherit; cursor: pointer;
+        border-radius: 5px; padding: 3px 7px; line-height: 1.2;
+      }
+      #zoom-pill button:hover { background: var(--hover, #2a2635); }
+      #zoom-pill #zoom-pct { min-width: 52px; font-variant-numeric: tabular-nums; opacity: 0.85; }
+
+      /* The image lightbox. A `.modal-overlay` in spirit — same scrim, same
+         `.open` convention — but its own element because the modals centre a
+         card with padding and this one is the whole window: the image is the
+         dialog. */
+      #lightbox {
+        position: fixed; inset: 0; z-index: 90; display: none;
+        background: rgba(0, 0, 0, 0.82); overflow: hidden;
+        align-items: center; justify-content: center;
+      }
+      #lightbox.open { display: flex; }
+      /* `transform` rather than width/height: panning and zooming a loaded
+         bitmap is then a composited property, so a drag across a 4000px
+         screenshot does not relayout the page behind it. `will-change` is
+         deliberately absent — the element exists only while the viewer is
+         open. */
+      #lightbox img {
+        max-width: none; max-height: none; transform-origin: 0 0;
+        cursor: grab; user-select: none; -webkit-user-drag: none;
+      }
+      #lightbox.dragging img { cursor: grabbing; }
+      #lightbox-bar {
+        position: absolute; bottom: 18px; left: 50%; transform: translateX(-50%);
+        display: flex; align-items: center; gap: 2px; font-size: 12px;
+        background: var(--btn-bg, #1f1c2b); border: 1px solid var(--border, #2e2940);
+        border-radius: 8px; padding: 3px;
+      }
+      #lightbox-bar button {
+        font: inherit; background: none; border: none; color: inherit; cursor: pointer;
+        border-radius: 5px; padding: 3px 8px; line-height: 1.2;
+      }
+      #lightbox-bar button:hover { background: var(--hover, #2a2635); }
+      #lightbox-pct { min-width: 52px; text-align: center; font-variant-numeric: tabular-nums; opacity: 0.85; }
+      /* The name of the file being looked at, top left, because a lightbox with
+         no chrome at all gives a reader no way to tell two similar diagrams
+         apart. */
+      #lightbox-name {
+        position: absolute; top: 16px; left: 18px; right: 18px; font-size: 12px;
+        opacity: 0.65; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        pointer-events: none;
+      }
+
       /* toast */
       #toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--btn-bg, #1f1c2b); border: 1px solid var(--border, #2e2940); border-radius: 8px; padding: 10px 16px; opacity: 0; transition: opacity 0.2s; z-index: 80; pointer-events: none; }
       #toast.show { opacity: 1; }
@@ -1549,9 +1655,18 @@
         #titlebar, #drag-strip, #sidebar, #btn-expand,
         #outline-panel, #stack-panel, #stale-rail, #find-bar, #pty-pane,
         #pane-resize, #agent-popout,
-        #file-menu, #tooltip, #toast, #resize-hint,
+        #file-menu, #tooltip, #toast, #resize-hint, #zoom-pill, #lightbox,
         #palette-overlay, .modal-overlay,
         button.code-copy { display: none !important; }
+
+        /* Zoom is a reading preference and paper has its own measure: a reader
+           at 200% is asking for larger type *on this screen*, not for a PDF
+           whose every page holds four paragraphs. One declaration undoes all
+           three consumers — `#content`'s size, its measure, and every image —
+           because they all read this variable; `!important` because an author
+           `!important` is the one thing that outranks the inline style
+           `applyZoom` writes. */
+        :root { --zoom: 1 !important; }
 
         /* 4. The document itself.
 
@@ -1961,6 +2076,29 @@
       <span class="k">Esc</span><span>cancel</span>
     </div>
     <div id="toast"></div>
+
+    <!-- The zoom readout. The percentage is a button: clicking it is "back to
+         100%", which is the one zoom command worth a target of its own. -->
+    <div id="zoom-pill" aria-live="polite">
+      <button id="zoom-out" data-tip="Zoom out">&minus;</button>
+      <button id="zoom-pct" data-tip="Reset to 100%">100%</button>
+      <button id="zoom-in" data-tip="Zoom in">+</button>
+    </div>
+
+    <!-- The image viewer. Empty until an image is clicked; `openLightbox`
+         fills the `src` from the one already resolved in the document, so the
+         viewer never resolves a path of its own and cannot reach anything
+         `interceptLinks` refused. -->
+    <div id="lightbox" role="dialog" aria-modal="true" aria-label="Image viewer">
+      <img id="lightbox-img" alt="" />
+      <div id="lightbox-name"></div>
+      <div id="lightbox-bar">
+        <button id="lb-out" data-tip="Zoom out">&minus;</button>
+        <button id="lb-pct" data-tip="Fit to window">100%</button>
+        <button id="lb-in" data-tip="Zoom in">+</button>
+        <button id="lb-close" data-tip="Close">Close</button>
+      </div>
+    </div>
 
     <!-- `defer` scripts run in document order, so paths.js is defined before
          app.js first calls it. Separate file so `node --test` can drive the

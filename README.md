@@ -187,10 +187,10 @@ See `perf/README.md` for what each tier measures and how much to trust it.
 - **Open a file:** click it in the tree, or open the fuzzy palette.
 - **File options:** hover a file row and click `⋯` → **Copy path** or **Delete** (delete moves it to the OS Trash after a confirm).
 - **Collapse the tree:** press `Ctrl+B`, or click the `◀` arrow in the tree header; a floating `▶` at the left edge brings it back. The preview stays full-width.
-- **Top bar** (on the traffic-light row): contents, print, settings,
-  highlighter, stack and send — all icons.
-- **Print / save as PDF:** the printer icon opens your OS print dialog over the
-  open document; pick **Save as PDF** as the destination to export it. What
+- **Top bar** (on the traffic-light row): contents, agent pane, settings,
+  highlighter, copy, stack and send — all icons.
+- **Print / save as PDF:** Settings → Window → **Print…** opens your OS print
+  dialog over the open document; pick **Save as PDF** as the destination to export it. What
   prints is the document alone — no sidebar, no panels, no copy buttons, black
   on white whatever theme you read in, and the whole file however far down it
   you had scrolled. Highlights print as plain text: they are session state, and
@@ -225,6 +225,16 @@ See `perf/README.md` for what each tier measures and how much to trust it.
   links that resolve outside the repo root, or to something that isn't markdown,
   are ignored rather than handed to the OS. `http(s)` and `mailto:` links open
   in your browser or mail client.
+- **Images:** `![alt](diagram.png)` renders, resolved relative to the file and
+  loaded only if it lands inside the repo root — a path that climbs out with
+  `../` is dropped rather than fetched. Click one to open it over the window:
+  scroll or pinch to zoom, drag to pan, double-click to swap between fit and
+  1:1, `Esc` to close.
+- **Zoom the document:** pinch the trackpad, or `Cmd`/`Ctrl` with `+`, `−` and
+  `0`, or type a percentage into Settings → Window. 50–300%, and the tree, the
+  stack and the agent pane keep their own size at every level — only the
+  document grows, measure and images with it, so the line length in characters
+  stays where your theme put it. It persists per repo in `[ui] zoom`.
 - **Highlight → annotate:** select text in the preview, press the highlight key,
   type a question/comment, "Add to stack".
 - **Send:** press the send key (or the toolbar **Send ▸**) to push the whole
@@ -270,6 +280,7 @@ shell command.
 | Jump to the mark            | `'`                        |
 | Jump back / forward         | `Ctrl+[` / `Ctrl+]`        |
 | Open settings               | `Ctrl+,`                   |
+| Zoom in / out / reset       | `Cmd`/`Ctrl` + `+` / `−` / `0` |
 
 Select text (a normal OS selection) and press `h` to turn it into a dreamd
 highlight and add an annotation. The highlighter-icon **mode** is optional: when
@@ -280,6 +291,12 @@ falls back to the normal OS copy.
 The first two are native menu items, not dreamd keybinds, and they are not
 rebindable. They do not collide with `Ctrl+O`: modifier matching is exact, so a
 `⌘` chord never reaches a `Ctrl` binding.
+
+The zoom trio is not rebindable either, and for a different reason: it is the
+platform's combo rather than dreamd's, and each one covers several physical keys
+(`=` and `+`; `-` and `_`; the numeric keypad) that a single recorded shortcut
+could not. It is claimed above every other binding, so it works with a panel or
+the image viewer open — where, with the viewer up, it zooms the image instead.
 
 **The mark** is vim's, cut down to one: `m` remembers the file you are reading
 and where you are in it, `'` returns there — from anywhere, including a
@@ -301,7 +318,7 @@ alias kept from before keybinds were configurable; turn it off with
 
 ## Settings
 
-`Ctrl+,` (or the gear in the titlebar) opens the settings panel. Three tabs:
+`Ctrl+,` (or the gear in the titlebar) opens the settings panel. Four tabs:
 
 - **Keys** — click a shortcut to record a new one. A picker at the top spells
   the primary modifier three ways — Ctrl, Cmd, or none at all (`Ctrl+F` becomes
@@ -309,6 +326,10 @@ alias kept from before keybinds were configurable; turn it off with
   Duplicates are flagged, and a shortcut a repo-local `.dreamd.toml` overrides
   is marked as such, so the panel never claims a change took effect when it
   didn't.
+- **Window** — the chrome the platform draws (the native menubar, the WM's
+  titlebar, and on macOS whether dreamd's own bar fades), which agent surface
+  the pane runs and where it is drawn, plus two things about the document
+  itself: **Zoom** as a typed percentage, and **Print**.
 - **Themes** — a Light / Dark / System toggle, then every bundled and saved
   theme with a swatch. The toggle is independent of the theme, since every
   theme ships both; the swatch shows the appearance you are currently in. Click
@@ -385,12 +406,15 @@ pane_height = 240                        # ...and docked bottom, 120–1200
 menubar = false                          # the native File / Edit / Help bar
 titlebar = false                         # the WM's bar; defaults on (and inert) on macOS
 titlebar_fade = true                     # macOS only: dissolve dreamd's own top bar
+zoom = 100                               # document zoom in percent, 50–300
 ```
 
 The four sizes are where your drag handles left them, and a number outside the
 range is clamped rather than rejected — a stale width costs you the nearest
 usable panel, not the rest of the file. The pane keeps a width *and* a height
-because its handle changes axis with `position`.
+because its handle changes axis with `position`. `zoom` is clamped the same way
+and is where the last pinch or `Cmd`/`Ctrl`+`+` left it; it scales the document
+only, never the chrome.
 
 The chrome keys live under Settings → Window, where they apply immediately.
 `menubar` is off everywhere and read on Linux only — on macOS the menubar
@@ -420,7 +444,9 @@ arbitrary file on your disk — and it cannot set `agent.permission_mode`, for t
 same reason: a repo you have not read yet does not get to decide what your agent
 may do without asking. Nor `ui.menubar` or `ui.titlebar`: your window frame is
 part of your desktop, and a repo that could take the close button off it is not
-setting a preference. It may still resize the tree.
+setting a preference. It may still resize the tree, and it may set `ui.zoom` —
+dense reference material asking to be drawn a size larger takes nothing away,
+and walking to another repo undoes it.
 
 From the shell:
 
