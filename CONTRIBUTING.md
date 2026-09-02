@@ -91,8 +91,10 @@ node perf/harness/ui-check.mjs
 
 **Two honest caveats about coverage.** `ui-check.mjs` asserts what the page
 *knows*, not what it *paints* — it cannot catch a WebKit rendering bug, and the
-GUI is verified by hand. And numbers out of `perf/harness/` are Chromium, not
-WKWebView; they are a relative regression signal only, so say so if you quote one.
+GUI is verified by hand. If your change touches how a document is drawn, open
+`testdocs/images.md` in dreamd and work down it; it lists what to look at. And
+numbers out of `perf/harness/` are Chromium, not WKWebView; they are a relative
+regression signal only, so say so if you quote one.
 
 ## Style
 

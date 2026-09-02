@@ -67,7 +67,8 @@ harnesses above still own what a unit test cannot reach (corpus anchoring,
 config layering + write-back, the bundled palettes, the MCP transport, the marks
 file on disk) and each exits non-zero on failure. **The GUI itself is
 verified only by hand** — `ui-check.mjs` asserts what the page knows, not what it
-paints; don't claim coverage beyond that.
+paints; don't claim coverage beyond that. `testdocs/images.md` is what that hand
+check reads: open dreamd on this repo and work down it, at 100% and zoomed.
 
 `packaging/smoke.sh` is the one check that *launches* the program. Under Xvfb,
 in its own fixture repo with `XDG_CONFIG_HOME` pointed at a scratch directory,
@@ -921,6 +922,12 @@ In this repo:
 - `.claude/upkeep/ledger.md` and `.claude/upkeep/findings/` — the nightly
   Routine's two outputs; see Working practices. Tracked here because that job's
   checkout is this repo and nothing else.
+- `testdocs/images.md` — the hand-verification document for image rendering and
+  document zoom, with `testdocs/images/` beside it: one generated source at
+  seven sizes, aspects and JPEG qualities, plus four references that must
+  *fail*. Tracked, and the only committed images outside `src-tauri/icons/`,
+  because a fixture a fresh clone does not have is a check nobody runs. Not
+  shipped — the bundle is `frontendDist`, which is `ui/`.
 
 In `notes/`:
 
