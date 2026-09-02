@@ -26,8 +26,10 @@
 //! `Separator`, `Cut`, `Copy`, `Paste`, `SelectAll`, `About` and custom items;
 //! `Undo`, `Redo`, `Minimize`, `Maximize`, `Fullscreen`, `Hide`, `HideOthers`,
 //! `ShowAll`, `Services`, `CloseWindow` and `Quit` are silently skipped rather
-//! than rendered dead. Handing GTK the macOS menu would therefore produce a
-//! "dreamd" submenu with nothing in it and a Window submenu with nothing in it.
+//! than rendered dead. Handing GTK the macOS menu would therefore produce a View
+//! submenu with nothing in it at all and a Window submenu holding one separator.
+//! (The "dreamd" submenu would survive as its About item and three separators —
+//! About is on the admitted list — which is no better a bar to ship.)
 //!
 //! So Linux gets what GTK can actually draw: File, Edit, Help. Window management
 //! is the window manager's job there anyway, and Quit is the titlebar's.
