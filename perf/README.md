@@ -69,10 +69,18 @@ perf/
 
 ## The corpus
 
-`node perf/corpus/gen.mjs` builds ~21MB of deterministic fixtures: four document
-variants (`prose`, `code`, `table`, `mixed`) at 8KB / 128KB / 512KB / 2MB, synthetic
-repos of 10 / 500 / 5000 markdown files, and highlight sets of 1 / 10 / 100 / 500.
-`--stress` adds 8MB documents.
+`node perf/corpus/gen.mjs` builds ~24MB of deterministic fixtures: five document
+variants (`prose`, `code`, `table`, `mixed`, `images`) at 8KB / 128KB / 512KB /
+2MB, synthetic repos of 10 / 500 / 5000 markdown files, and highlight sets of
+1 / 10 / 100 / 500. `--stress` adds 8MB documents.
+
+`images` is prose carrying image references at about the density of a
+documentation page, against four small PNGs in `docs/img/` that the generator
+encodes itself. It is **last** in the variant list on both sides — `gen.mjs` and
+`benches/common.rs` — because documents are seeded in that order, so anything
+inserted above it would renumber the sixteen documents every recorded number was
+measured against. Its own rows are new and the baseline has none until a deep
+tier records them.
 
 It is seeded and byte-identical across runs, which is the whole point: a benchmark
 number is only comparable if its input is. `manifest.json` records every file's

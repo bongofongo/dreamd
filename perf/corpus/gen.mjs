@@ -122,6 +122,136 @@ done`,
 };
 const LANGS = Object.keys(CODE);
 
+// ---- images --------------------------------------------------------------
+//
+// Real PNG bytes rather than a placeholder, because a corpus image that cannot
+// decode measures nothing: `measureImage` skips a broken image deliberately
+// (`width: calc(0px * z)` would collapse the alt text), so a fake file would
+// exercise the one path that does the least work.
+//
+// The encoder writes **stored** deflate blocks instead of calling `zlib`. The
+// whole premise of this file is that two machines produce identical bytes, and
+// zlib's compressed output is a property of whichever zlib Node was linked
+// against — a difference there would not corrupt anything, but it would make
+// the committed manifest disagree with a correct clone and regenerate ~11MB on
+// every run. A stored block is defined by the format, not by an encoder.
+//
+// That costs size, which is why every corpus image is tiny. Their dimensions
+// differ so that `--img-w` has something to scale differently, and nothing
+// downstream decodes them for their content: the Chromium scenarios are served
+// pre-rendered HTML, so these exist for the Rust render path, the frontend's
+// per-image work, and anyone opening the corpus in a real window.
+
+const CRC_TABLE = (() => {
+  const t = new Int32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    t[n] = c;
+  }
+  return t;
+})();
+
+function crc32(buf) {
+  let c = ~0;
+  for (const b of buf) c = CRC_TABLE[(c ^ b) & 0xff] ^ (c >>> 8);
+  return ~c >>> 0;
+}
+
+function adler32(buf) {
+  let a = 1;
+  let b = 0;
+  for (const byte of buf) {
+    a = (a + byte) % 65521;
+    b = (b + a) % 65521;
+  }
+  return ((b << 16) | a) >>> 0;
+}
+
+/** A zlib stream of stored (BTYPE=00) blocks — no compression, no encoder. */
+function zlibStored(data) {
+  const parts = [Buffer.from([0x78, 0x01])];
+  const MAX = 65535;
+  for (let off = 0; off < data.length || off === 0; off += MAX) {
+    const chunk = data.subarray(off, off + MAX);
+    const last = off + MAX >= data.length ? 1 : 0;
+    const head = Buffer.alloc(5);
+    head[0] = last;
+    head.writeUInt16LE(chunk.length, 1);
+    head.writeUInt16LE(~chunk.length & 0xffff, 3);
+    parts.push(head, Buffer.from(chunk));
+    if (last) break;
+  }
+  const out = Buffer.concat(parts);
+  const tail = Buffer.alloc(4);
+  tail.writeUInt32BE(adler32(data), 0);
+  return Buffer.concat([out, tail]);
+}
+
+function pngChunk(type, data) {
+  const len = Buffer.alloc(4);
+  len.writeUInt32BE(data.length, 0);
+  const body = Buffer.concat([Buffer.from(type, "ascii"), data]);
+  const crc = Buffer.alloc(4);
+  crc.writeUInt32BE(crc32(body), 0);
+  return Buffer.concat([len, body, crc]);
+}
+
+/**
+ * An 8-bit RGB PNG of `w`×`h`, painted by `px(x, y) -> [r, g, b]`.
+ *
+ * Filter byte 0 (None) on every scanline: the point is bytes a decoder accepts,
+ * not bytes a decoder finds small.
+ */
+function png(w, h, px) {
+  const raw = Buffer.alloc(h * (1 + w * 3));
+  let i = 0;
+  for (let y = 0; y < h; y++) {
+    raw[i++] = 0;
+    for (let x = 0; x < w; x++) {
+      const [r, g, b] = px(x, y);
+      raw[i++] = r;
+      raw[i++] = g;
+      raw[i++] = b;
+    }
+  }
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(w, 0);
+  ihdr.writeUInt32BE(h, 4);
+  ihdr[8] = 8; // bit depth
+  ihdr[9] = 2; // colour type: truecolour
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    pngChunk("IHDR", ihdr),
+    pngChunk("IDAT", zlibStored(raw)),
+    pngChunk("IEND", Buffer.alloc(0)),
+  ]);
+}
+
+/**
+ * The corpus image set. Four files, deliberately few: a document referencing
+ * the same diagram twenty times is what a real repo looks like, and twenty
+ * distinct files would only make the corpus bigger without exercising anything
+ * new. The aspect ratios are the spread that matters — square, landscape,
+ * portrait and a one-pixel-tall rule — because that is what decides how a
+ * zoomed image reflows the prose around it.
+ */
+const IMAGES = [
+  { name: "icon-16.png", w: 16, h: 16 },
+  { name: "figure-96x64.png", w: 96, h: 64 },
+  { name: "portrait-48x120.png", w: 48, h: 120 },
+  { name: "rule-256x2.png", w: 256, h: 2 },
+];
+
+/** A checkerboard with a solid border — visibly wrong if a decoder mangles it. */
+function checker(w, h) {
+  return png(w, h, (x, y) => {
+    if (x === 0 || y === 0 || x === w - 1 || y === h - 1) return [220, 60, 60];
+    const on = ((x >> 2) + (y >> 2)) % 2 === 0;
+    return on ? [235, 235, 235] : [70, 90, 140];
+  });
+}
+
 // ---- block builders ------------------------------------------------------
 
 function sentence(r, n = int(r, 8, 20)) {
@@ -176,6 +306,34 @@ function tableBlock(r) {
   return [head, sep, ...body].map((c) => `| ${c.join(" | ")} |`).join("\n");
 }
 
+/**
+ * A block bearing one image, in the shapes a real document uses.
+ *
+ * The path is `img/<name>`, a plain relative reference with no `../` in it —
+ * climbing out of the root is the one thing the containment guard refuses, and
+ * a corpus where every image sits on that boundary would benchmark the refusal
+ * rather than the load. Two shapes below do climb out, on purpose and rarely,
+ * so the refusal is represented without dominating.
+ */
+function imageBlock(r) {
+  const img = pick(r, IMAGES);
+  const alt = `${pick(r, WORDS)} ${pick(r, WORDS)}`;
+  const roll = r();
+  // A figure: the common case, an image alone in its own block.
+  if (roll < 0.4) return `![${alt}](img/${img.name})`;
+  // With a title attribute — a second string pulldown-cmark has to carry.
+  if (roll < 0.55) return `![${alt}](img/${img.name} "${sentence(r, 5)}")`;
+  // Inline, mid-sentence. This is the one that interacts with highlighting:
+  // the image is a node inside the paragraph a reader selects across.
+  if (roll < 0.72) return `${sentence(r, 8)} ![${alt}](img/${img.name}) ${sentence(r, 6)}`;
+  // Linked, which is an `<a>` wrapping an `<img>` — two intercepts on one node.
+  if (roll < 0.84) return `[![${alt}](img/${img.name})](https://example.com/${pick(r, WORDS)})`;
+  // Remote. Never fetched by the guard's rules, but it is what a README holds.
+  if (roll < 0.92) return `![${alt}](https://example.com/${pick(r, WORDS)}.png)`;
+  // Refused: enough `../` to leave the repo. The frontend strips the `src`.
+  return `![${alt}](../../../${pick(r, WORDS)}.png)`;
+}
+
 const VARIANTS = {
   // Isolates pulldown-cmark: no fenced blocks at all.
   prose: (r) => proseBlock(r),
@@ -190,6 +348,12 @@ const VARIANTS = {
     if (roll < 0.25) return tableBlock(r);
     return proseBlock(r);
   },
+  // Prose carrying images at about the density of a documentation page — one
+  // per dozen-or-so blocks, not a gallery. Appended **last** deliberately:
+  // `generate()` hands out seeds in `Object.keys` order, so a variant inserted
+  // anywhere above this line would renumber every document below it and change
+  // bytes that every recorded benchmark number was measured against.
+  images: (r) => (r() < 0.08 ? imageBlock(r) : proseBlock(r)),
 };
 
 const SIZES = {
@@ -385,6 +549,11 @@ function generate() {
     }
   }
 
+  // The image set the `images` variant references. Written once and shared by
+  // every size, because the documents reference them by the same relative path
+  // and `docs/img/` is where that path lands.
+  for (const img of IMAGES) emit(join("docs", "img", img.name), checker(img.w, img.h));
+
   // Highlight sets are sampled from the 2MB mixed document — the size where
   // the per-highlight cost in locate_normalized actually bites.
   const base = docs["mixed-2m"];
@@ -413,7 +582,11 @@ function generate() {
     // the inputs whose exact bytes determine every benchmark number. The
     // synthetic repos only matter in aggregate — they're walked and counted,
     // never parsed — so they're summarized rather than enumerated.
-    docs: written.filter((f) => f.path.startsWith("docs/")),
+    // `docs` stays the markdown alone. The images are listed beside it rather
+    // than folded in: they are an input whose bytes matter the same way, but a
+    // reader comparing two manifests wants to see at a glance which half moved.
+    docs: written.filter((f) => f.path.startsWith("docs/") && f.path.endsWith(".md")),
+    images: written.filter((f) => f.path.startsWith("docs/img/")),
     highlights: written.filter((f) => f.path.startsWith("highlights/")),
     repos: Object.entries(
       written.filter((f) => isRepo(f.path)).reduce((acc, f) => {

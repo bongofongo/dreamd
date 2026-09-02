@@ -1,9 +1,9 @@
 {
   "generator": 3,
   "stress": false,
-  "fileCount": 5536,
-  "totalBytes": 22234775,
-  "digest": "8479540296c5b684264b0d4b78a972d757c9ac6c01596f49e3490047768b8911",
+  "fileCount": 5544,
+  "totalBytes": 25034459,
+  "digest": "2da66d380a3c5f023ff7791b445ff121ec000785e18b56c45f6a4e644725e2a1",
   "docs": [
     {
       "path": "docs/code-128k.md",
@@ -24,6 +24,26 @@
       "path": "docs/code-8k.md",
       "bytes": 8574,
       "sha256": "f2afb1c383ae1a3d5246dffcb6b3355c6ed9ac1c765417c694badbca46d0d61c"
+    },
+    {
+      "path": "docs/images-128k.md",
+      "bytes": 131138,
+      "sha256": "53099e408a28e62c212efb0201c39af96a72c403d12761c39fdbb55ae94ce7af"
+    },
+    {
+      "path": "docs/images-2m.md",
+      "bytes": 2097304,
+      "sha256": "d8c9fd5565b95bc062031ea8061ec15e25a0b828c2eff0510b338d110ef25021"
+    },
+    {
+      "path": "docs/images-512k.md",
+      "bytes": 524396,
+      "sha256": "af5e063d62672f546949040df86c81dece845451e0a57733de6b893a1f794156"
+    },
+    {
+      "path": "docs/images-8k.md",
+      "bytes": 8356,
+      "sha256": "98fa67ab6df854dcf4826d3b9ac0d1d32e24044a46d6458f150d94c3e70e3030"
     },
     {
       "path": "docs/mixed-128k.md",
@@ -84,6 +104,28 @@
       "path": "docs/table-8k.md",
       "bytes": 8809,
       "sha256": "58dae4af7da38f042b2da06c9123795e91b8d845c03414959febd282e101400b"
+    }
+  ],
+  "images": [
+    {
+      "path": "docs/img/figure-96x64.png",
+      "bytes": 18564,
+      "sha256": "fcf9d543193ee3cba91706e7c81b740ae28dfeb3003787672c828e5cb36298f8"
+    },
+    {
+      "path": "docs/img/icon-16.png",
+      "bytes": 852,
+      "sha256": "f58c92640a26a27098ecd6608ed1692218311f1f048d3c321dd247182d133e62"
+    },
+    {
+      "path": "docs/img/portrait-48x120.png",
+      "bytes": 17468,
+      "sha256": "8c420a6dd56cc7112a60caf51db94a412aacfb668519ce9ecd913fc6900f88dd"
+    },
+    {
+      "path": "docs/img/rule-256x2.png",
+      "bytes": 1606,
+      "sha256": "fd50401218d7b2692f5c7c228228eb121fedae676a33dc3aa4dfee9411a45455"
     }
   ],
   "highlights": [

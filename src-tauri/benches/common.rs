@@ -9,7 +9,10 @@
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
-pub const VARIANTS: &[&str] = &["prose", "code", "table", "mixed"];
+// `images` last, matching `gen.mjs`: the generator seeds documents in variant
+// order, so the two lists agreeing on that order is what keeps a corpus
+// regenerate from renumbering the documents every recorded number came from.
+pub const VARIANTS: &[&str] = &["prose", "code", "table", "mixed", "images"];
 pub const SIZES: &[&str] = &["8k", "128k", "512k", "2m"];
 pub const REPO_SIZES: &[usize] = &[10, 500, 5000];
 
