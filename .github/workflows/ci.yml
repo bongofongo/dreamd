@@ -1,9 +1,10 @@
 # Every push and every PR. The counterpart to release.yml, which only ever runs
 # on a tag — before this file existed nothing checked main at all.
 #
-# `pull_request` is here even though commits go straight to main today. It costs
-# nothing while unused, and it means an agent-authored branch is checked before
-# it lands rather than after.
+# `pull_request` was added while commits still went straight to main, on the
+# argument that it costs nothing unused and would check an agent-authored branch
+# before it lands rather than after. That branch now exists: the nightly upkeep
+# sweep never touches main, so every one of its diffs arrives through this trigger.
 name: ci
 
 on:
@@ -22,12 +23,16 @@ permissions:
 
 jobs:
   # Both platforms, the same steps. macOS was the only entry until Linux became
-  # a shipping target: `#[cfg(target_os = "macos")]` is now down to the
-  # NsFileManager trash context and one arm of `menu::build`, and everything
-  # else — including `adopt_root`, which carries the config reload, the re-walk,
-  # the watcher re-arm and the marks swap — compiles on both. A Linux job is what
-  # keeps that true; without it the untaken arm rots unseen, which is exactly
-  # what happened to the *Linux* arm while this job was macOS-only.
+  # a shipping target: the `#[cfg(target_os = "macos")]` surface is down to a
+  # handful of sites, and everything else — including `adopt_root`, which carries
+  # the config reload, the re-walk, the watcher re-arm, the marks flush and the
+  # socket retirement — compiles on both. A Linux job is what keeps that true;
+  # without it the untaken arm rots unseen, which is exactly what happened to the
+  # *Linux* arm while this job was macOS-only.
+  #
+  # The inventory of those sites lives in CLAUDE.md's "Platform surface" note and
+  # deliberately not here as well: this comment used to name two of them and was
+  # already a module behind by the time anyone read it.
   #
   # macos-14 matches the arm64 release runner; ubuntu-22.04 matches the Linux
   # one, and is the oldest supported image on purpose — glibc 2.35 is what keeps

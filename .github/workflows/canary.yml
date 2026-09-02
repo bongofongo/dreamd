@@ -62,17 +62,19 @@ jobs:
       # Before checkout: the checkout action needs git, and the toolchain action
       # needs curl. `--needed` keeps a warm base image cheap.
       #
-      # The first five are README's Arch line verbatim (README.md:81) rather
-      # than a translation of ci.yml's apt list — that line is what a user
-      # actually runs, so this job is also what keeps it honest. The rest is the
-      # container's own tooling, which a real Arch desktop already has:
-      # `base-devel` for the linker and pkgconf, git and curl for the two
-      # actions below, `file` and `desktop-file-utils` for the bundler.
+      # Split across two lines, and the split is the point. The first is README's
+      # Arch line verbatim (README.md:81) rather than a translation of ci.yml's
+      # apt list — that line is what a user actually runs, so this job is also
+      # what keeps it honest, and a diff against the README has to be visible
+      # here. The second is the container's own tooling, which a real Arch desktop
+      # already has: `base-devel` for the linker and pkgconf, git and curl for the
+      # two actions below, `file` and `desktop-file-utils` for the bundler, and
+      # xvfb for the two smoke steps.
       - name: System dependencies
         run: |
           pacman -Syu --noconfirm --needed \
-            base-devel git curl webkit2gtk-4.1 gtk3 librsvg openssl \
-            patchelf file desktop-file-utils xorg-server-xvfb
+            webkit2gtk-4.1 gtk3 librsvg openssl patchelf \
+            base-devel git curl file desktop-file-utils xorg-server-xvfb
 
       # linuxdeploy's gtk plugin runs a bare `cp -r /usr/lib/gdk-pixbuf-2.0/2.10.0`
       # into the AppDir and exits 1 when it is not there, which surfaces as the
@@ -139,12 +141,19 @@ jobs:
       # filesystem underneath rather than about the code: the 0600/0700 modes,
       # the atomic rename, a real Unix socket. Worth a second opinion from a
       # different distro.
+      #
+      # Keep this list identical to ci.yml's. It was four when this job was
+      # written, agent_check landed in ci.yml alone, and the two silently
+      # disagreed for a month — agent_check is the one that binds a *second*
+      # socket and runs a real `dreamd approve` against it, which is squarely the
+      # kernel-shaped class this step exists for.
       - name: Correctness harnesses
         run: |
           cargo run --example config_check
           cargo run --example theme_check
           cargo run --example mcp_check
           cargo run --example marks_check
+          cargo run --example agent_check
 
       # The reason this job exists. Two environment switches, and each is load-
       # bearing for a different reason:
