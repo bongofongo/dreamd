@@ -781,6 +781,13 @@ session was anchored against the bytes on screen and is never in it.
 **Perf instrumentation** is behind the off-by-default `perf` cargo feature. Marks go to
 **stderr** as NDJSON because `console.log` in WKWebView never reaches process stdout;
 frontend marks route through the `perf_mark` command, `d:`-prefixed phases are durations.
+**A frontend `d:ipc_*` span is not that command's cost** — it is an `await`, and the
+first `await` after `innerHTML` also carries the webview laying out the whole
+document, which is close to a second on the 2MB corpus doc and lands on whichever
+call came first. `perf::span` times the command body in Rust as `d:rust_*` so the two
+are separable: `d:ipc_get_highlights` measured 1254ms against a body of 0.0015ms.
+Forcing the layout earlier to make the span honest is not the fix — it costs first
+paint, because the layout then stops overlapping the IPC round trip.
 `--bench-startup` runs the pre-window sequence and exits; `DREAMD_PERF_SEED` preloads
 highlights from a corpus fixture.
 

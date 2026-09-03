@@ -590,24 +590,31 @@ fn remove_pair(state: State<AppState>, id: String) {
 /// right way round.
 #[tauri::command]
 fn get_highlights(state: State<AppState>, path: String) -> Vec<Highlight> {
-    // Read the file *before* taking the store lock, and only when this path is
-    // still owed a re-anchor. The guard is a `contains`, not a `remove`: a read
-    // that fails — Neovim's atomic-rename save has the file unlinked for an
-    // instant, and a `git checkout` for longer — must leave the debt standing,
-    // or the marks render at the previous session's line numbers, `Active`, for
-    // the rest of the run.
-    let owed = state.pending_reanchor.lock().unwrap().contains(&path);
-    let source = owed.then(|| read_source(&path).ok()).flatten();
-    let mut store = state.store.lock().unwrap();
-    if let Some(source) = source {
-        store.ensure_reanchored(&path, &source);
-        // Under the store lock, so the order is store -> pending_reanchor here
-        // and in `adopt_root`. The `contains` above is the only place that
-        // takes `pending_reanchor` alone, and it releases before the store lock
-        // is taken; keep it that way.
-        state.pending_reanchor.lock().unwrap().remove(&path);
-    }
-    store.for_file(&path)
+    // Timed, because the frontend's `d:ipc_get_highlights` is not this. That
+    // span is the first `await` after `innerHTML`, so it also collects the
+    // webview's deferred layout of the whole document — measured at 1248ms on
+    // the 2MB corpus doc for a body criterion puts in the single digits, and
+    // landing on a different IPC call from run to run. See `perf::span`.
+    perf::span("rust_get_highlights", || {
+        // Read the file *before* taking the store lock, and only when this path
+        // is still owed a re-anchor. The guard is a `contains`, not a `remove`:
+        // a read that fails — Neovim's atomic-rename save has the file unlinked
+        // for an instant, and a `git checkout` for longer — must leave the debt
+        // standing, or the marks render at the previous session's line numbers,
+        // `Active`, for the rest of the run.
+        let owed = state.pending_reanchor.lock().unwrap().contains(&path);
+        let source = owed.then(|| read_source(&path).ok()).flatten();
+        let mut store = state.store.lock().unwrap();
+        if let Some(source) = source {
+            store.ensure_reanchored(&path, &source);
+            // Under the store lock, so the order is store -> pending_reanchor
+            // here and in `adopt_root`. The `contains` above is the only place
+            // that takes `pending_reanchor` alone, and it releases before the
+            // store lock is taken; keep it that way.
+            state.pending_reanchor.lock().unwrap().remove(&path);
+        }
+        store.for_file(&path)
+    })
 }
 
 #[tauri::command]
@@ -626,11 +633,17 @@ fn get_highlight(state: State<AppState>, id: String) -> Option<Highlight> {
 /// loop, to persist an answer that is recomputed anyway.
 #[tauri::command]
 fn reanchor(state: State<AppState>, path: String) -> Result<Vec<Highlight>, String> {
-    let source = read_source(&path)?;
-    // This *is* the re-anchor the pending set exists to force, so nothing is
-    // owed for this path any more.
-    state.pending_reanchor.lock().unwrap().remove(&path);
-    Ok(state.store.lock().unwrap().reanchor_file(&path, &source))
+    // Timed for the same reason `get_highlights` is: this is the await the save
+    // loop yields on, so `d:ipc_reanchor` carries the re-layout of the document
+    // that was just replaced. It read 1020ms at 100 highlights against a
+    // `reanchor_today/100` bench of 64.5ms.
+    perf::span("rust_reanchor", || {
+        let source = read_source(&path)?;
+        // This *is* the re-anchor the pending set exists to force, so nothing
+        // is owed for this path any more.
+        state.pending_reanchor.lock().unwrap().remove(&path);
+        Ok(state.store.lock().unwrap().reanchor_file(&path, &source))
+    })
 }
 
 #[tauri::command]

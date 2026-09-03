@@ -137,7 +137,27 @@ These were measured, not guessed — two consecutive runs on identical code:
 |---|---|---|
 | Rust benches | ~5-12%, mixed sign | 5% / 15% |
 | Chromium scenarios | up to 27% (raster, composite) | 20% / 35% |
+| `real.loop.*` frontend awaits | **up to 640%**, bimodal | 100% / 200% |
+| `real.loop.*.rust_*` | ~1% | 5% / 15% |
 | any `.max` statistic | up to 25% | ignored entirely |
+
+**The save loop's frontend metrics are not a regression signal**, and the row
+above is measured, not cautious. Five `loop.sh --release --highlights 100
+--saves 12` runs on *identical* code gave p50s of: `save_to_paint` 1669-3369ms,
+`ipc_render_markdown` 177-1307ms, `ipc_reanchor` 1043-1581ms. The same five runs
+put `rust_reanchor_ms.p50` between 62.31 and 62.92ms.
+
+Two things stack up to cause it. Each of those metrics times an `await`, and
+whichever await yields first also absorbs the webview re-laying out the document
+— so the cost teleports between metrics from run to run (see the first gotcha
+below). And p50 is taken over the 7-9 repaints a 12-save run produces, which is
+nowhere near enough to damp a bimodal distribution. They are kept in the table
+because the save loop is the product, and an order-of-magnitude move should
+still go red; they are not something to read a 20% change out of.
+
+For real signal on this path use `rust_reanchor_ms`, the criterion benches, and
+`real.startup.*` — that one is stabilised by min-of-3 and reports its own
+`spread_ms` alongside.
 
 A threshold set below the noise floor doesn't catch more regressions — it just
 trains you to ignore the tool.
@@ -241,8 +261,22 @@ a baseline you can edit by hand is not evidence of anything.
 
 ## Gotchas worth knowing
 
-Three things bit this harness during construction, all of which would silently
+Four things bit this harness during construction, all of which would silently
 produce plausible-looking but wrong numbers:
+
+- **A frontend `d:ipc_*` span is not the cost of that IPC call.** It is the wall
+  time of an `await`, and the first `await` after `contentEl.innerHTML = html`
+  also contains the webview laying out the entire document. On the 2MB corpus
+  doc that is close to a second, and it lands on whichever IPC call happens to
+  come first — `d:ipc_get_highlights` at boot, `d:ipc_reanchor` in the save
+  loop. Measured: `d:ipc_get_highlights` reported **1254ms** while the Rust body,
+  timed by `perf::span`, took **0.0015ms**; `d:ipc_reanchor` reported 1020ms
+  against a `reanchor_today/100` bench of 64.5ms. The same work also read 276ms
+  in one run and 1248ms in another, purely on where the yield fell. Read the
+  `d:rust_*` mark beside it before concluding anything about Rust, and do not
+  "fix" the span by forcing layout earlier — tried, and it made first paint
+  *worse* (1394ms -> 1851ms), because the forced layout no longer overlaps the
+  IPC round trip.
 
 - **`grep -q` under `set -o pipefail`.** `grep -q` exits on first match, the upstream
   command dies of SIGPIPE, and the pipeline reports failure despite the match

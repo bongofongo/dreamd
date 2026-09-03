@@ -133,6 +133,12 @@ grep '"dreamd_perf"' "$STREAM" | jq -s --argjson saves "$SAVES" --argjson highli
   | ($marks | map(select(.phase == "watcher_event")) | length) as $events
   | ($marks | map(select(.phase == "d:save_to_paint") | .ms) | sort) as $paints
   | ($marks | map(select(.phase == "d:ipc_reanchor")  | .ms) | sort) as $reanchor
+  # The same call timed in Rust. ipc_reanchor is the frontend await, which on
+  # the first yield after innerHTML also carries the webview re-laying out the
+  # document it just replaced; rust_reanchor is the command body alone. The gap
+  # between them is the engine, and reporting only the first attributed about a
+  # second of layout to Rust that Rust never spent.
+  | ($marks | map(select(.phase == "d:rust_reanchor") | .ms) | sort) as $rust_reanchor
   | ($marks | map(select(.phase == "d:ipc_render_markdown") | .ms) | sort) as $render
   | ($marks | map(select(.phase == "d:apply_highlights") | .ms) | sort) as $apply
   | def pct(a; p): if (a | length) == 0 then null
@@ -148,6 +154,7 @@ grep '"dreamd_perf"' "$STREAM" | jq -s --argjson saves "$SAVES" --argjson highli
     repaints: ($paints | length),
     save_to_paint_ms:      { p50: pct($paints;   0.5), p95: pct($paints;   0.95), max: ($paints   | max) },
     ipc_reanchor_ms:       { p50: pct($reanchor; 0.5), p95: pct($reanchor; 0.95) },
+    rust_reanchor_ms:      { p50: pct($rust_reanchor; 0.5), p95: pct($rust_reanchor; 0.95) },
     ipc_render_markdown_ms:{ p50: pct($render;   0.5), p95: pct($render;   0.95) },
     apply_highlights_ms:   { p50: pct($apply;    0.5), p95: pct($apply;    0.95) }
   }

@@ -336,8 +336,17 @@
          (313ms -> 8ms at 2MB) but raises scroll main-thread time by 81%
          (10.2ms -> 18.5ms per wheel tick); scoping it to `> pre` was worse on
          both. Scrolling is the dominant interaction in a reader, so the trade
-         is not worth taking. Worth re-testing in WKWebView, where the numbers
-         may differ. */
+         is not worth taking.
+
+         The re-test in WebKit is still open and is currently *blocked*, not
+         merely undone: the layout half is easy to measure there (WebKitGTK
+         spends ~950ms laying out the 2MB doc, so the win would be larger than
+         Chromium's), but the half that killed it — scroll main-thread time —
+         cannot be. Style, paint, raster and composite all happen outside JS, so
+         timing a scroll from inside the page reports ~0; `scenarios/scroll.mjs`
+         gets its numbers from CDP renderer tracing, which is Chromium-only.
+         Deciding this in WebKit needs a way to read that engine's timeline
+         first. */
 
       /* The stale-highlight margin rail, and it now holds nothing else.
          D3's `.pend-chip` — one muted card per mark that was out with the agent,

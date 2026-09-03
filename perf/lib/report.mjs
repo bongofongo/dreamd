@@ -25,6 +25,28 @@ const HIGHER_IS_BETTER = [/\bapplied$/, /\bthroughput/];
  */
 const THRESHOLDS = [
   { match: /^chromium\./, warn: 0.2, fail: 0.35 },
+  // The save loop's frontend-await metrics are bimodal and cannot carry the
+  // default threshold. Five `loop.sh --release --highlights 100 --saves 12`
+  // runs on *identical* code gave, for p50: save_to_paint 1669-3369ms (±102%),
+  // ipc_render_markdown 177-1307ms (±640%), ipc_reanchor 1043-1581ms. The same
+  // five runs put `rust_reanchor_ms.p50` at 62.31-62.92ms — ±1%.
+  //
+  // The reason is the same one perf/README.md's gotcha describes: each of these
+  // times an `await`, and whichever await yields first also absorbs the webview
+  // re-laying out the document. Which one that is changes per run, so the cost
+  // teleports between metrics. On top of that p50 is taken over the 7-9 repaints
+  // a 12-save run produces, which is far too few to damp it.
+  //
+  // Kept visible rather than IGNOREd — this is the core product loop, and an
+  // order-of-magnitude move still deserves a red row — but flagged only well
+  // outside the measured spread. For actual regression signal use
+  // `rust_reanchor_ms`, the criterion benches, and `real.startup.*`, which is
+  // stabilised by min-of-3 and reports its own `spread_ms`.
+  {
+    match: /^real\.loop\..*\.(save_to_paint_ms|ipc_reanchor_ms|ipc_render_markdown_ms|apply_highlights_ms)\./,
+    warn: 1.0,
+    fail: 2.0,
+  },
   { match: /./, warn: 0.05, fail: 0.15 },
 ];
 
@@ -59,8 +81,14 @@ const IGNORE = [
   // and `deep` drives 12, so comparing one against the other would flag these
   // every time. `events_per_save` is the normalized figure that carries the
   // actual signal.
-  /loop\.watcher_events$/,
-  /loop\.repaints$/,
+  // Anchored past the workload key, not straight after `loop.`. These read
+  // `/loop\.watcher_events$/` and `/loop\.repaints$/`, which stopped matching
+  // anything the moment real-app metrics were keyed by build profile and
+  // highlight count — the real path is `real.loop.release-h100.repaints`, so
+  // both rules had been dead ever since while the comment above still claimed
+  // they were ignored. They were duly flagged as regressions every run.
+  /^real\.loop\..*\.watcher_events$/,
+  /^real\.loop\..*\.repaints$/,
   /scrolledPx$/,
 ];
 

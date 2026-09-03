@@ -55,6 +55,26 @@ fn code_theme(name: &str) -> Option<&'static Theme> {
     set.get(name).or_else(|| set.get(CODE_THEME))
 }
 
+/// Syntect emits one `<span style="color:…">` per token, and on the 2MB mixed
+/// corpus doc that is 43,557 spans and 4.1MB of HTML for 2MB of source. Two
+/// ways of shrinking that were measured in Chromium (n=15 per arm, a fresh page
+/// per sample, arm order alternated — reusing one page swung the same
+/// comparison by 20 points in *both* directions) and **neither is worth
+/// taking**:
+///
+/// - **Classes instead of inline styles.** Only 9 distinct style values appear
+///   in the whole document, so this is 13.1% fewer bytes. Parse -5%, layout
+///   +1%, total a wash: the bytes come back as selector matching against 44k
+///   elements, which an inline style skips entirely.
+/// - **Dropping the spans whose colour is already the theme foreground.** Those
+///   are 23,643 of the 43,557 (54%) and 20.7% of the bytes. Parse -20%, layout
+///   -4% — real, but ~34ms of a ~600ms operation, and it would require dreamd
+///   to emit and escape that markup itself. Today only syntect's own output is
+///   trusted (tenet 4), and moving the escaping here to save 4% of a cost that
+///   is dominated by text layout is the wrong trade.
+///
+/// The number that dominates is the webview laying out the document, and it is
+/// insensitive to the shape of the markup. See perf/README.md.
 fn highlight_code(lang: &str, code: &str, theme: Option<&Theme>) -> String {
     let ss = syntaxes();
     let syntax = ss
