@@ -336,7 +336,14 @@ the upgrade procedure.
   misleading for this path**: the perf corpus has 32 unique fences in 640 and
   criterion re-renders the same document every iteration, so from iteration 2
   the memo never misses — the honest measure is `perf/scripts/loop.sh`'s
-  `save_to_paint`.
+  `save_to_paint`. `SourceIndex`'s `Stripped::source_offsets` (tier 3's
+  whitespace-stripped anchoring table, rebuilt once per `reanchor_file`) is
+  `u32`-keyed rather than `usize`, halving it from ~13.7MB to ~6.85MB on the
+  2MB corpus doc; `build` returns `None` past `u32::MAX` bytes of source
+  (~4.29GB) so tier 3 degrades rather than wrapping an offset. Memory and a
+  small Rust-side cost, not a latency win — `d:rust_reanchor` moves,
+  `save_to_paint` doesn't, same pattern as `d:ipc_get_highlights`: layout
+  dominates it.
 - `annotations::Store` — `Highlight { quote, prefix, suffix, line_start/end, state }` plus an
   ordered `stack` of ids. `set_annotation` is what enqueues a pair. `mark_sent`
   stamps `sent_at`, sets `prior`, and takes the ids off the stack; the `prior` is

@@ -759,7 +759,14 @@ impl<'a> SourceIndex<'a> {
             .checked_sub(1)
             .and_then(|i| self.line_starts.get(i).copied());
         let source = self.source;
-        let stripped = self.stripped.get_or_insert_with(|| Stripped::build(source));
+        if self.stripped.is_none() {
+            // `None` past `u32::MAX` bytes of source: tier 3 is unavailable
+            // for a document that large, not wrong — leave the slot empty so
+            // every call keeps taking this branch rather than caching a
+            // permanent miss, and fall through to it below.
+            self.stripped = Stripped::build(source);
+        }
+        let stripped = self.stripped.as_ref()?;
         let hint = hint_src.map(|b| stripped.offset_of(b));
         let (start, end) = stripped.find(&quote_ns, &prefix_ns, &suffix_ns, hint)?;
         Some(Location {
@@ -782,24 +789,39 @@ struct Stripped {
     /// char that byte belongs to. Keying by byte rather than by char index is
     /// what makes the lookup O(1): a multi-byte char simply repeats its offset,
     /// so any byte position inside a match maps to the right source char.
-    source_offsets: Vec<usize>,
+    /// `u32` rather than `usize`: this is one entry per non-whitespace byte of
+    /// the document, so on the 2MB perf corpus doc it halves a ~13.7MB table.
+    /// Caps `source` at `u32::MAX` bytes (~4.29GB); [`Stripped::build`] returns
+    /// `None` past that instead of silently wrapping an offset.
+    source_offsets: Vec<u32>,
+}
+
+/// Whether a source of `len` bytes is too large for `Stripped::source_offsets`
+/// to key by `u32`. Split out from [`Stripped::build`] so the boundary can be
+/// tested on a fake length instead of an allocated multi-gigabyte string.
+fn exceeds_stripped_capacity(len: usize) -> bool {
+    len > u32::MAX as usize
 }
 
 impl Stripped {
-    fn build(source: &str) -> Self {
+    fn build(source: &str) -> Option<Self> {
+        if exceeds_stripped_capacity(source.len()) {
+            return None;
+        }
         let mut text = String::with_capacity(source.len());
         // Whitespace is typically a fifth to a third of a markdown document.
         let mut source_offsets = Vec::with_capacity(source.len() * 3 / 4);
         for (i, ch) in source.char_indices() {
             if !ch.is_whitespace() {
                 text.push(ch);
-                source_offsets.resize(text.len(), i);
+                // Safe: `i < source.len() <= u32::MAX` (checked above).
+                source_offsets.resize(text.len(), i as u32);
             }
         }
-        Self {
+        Some(Self {
             text,
             source_offsets,
-        }
+        })
     }
 
     /// Offset into `text` of the first char at or after source byte `src`.
@@ -809,7 +831,7 @@ impl Stripped {
     /// repeats that char's offset, so the predicate cannot flip partway through
     /// one and the partition point can only land on a boundary.
     fn offset_of(&self, src: usize) -> usize {
-        self.source_offsets.partition_point(|&o| o < src)
+        self.source_offsets.partition_point(|&o| (o as usize) < src)
     }
 
     /// Byte offsets in the *original* source of the first and last char of
@@ -825,8 +847,13 @@ impl Stripped {
     ) -> Option<(usize, usize)> {
         let at = best_match(&self.text, quote_ns, prefix_ns, suffix_ns, hint)?;
         let last = at + quote_ns.len().saturating_sub(1);
-        let start = *self.source_offsets.get(at)?;
-        let end = self.source_offsets.get(last).copied().unwrap_or(start);
+        let start = *self.source_offsets.get(at)? as usize;
+        let end = self
+            .source_offsets
+            .get(last)
+            .copied()
+            .map(|o| o as usize)
+            .unwrap_or(start);
         Some((start, end))
     }
 }
@@ -1061,9 +1088,26 @@ mod tests {
     fn tier3_matches_a_rendered_selection_across_a_line_break() {
         // What `getSelection().toString()` yields: whitespace collapsed, so it
         // matches no substring of the source. Only the stripped index can.
+        // Also the coverage for `Stripped::source_offsets` being `u32`-keyed:
+        // this exercises `build`, `offset_of` and `find` end to end and would
+        // catch a bad cast at any of the three.
         let src = "a paragraph that\nwraps across lines\n";
         let loc = locate(src, "", "paragraph that wraps", "").expect("located");
         assert_eq!((loc.line_start, loc.line_end), (1, 2));
+    }
+
+    #[test]
+    fn stripped_refuses_a_source_past_u32_capacity() {
+        // The real guard in `Stripped::build` is `source.len() > u32::MAX as
+        // usize`; a source that large can't be allocated in a test, so this
+        // pins the boundary predicate `build` delegates to instead.
+        assert!(!exceeds_stripped_capacity(u32::MAX as usize));
+        assert!(exceeds_stripped_capacity(u32::MAX as usize + 1));
+
+        // And the wiring at the real boundary: `build` on an ordinary source
+        // still succeeds and tier 3 still works — the guard must not fire
+        // early.
+        assert!(Stripped::build("a paragraph that\nwraps across lines\n").is_some());
     }
 
     #[test]
