@@ -292,6 +292,11 @@ the upgrade procedure.
 - `fs_walk` — `ignore` crate (ripgrep's walker) → nested `FileNode` tree, markdown only.
   `rel_of` is shared with `search`: the frontend looks a search hit up in the
   tree by that exact string, so the two must not derive it separately.
+  `paintTree` (`ui/app.js`) builds the sidebar into one `DocumentFragment` and
+  appends it once, and carries its own `d:tree_paint` span so its DOM-build
+  cost is measurable apart from the `ipc_tree` mark, which per the perf
+  instrumentation note below can otherwise conflate await-scheduling with
+  actual command cost.
 - `search` — `nucleo` fuzzy index over **paths only**; content search is v2.
 - `flow` — the state machine between Ctrl+Enter and the pty, and there is **no
   clock in it**: the frontend owns the timer and supplies the events (`arm`,

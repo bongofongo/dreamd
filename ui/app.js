@@ -641,8 +641,12 @@ function paintTree(root) {
   tree.innerHTML = "";
   knownPaths.clear();
   collectPaths(root, knownPaths);
-  // Render the root's children directly (skip the root dir node itself).
-  for (const child of root.children) tree.appendChild(renderNode(child));
+  const t0 = perf.now();
+  // Render the root's children directly (skip the root dir node itself) into a
+  // detached fragment, so the live tree takes one DOM mutation total instead of
+  // one append per root-level entry.
+  const frag = document.createDocumentFragment();
+  for (const child of root.children) frag.appendChild(renderNode(child));
   // An empty sidebar used to render as literally nothing, which reads as a bug
   // rather than an answer. Two ways to get here: a repo with no markdown in it,
   // and a launch with no repo at all (a .app double-clicked from Finder), where
@@ -653,8 +657,10 @@ function paintTree(root) {
     empty.textContent = hasRepo
       ? "No markdown files here."
       : "Nothing open yet — File ▸ Open Folder…";
-    tree.appendChild(empty);
+    frag.appendChild(empty);
   }
+  tree.appendChild(frag);
+  perf.span("tree_paint", t0);
   activeTreeItem = null;
   markActiveInTree(currentFile);
 }
