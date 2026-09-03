@@ -702,9 +702,16 @@ worth trusting on.
 in app.js — so a mid-stream turn keeps streaming across the move and an
 unanswered permission card is still answerable on the other side. Duplicating
 the subtree would mean two logs to keep in step and two ids for every element in
-them. Consequences a change here has to keep: every rule styling the
-conversation is scoped by *container* (`#pty-pane.native …` / `#agent-popout …`)
-rather than written as its own class; `#pty-mcp` travels with the body, so
+them. Consequences a change here has to keep: the conversation's own styling is
+written **unscoped** — `.agent-turn`, `.agent-said`, `.agent-tool`,
+`.agent-note`, `.agent-card`, `#agent-log`, `#agent-composer`, `#agent-input`,
+`#agent-send` — which is precisely what lets the one moved subtree read right in
+whichever container holds it, and only the *differences* carry a
+`#pty-pane.native …` / `#agent-popout …` prefix. A new conversation rule scoped
+to one container is therefore a rule the other silently loses. (index.html's
+pop-out block says this correctly of the rules *inside it*, which are the
+differences; the sentence here used to generalise that into "every rule … is
+scoped by container", which is its inverse.) `#pty-mcp` travels with the body, so
 `paintMcpStatus` toggles `mcp-warn` on **both**, without which the one mode that
 never opens the dock (`always`) could never show the warning; and exactly one
 container may hold it, which is why `openPane` lowers the card and `raisePopout`
