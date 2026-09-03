@@ -481,11 +481,15 @@ jobs:
           ref: main
           path: main-branch
 
+      # The explicit third argument is a label, not the runner's real hostname
+      # (an ephemeral, meaningless GitHub Actions runner name) — the same
+      # reason publish-history.sh never reads .meta.machine.id for this file.
       - name: Record this release's numbers
         run: |
           set -euo pipefail
           main-branch/perf/scripts/publish-history.sh \
-            "${{ steps.result.outputs.path }}" "$PWD/dreamd.AppImage"
+            "${{ steps.result.outputs.path }}" "$PWD/dreamd.AppImage" \
+            "ubuntu-22.04 (CI)"
 
       - name: Commit and push
         env:

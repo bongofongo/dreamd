@@ -3,11 +3,19 @@
 # Append (or replace) one release's numbers in the public, website-facing
 # performance history at website/src/data/perf-history.json.
 #
-#   perf/scripts/publish-history.sh <deep-tier-result.json> <appimage-file>
+#   perf/scripts/publish-history.sh <deep-tier-result.json> <appimage-file> [runner-label]
 #
 # The source is a `perf/run.sh deep` result (perf/results/deep-*.json) and the
 # real shipped AppImage from `packaging/build.sh` — this script reads neither
 # path itself, both are handed in because they come from two separate runs.
+#
+# `runner-label` is free text describing what produced this entry (CI passes
+# something like "ubuntu-22.04 (CI)"). Left unset, it falls back to
+# `<os>-<arch> (manual)` from `uname` — deliberately NOT the deep result's own
+# `.meta.machine.id`, which is `<os>-<arch>-<hostname>` and is the private
+# per-machine baseline convention (notes/perf-baselines/, gitignored) for a
+# reason: this file is public and committed, and a hostname has no business
+# leaving a developer's own machine.
 #
 # Unlike perf/results/*.json (150+ metrics, gitignored, shaped around a
 # private per-machine baseline) this output is small, public, and tracked: it
@@ -22,12 +30,13 @@
 set -euo pipefail
 
 usage() {
-  echo "usage: perf/scripts/publish-history.sh <deep-tier-result.json> <appimage-file>" >&2
+  echo "usage: perf/scripts/publish-history.sh <deep-tier-result.json> <appimage-file> [runner-label]" >&2
   exit 1
 }
 
 RESULT="${1:-}"
 APPIMAGE="${2:-}"
+RUNNER="${3:-}"
 [[ -n "$RESULT" && -n "$APPIMAGE" ]] || usage
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -46,10 +55,9 @@ VERSION="$("$ROOT/packaging/version.sh")"
 SHA="$(jq -r '.meta.sha // empty' "$RESULT")"
 [[ -n "$SHA" ]] || { echo "publish-history.sh: $RESULT has no .meta.sha" >&2; exit 1; }
 
-# Same <os>-<arch>-<hostname> id notes/perf-baselines/ keys results by — a
-# deep result already carries it, so this is a read, not a new convention.
-RUNNER="$(jq -r '.meta.machine.id // empty' "$RESULT")"
-[[ -n "$RUNNER" ]] || { echo "publish-history.sh: $RESULT has no .meta.machine.id" >&2; exit 1; }
+if [[ -z "$RUNNER" ]]; then
+  RUNNER="$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m) (manual)"
+fi
 
 DATE="$(date -u +%Y-%m-%d)"
 
