@@ -3625,6 +3625,157 @@ check(
   await pix.evaluate(() => !document.body.classList.contains("view-mode")),
 );
 
+// ---- incremental repaint -------------------------------------------------
+//
+// A save re-renders the whole file, but `writeContent` replaces only the blocks
+// whose HTML actually changed — that is where 78% of the save loop went. The
+// hazard is a patch leaving a DOM that a full `innerHTML` write would not have
+// produced, so the checks below compare against exactly that.
+//
+// Survival is probed with a JS property rather than an attribute on purpose: an
+// attribute would serialize into `innerHTML` and corrupt the comparison it is
+// there to support.
+
+const DOC1 = '<h1 id="t">Title</h1><p id="a">alpha</p><p id="b">bravo</p><p id="c">charlie</p>';
+let patchBody = DOC1;
+let patchMarks = [];
+
+const patch = await newPage();
+patch.on("pageerror", (e) => results.push("FAIL pageerror (patch): " + e.message));
+await patch.exposeFunction("__body", () => patchBody);
+await patch.exposeFunction("__marks", () => patchMarks);
+await patch.addInitScript((css) => {
+  const listeners = new Map();
+  window.__FIRE__ = (name, payload) =>
+    Promise.all([...(listeners.get(name) || [])].map((fn) => fn({ payload })));
+  const tree = {
+    name: "repo", is_dir: true, path: "/repo", rel: "",
+    children: [
+      { name: "doc.md", is_dir: false, path: "/repo/doc.md", rel: "doc.md", children: [] },
+      { name: "other.md", is_dir: false, path: "/repo/other.md", rel: "other.md", children: [] },
+    ],
+  };
+  window.__TAURI__ = {
+    core: {
+      convertFileSrc: (p) => "asset://localhost/" + encodeURIComponent(p),
+      async invoke(cmd) {
+        switch (cmd) {
+          case "perf_enabled": return false;
+          case "repo_info": return { root: "/repo", name: "repo", display: "~/repo" };
+          case "get_keymap": return {
+            palette: "Ctrl+F", highlight: "Ctrl+H", settings: "Ctrl+,",
+            toggle_stack: "Ctrl+O", toggle_outline: "Ctrl+I", toggle_tree: "Ctrl+B",
+            toggle_view: "Ctrl+M", find: "/", quick_highlight: true,
+          };
+          case "get_theme": return { css, mode: "system", scheme: "dark", syntax_theme: null };
+          case "get_ui": return {
+            tree_width: 260, stack_width: 280, pane_width: 380, pane_height: 240,
+            menubar: false, titlebar: false, titlebar_fade: false, zoom: 100,
+          };
+          case "initial_file": return "/repo/doc.md";
+          case "render_markdown": return await window.__body();
+          case "list_markdown_files": return tree;
+          case "get_highlights": case "reanchor": return await window.__marks();
+          case "get_stack": return [];
+          default: return null;
+        }
+      },
+    },
+    event: {
+      async listen(name, fn) {
+        if (!listeners.has(name)) listeners.set(name, new Set());
+        listeners.get(name).add(fn);
+        return () => listeners.get(name).delete(fn);
+      },
+    },
+  };
+}, base);
+await patch.goto(pathToFileURL(join(UI, "index.html")).href);
+await patch.waitForSelector("#content #c");
+
+/// Stamp every block currently on screen, so the next repaint can be asked
+/// which of them are still the same element.
+const stamp = () => patch.evaluate(() => {
+  for (const el of document.getElementById("content").children) el.__kept = true;
+});
+const kept = (ids) => patch.evaluate(
+  (list) => list.filter((id) => document.getElementById(id)?.__kept === true), ids);
+const body = () => patch.evaluate(() => document.getElementById("content").innerHTML);
+const marks = () => patch.evaluate(() => document.querySelectorAll("#content mark.hl").length);
+/// One `:w`, through the same `file-changed` path the watcher drives.
+const save = async (next) => {
+  patchBody = next;
+  await patch.evaluate(() => window.__FIRE__("file-changed", { path: "/repo/doc.md" }));
+  await patch.waitForTimeout(150);
+};
+
+await stamp();
+const DOC2 = DOC1.replace(">bravo<", ">bravo edited<");
+await save(DOC2);
+check(
+  "a repaint keeps every block whose html did not change",
+  (await kept(["t", "a", "c"])).join() === "t,a,c",
+  (await kept(["t", "a", "c"])).join(),
+);
+check("and the edited block is a new element", (await kept(["b"])).length === 0);
+check(
+  "and the result is exactly what a full write would have produced",
+  (await body()) === DOC2,
+  await body(),
+);
+
+await stamp();
+const DOC3 = DOC2.replace('<p id="c">', '<p id="n">new</p><p id="c">');
+await save(DOC3);
+check(
+  "an inserted block leaves all four neighbours in place",
+  (await kept(["t", "a", "b", "c"])).join() === "t,a,b,c",
+  (await kept(["t", "a", "b", "c"])).join(),
+);
+check("and lands in the right position", (await body()) === DOC3, await body());
+
+await stamp();
+const DOC4 = DOC3.replace('<p id="n">new</p>', "");
+await save(DOC4);
+check(
+  "a deleted block leaves its neighbours in place",
+  (await kept(["t", "a", "b", "c"])).join() === "t,a,b,c",
+);
+check("and is gone from the document", (await body()) === DOC4, await body());
+
+await stamp();
+await save(DOC4);
+check(
+  "a save that changed nothing replaces nothing",
+  (await kept(["t", "a", "b", "c"])).join() === "t,a,b,c",
+);
+
+// Marks live inside blocks a patch may keep, where the old `innerHTML` write
+// used to guarantee a clean slate. Without `clearHighlights` on the patch path
+// the second repaint here wraps the same passage a second time.
+patchMarks = [{
+  id: "h000000000000001", file_path: "/repo/doc.md", quote: "charlie",
+  prefix: "", suffix: "", line_start: 1, line_end: 1, state: "active", annotation: null,
+}];
+await save(DOC4);
+check("a highlight paints once", (await marks()) === 1, String(await marks()));
+await save(DOC4);
+check(
+  "and a repaint that kept its block does not wrap it twice",
+  (await marks()) === 1,
+  String(await marks()),
+);
+
+patchMarks = [];
+await stamp();
+await patch.evaluate(() => openFile("/repo/other.md"));
+await patch.waitForTimeout(150);
+check(
+  "opening another file writes the whole document rather than patching it",
+  (await kept(["t", "a", "b", "c"])).length === 0,
+  (await kept(["t", "a", "b", "c"])).join(),
+);
+
 await browser.close();
 console.log(results.join("\n"));
 const failed = results.filter((r) => r.startsWith("FAIL")).length;

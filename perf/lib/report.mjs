@@ -25,27 +25,28 @@ const HIGHER_IS_BETTER = [/\bapplied$/, /\bthroughput/];
  */
 const THRESHOLDS = [
   { match: /^chromium\./, warn: 0.2, fail: 0.35 },
-  // The save loop's frontend-await metrics are bimodal and cannot carry the
-  // default threshold. Five `loop.sh --release --highlights 100 --saves 12`
-  // runs on *identical* code gave, for p50: save_to_paint 1669-3369ms (±102%),
-  // ipc_render_markdown 177-1307ms (±640%), ipc_reanchor 1043-1581ms. The same
-  // five runs put `rust_reanchor_ms.p50` at 62.31-62.92ms — ±1%.
+  // The save loop's frontend-await metrics, at the spread they actually have.
   //
-  // The reason is the same one perf/README.md's gotcha describes: each of these
-  // times an `await`, and whichever await yields first also absorbs the webview
-  // re-laying out the document. Which one that is changes per run, so the cost
-  // teleports between metrics. On top of that p50 is taken over the 7-9 repaints
-  // a 12-save run produces, which is far too few to damp it.
+  // These were briefly given a 100%/200% threshold, and the measurement behind
+  // that was real: five `loop.sh --release --highlights 100 --saves 12` runs on
+  // identical code gave p50s of save_to_paint 1669-3369ms and
+  // ipc_render_markdown 177-1307ms. They were bimodal because each times an
+  // `await` and whichever await yielded first also absorbed the webview
+  // re-laying out the whole document, so the cost teleported between metrics.
   //
-  // Kept visible rather than IGNOREd — this is the core product loop, and an
-  // order-of-magnitude move still deserves a red row — but flagged only well
-  // outside the measured spread. For actual regression signal use
-  // `rust_reanchor_ms`, the criterion benches, and `real.startup.*`, which is
-  // stabilised by min-of-3 and reports its own `spread_ms`.
+  // `writeContent`'s block patching removed that layout, and with it the
+  // bimodality. Five runs now: save_to_paint 382-390ms, ipc_render_markdown
+  // 111-114ms, apply_highlights 60-63ms, ipc_reanchor 64-70ms — the widest of
+  // them ±9%, against ±102% before. So the threshold comes back down; leaving it
+  // at 100% after fixing the cause would hide a genuine regression behind a
+  // workaround for a problem that no longer exists.
+  //
+  // Still looser than the default 5%/15%, because p50 here is taken over the 12
+  // repaints one run produces and `ipc_reanchor` sits at ±9% of a small number.
   {
     match: /^real\.loop\..*\.(save_to_paint_ms|ipc_reanchor_ms|ipc_render_markdown_ms|apply_highlights_ms)\./,
-    warn: 1.0,
-    fail: 2.0,
+    warn: 0.15,
+    fail: 0.3,
   },
   { match: /./, warn: 0.05, fail: 0.15 },
 ];

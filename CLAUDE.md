@@ -713,6 +713,33 @@ header at all** — the dock's status text has nowhere to go there, so
 `setPaneStatus` also keeps the string on `pty.status` for the hint line to read,
 and a session that cannot start says why instead of saying "starting" forever.
 
+**A save patches the document, it does not rewrite it.** `renderCurrent` used to
+assign `contentEl.innerHTML`, so one `:w` in Neovim made the webview lay out the
+whole file again — 528ms of layout for a one-line edit at 2MB, against 4.7ms when
+only the changed block is swapped. `writeContent` parses the incoming HTML into a
+`<template>`, compares it block-by-block against `lastBlocks` — the *raw* HTML of
+the previous render — and replaces only the differing span, found by walking in
+from both ends. `save_to_paint` p50 went 1776ms to 383ms, and all 12 saves of a
+12-save run now paint where 7-9 did.
+
+Three things that keeps true. The comparison is against recorded HTML and
+**never against the live DOM**, which has been decorated since (`.code-block`
+wrappers, `<mark>` overlays) and would differ everywhere either landed. The
+post-render passes are scoped to the inserted nodes, because `prepareImages`
+adds a listener per image and is not idempotent — its own comment used to rely on
+`innerHTML` having thrown the old elements away. And `clearHighlights` runs on
+the patch path, since marks inside surviving blocks would otherwise be wrapped a
+second time; `ui-check.mjs` asserts exactly that, and the assertion fails with
+two marks if the call is removed. Every other writer of `contentEl.innerHTML`
+goes through `showContentMessage`, which drops the record — a stale one would
+patch against a document no longer on screen.
+
+The record is taken **inline, off the live DOM, before the caller decorates it**,
+which costs one serialization and no second parse (~27ms of `d:innerhtml` at
+2MB). Deferring it to after the frame was tried and is much worse: re-parsing the
+document post-paint blocks the main thread just as the unawaited `loadTree` is
+resolving, and the sidebar's `ipc_tree` went from 52ms to 2431ms.
+
 **Highlight anchoring is the subtle part.** A quote is located in the *source* by
 `markdown::locate` in three tiers, the first two alternatives rather than a chain: with
 context, exact `prefix+quote+suffix`; without it, the exact quote alone. A quote carrying

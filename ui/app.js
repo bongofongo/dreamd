@@ -749,6 +749,116 @@ function stepFile(d) {
   openFile(el.dataset.path);
 }
 
+// ---- incremental repaint -------------------------------------------------
+//
+// The raw block HTML of the last render, in document order, and the file it
+// came from.
+//
+// Compared against the *recorded HTML*, never against the live DOM: the live
+// DOM has been decorated since — `.code-block` wrappers, `<mark>` overlays — so
+// it differs from the incoming HTML everywhere either of those landed, and a
+// diff against it would replace every block carrying a highlight.
+let lastBlocks = null;
+let lastBlocksFile = null;
+/// Put `html` on screen, replacing as little of the document as possible.
+///
+/// A `:w` in Neovim re-renders the whole file, and writing `innerHTML` makes the
+/// webview lay all of it out again — measured at 528ms for a one-line edit to
+/// the 2MB corpus doc, against 4.7ms when only the changed block is swapped
+/// (Chromium, n=11, fresh page per sample, arm order alternated). Since
+/// `markdown::render` is deterministic, unchanged source produces byte-identical
+/// block HTML, so the blocks that differ are exactly the blocks to replace.
+///
+/// Returns the elements it inserted — empty when nothing changed — or null when
+/// it wrote the whole document and every node is new.
+function writeContent(html) {
+  const live = contentEl.children;
+
+  // Patch only from a known-good starting point: the same file, and a live
+  // child count still matching what was recorded. Anything else — the first
+  // render, a file switch, one of `showContentMessage`'s writes — starts over.
+  //
+  // Decided before anything is parsed, so the full-write path stays the single
+  // `innerHTML` assignment it has always been. Parsing into a template and
+  // moving the nodes across instead cost 16ms of `d:innerhtml` at 2MB, for a
+  // document that was going to be written whole regardless.
+  if (lastBlocks === null || lastBlocksFile !== currentFile || lastBlocks.length !== live.length) {
+    contentEl.innerHTML = html;
+    // Recorded straight off the live DOM, before the caller decorates it, so
+    // this costs one serialization and no second parse.
+    //
+    // Deferring it to after the frame was tried and is much worse: re-parsing
+    // the document post-paint blocked the main thread just as the unawaited
+    // `loadTree` was resolving, and the sidebar's `ipc_tree` went from 52ms to
+    // 2431ms on a small repo. It saved 16ms of `d:innerhtml` and cost two and a
+    // half seconds of the window looking half-drawn.
+    lastBlocks = [...live].map((el) => el.outerHTML);
+    lastBlocksFile = currentFile;
+    return null;
+  }
+
+  // Only the patch path parses and serializes, and it is the one with a
+  // previous render behind it to compare against.
+  const tpl = document.createElement("template");
+  tpl.innerHTML = html;
+  const fresh = [...tpl.content.children];
+  const next = fresh.map((el) => el.outerHTML);
+
+  // An edit is contiguous in practice, so the changed span is found by walking
+  // in from both ends: O(blocks), and no LCS to get wrong. A scattered edit
+  // simply widens the span, which is still correct and never worse than the
+  // `innerHTML` write it replaces.
+  const limit = Math.min(lastBlocks.length, next.length);
+  let head = 0;
+  while (head < limit && lastBlocks[head] === next[head]) head++;
+  let tail = 0;
+  while (
+    tail < limit - head &&
+    lastBlocks[lastBlocks.length - 1 - tail] === next[next.length - 1 - tail]
+  ) {
+    tail++;
+  }
+
+  const stop = live.length - tail; // exclusive end of the span being replaced
+  // Captured before anything is removed. `live` is a live HTMLCollection, so
+  // its indices shift as siblings go, but this node reference does not.
+  const anchorNode = live[stop] ?? null;
+  for (let i = stop - 1; i >= head; i--) live[i].remove();
+
+  const added = fresh.slice(head, next.length - tail);
+  if (added.length) {
+    const frag = document.createDocumentFragment();
+    for (const el of added) frag.appendChild(el);
+    contentEl.insertBefore(frag, anchorNode);
+  }
+
+  lastBlocks = next;
+  return added;
+}
+
+/// The other way content is written: a short message standing in for a
+/// document. It goes through here so the block record is dropped with it — a
+/// stale record would let the next render patch against a document that is no
+/// longer on screen.
+function showContentMessage(html) {
+  contentEl.innerHTML = html;
+  lastBlocks = null;
+  lastBlocksFile = null;
+}
+
+/// `querySelectorAll` across several roots, each of which may itself match.
+///
+/// The post-render passes take a root list rather than always sweeping
+/// `#content`, because after a patch only the inserted blocks want decorating.
+function within(roots, selector) {
+  const out = [];
+  for (const root of roots) {
+    if (root.matches?.(selector)) out.push(root);
+    out.push(...root.querySelectorAll(selector));
+  }
+  return out;
+}
+
 // ---- open / render -------------------------------------------------------
 async function openFile(path) {
   // The one cross-file entry point, so the one place the jump history needs to
@@ -779,7 +889,7 @@ async function renderCurrent({ preserveScroll, reanchor }) {
   try {
     html = await invoke("render_markdown", { path: currentFile });
   } catch (e) {
-    contentEl.innerHTML = `<div class="empty">${escapeHtml(String(e))}</div>`;
+    showContentMessage(`<div class="empty">${escapeHtml(String(e))}</div>`);
     refreshOutline();
     if (findQuery) findRecompute(false);
     return;
@@ -787,19 +897,32 @@ async function renderCurrent({ preserveScroll, reanchor }) {
   perf.span("ipc_render_markdown", t0);
 
   let t = perf.now();
-  contentEl.innerHTML = html;
+  const changed = writeContent(html);
   perf.span("innerhtml", t);
 
+  // Decoration is scoped to what was actually inserted. `prepareImages` in
+  // particular *must* be: it adds a click listener per image and is not
+  // idempotent, and it used to rely on the `innerHTML` write having thrown the
+  // previous document's listeners away with the elements that carried them.
+  const freshNodes = changed ?? [contentEl];
+
   t = perf.now();
-  interceptLinks();
+  interceptLinks(freshNodes);
   perf.span("intercept_links", t);
 
   t = perf.now();
-  decorateCodeBlocks();
+  decorateCodeBlocks(freshNodes);
   perf.span("decorate_code", t);
 
   // After `interceptLinks`, which is what resolved (or refused) each `src`.
-  prepareImages();
+  prepareImages(freshNodes);
+
+  // Marks inside blocks the patch left alone are still in the DOM, where the
+  // `innerHTML` write used to guarantee a clean slate. `applyHighlights` places
+  // the whole set again, so they have to come off first or every surviving
+  // passage would end up wrapped twice. `changed` is truthy for the no-op patch
+  // too — an empty array — and null only for a full write, which has no marks.
+  if (changed) clearHighlights();
 
   t = perf.now();
   const highlights = reanchor
@@ -823,8 +946,8 @@ async function renderCurrent({ preserveScroll, reanchor }) {
 }
 
 // External links open in the OS browser; internal .md links navigate in-app.
-function interceptLinks() {
-  contentEl.querySelectorAll("a[href]").forEach((a) => {
+function interceptLinks(roots = [contentEl]) {
+  within(roots, "a[href]").forEach((a) => {
     const href = a.getAttribute("href");
     if (!href) return;
     if (/^[a-z]+:\/\//i.test(href) || href.startsWith("mailto:")) {
@@ -868,7 +991,7 @@ function interceptLinks() {
     }
   });
   // resolve relative image src
-  contentEl.querySelectorAll("img[src]").forEach((img) => {
+  within(roots, "img[src]").forEach((img) => {
     const src = img.getAttribute("src");
     if (src && !/^[a-z]+:\/\//i.test(src) && !src.startsWith("data:") && !src.startsWith("/")) {
       const base = currentFile.replace(/[^\/]*$/, "");
@@ -897,8 +1020,8 @@ function interceptLinks() {
 /// image the containment guard refused has had its `src` removed and is skipped
 /// by both halves. That ordering is what keeps this function from being a
 /// second, weaker copy of the guard.
-function prepareImages() {
-  for (const img of contentEl.querySelectorAll("img[src]")) {
+function prepareImages(roots = [contentEl]) {
+  for (const img of within(roots, "img[src]")) {
     img.addEventListener("click", () => openLightbox(img));
     // `complete` covers a cached image, which is the common case on a re-render
     // of the file the reader is already looking at: the `load` event for one of
@@ -1362,8 +1485,8 @@ const COPY_ICON_SVG =
 /// Called *before* `applyHighlights` so the DOM shape is settled before any
 /// mark is placed; the button adds no text nodes either way, so neither the
 /// text-node scan nor `getSelection().toString()` can see it.
-function decorateCodeBlocks() {
-  for (const pre of contentEl.querySelectorAll("pre")) {
+function decorateCodeBlocks(roots = [contentEl]) {
+  for (const pre of within(roots, "pre")) {
     const parent = pre.parentNode;
     if (!parent) continue;
     // Idempotent: a re-run over an already-decorated block is a no-op. Nothing
@@ -1469,8 +1592,16 @@ function clearHighlights() {
   // the selection it was waiting for goes with it — so the mode ends here rather
   // than surviving invisibly over marks that no longer carry its class.
   endResize();
-  for (const m of [...contentEl.querySelectorAll("mark.hl")]) unwrap(m);
-  contentEl.normalize();
+  // Unwrapping is the only thing here that leaves adjacent text nodes, so only
+  // the parents it touched need merging. `contentEl.normalize()` walked every
+  // text node in the document — ~50k of them at 2MB — to merge the handful that
+  // had actually been split, on every repaint.
+  const touched = new Set();
+  for (const m of [...contentEl.querySelectorAll("mark.hl")]) {
+    if (m.parentNode) touched.add(m.parentNode);
+    unwrap(m);
+  }
+  for (const parent of touched) parent.normalize();
   staleRail.innerHTML = "";
 }
 
@@ -3669,7 +3800,7 @@ async function doDeleteFile() {
     toast("Moved to Trash");
     if (currentFile === path) {
       currentFile = null;
-      contentEl.innerHTML = `<div class="empty">File deleted.</div>`;
+      showContentMessage(`<div class="empty">File deleted.</div>`);
       staleRail.innerHTML = "";
     }
     // The watcher's file-removed event refreshes the tree/index.
@@ -5011,7 +5142,7 @@ function wireEvents() {
     if (e.payload && e.payload.path) forgetPath(e.payload.path);
     if (e.payload && e.payload.path === currentFile) {
       currentFile = null;
-      contentEl.innerHTML = `<div class="empty">File removed.</div>`;
+      showContentMessage(`<div class="empty">File removed.</div>`);
       staleRail.innerHTML = "";
       refreshOutline();
       resetFind();
@@ -5055,7 +5186,7 @@ function wireEvents() {
       if (file) await openFile(file);
       else {
         currentFile = null;
-        contentEl.innerHTML = `<div class="empty">Select a markdown file from the tree, or open the search palette.</div>`;
+        showContentMessage(`<div class="empty">Select a markdown file from the tree, or open the search palette.</div>`);
         staleRail.innerHTML = "";
         refreshOutline();
       }

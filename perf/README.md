@@ -137,28 +137,31 @@ These were measured, not guessed — two consecutive runs on identical code:
 |---|---|---|
 | Rust benches | ~5-12%, mixed sign | 5% / 15% |
 | Chromium scenarios | up to 27% (raster, composite) | 20% / 35% |
-| `real.loop.*` frontend awaits | **up to 640%**, bimodal | 100% / 200% |
+| `real.loop.*` frontend awaits | ~9% | 15% / 30% |
 | `real.loop.*.rust_*` | ~1% | 5% / 15% |
 | any `.max` statistic | up to 25% | ignored entirely |
 | any `real.*` timing under 1ms | — | never flagged |
 
-**The save loop's frontend metrics are not a regression signal**, and the row
-above is measured, not cautious. Five `loop.sh --release --highlights 100
---saves 12` runs on *identical* code gave p50s of: `save_to_paint` 1669-3369ms,
-`ipc_render_markdown` 177-1307ms, `ipc_reanchor` 1043-1581ms. The same five runs
-put `rust_reanchor_ms.p50` between 62.31 and 62.92ms.
+**The save loop's frontend metrics were bimodal until block patching landed**,
+and the history is worth keeping because the threshold moved twice. Five
+`loop.sh --release --highlights 100 --saves 12` runs on *identical* code once
+gave p50s of `save_to_paint` 1669-3369ms and `ipc_render_markdown` 177-1307ms,
+while `rust_reanchor_ms.p50` sat between 62.31 and 62.92ms across the same five.
 
-Two things stack up to cause it. Each of those metrics times an `await`, and
-whichever await yields first also absorbs the webview re-laying out the document
-— so the cost teleports between metrics from run to run (see the first gotcha
-below). And p50 is taken over the 7-9 repaints a 12-save run produces, which is
-nowhere near enough to damp a bimodal distribution. They are kept in the table
-because the save loop is the product, and an order-of-magnitude move should
-still go red; they are not something to read a 20% change out of.
+Each of those metrics times an `await`, and whichever await yielded first also
+absorbed the webview re-laying out the whole document (see the first gotcha
+below), so the cost teleported between metrics from run to run. `writeContent`
+now replaces only the blocks whose HTML changed, which removed that layout: the
+same five runs give `save_to_paint` 382-390ms, `ipc_render_markdown` 111-114ms,
+`apply_highlights` 60-63ms, `ipc_reanchor` 64-70ms. The widest is ±9%, so the
+threshold came back down to 15%/30% — a 100% threshold left in place after the
+cause was fixed would hide exactly the regression it was standing in for.
 
-For real signal on this path use `rust_reanchor_ms`, the criterion benches, and
-`real.startup.*` — that one is stabilised by min-of-3 and reports its own
-`spread_ms` alongside.
+`rust_reanchor_ms` remains the steadiest number on this path at ~1%, and
+`real.startup.*` is stabilised by min-of-3 and reports its own `spread_ms`
+alongside — **read that spread before reading anything else in a run**. It is
+how a contended machine announces itself: one `pass` here came back with
+`spread_ms` at 131 against a usual 4, and every real-app row in it was fiction.
 
 **Sub-millisecond timings are never flagged.** Every `real.*` leaf is in ms and
 several are microseconds — `d:rust_get_highlights` is 0.0015ms, `process_start`
