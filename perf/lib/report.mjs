@@ -81,12 +81,13 @@ const IGNORE = [
   // and `deep` drives 12, so comparing one against the other would flag these
   // every time. `events_per_save` is the normalized figure that carries the
   // actual signal.
-  // Anchored past the workload key, not straight after `loop.`. These read
-  // `/loop\.watcher_events$/` and `/loop\.repaints$/`, which stopped matching
-  // anything the moment real-app metrics were keyed by build profile and
-  // highlight count — the real path is `real.loop.release-h100.repaints`, so
-  // both rules had been dead ever since while the comment above still claimed
-  // they were ignored. They were duly flagged as regressions every run.
+  //
+  // Anchored past the workload key rather than straight after `loop.`. These
+  // read `/loop\.watcher_events$/` and `/loop\.repaints$/`, which stopped
+  // matching anything the moment real-app metrics were keyed by build profile
+  // and highlight count: the path is `real.loop.release-h100.repaints`, so both
+  // rules were dead while the paragraph above still claimed they were ignored,
+  // and both counts were flagged as regressions every run.
   /^real\.loop\..*\.watcher_events$/,
   /^real\.loop\..*\.repaints$/,
   /scrolledPx$/,
@@ -105,13 +106,37 @@ const ignored = (path) => IGNORE.some((re) => re.test(path));
 const higherBetter = (path) => HIGHER_IS_BETTER.some((re) => re.test(path));
 
 /**
+ * A percentage is meaningless below the clock's useful resolution.
+ *
+ * Every `real.*` leaf is milliseconds, and several of them are microseconds in
+ * practice: `d:rust_get_highlights` is 0.0015ms, `process_start` 0.002ms,
+ * `d:marks_loaded` 0.01ms. Against a 5% threshold those flag constantly —
+ * 0.00150 -> 0.00180 was duly printed as a 20% regression, which is 300
+ * nanoseconds of scheduler jitter wearing a regression's clothes, and it is
+ * exactly the kind of red row that teaches you to stop reading the table.
+ *
+ * So a row where *both* sides sit under a millisecond is reported with its
+ * numbers but never flagged. The exception is the handful of `real.*` leaves
+ * that are ratios rather than durations: `events_per_save` lives around 1.0 and
+ * a move from 1 to 2 means every save is rendering the document twice, which is
+ * the single most valuable thing this loop can tell you.
+ */
+const RATIO_NOT_MS = /events_per_save$/;
+const subMs = (path, before, after) =>
+  /^real\./.test(path) &&
+  !RATIO_NOT_MS.test(path) &&
+  Math.abs(before) < 1 &&
+  Math.abs(after) < 1;
+
+/**
+ * Thresholds are per-path and come from THRESHOLDS above, not from an
+ * argument — there is no one sensitivity that suits a criterion mean and a
+ * single-sample browser measurement at once.
+ *
  * @param {object} current   this run's result document
  * @param {string} baselinePath
- * @param {object} [opts]
- * @param {number} [opts.warn]  fractional slowdown that warrants a warning
- * @param {number} [opts.fail]  fractional slowdown that counts as a regression
  */
-export function diff(current, baselinePath, opts = {}) {
+export function diff(current, baselinePath) {
   const now = flatten(current);
 
   if (!existsSync(baselinePath)) {
@@ -143,6 +168,7 @@ export function diff(current, baselinePath, opts = {}) {
 
     let status = "ok";
     if (delta === null) status = value === 0 ? "ok" : "new";
+    else if (subMs(path, before, value)) status = "ok";
     else if (worse >= fail) status = "fail";
     else if (worse >= warn) status = "warn";
     else if (worse <= -warn) status = "better";

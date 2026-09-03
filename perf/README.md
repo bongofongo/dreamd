@@ -140,6 +140,7 @@ These were measured, not guessed — two consecutive runs on identical code:
 | `real.loop.*` frontend awaits | **up to 640%**, bimodal | 100% / 200% |
 | `real.loop.*.rust_*` | ~1% | 5% / 15% |
 | any `.max` statistic | up to 25% | ignored entirely |
+| any `real.*` timing under 1ms | — | never flagged |
 
 **The save loop's frontend metrics are not a regression signal**, and the row
 above is measured, not cautious. Five `loop.sh --release --highlights 100
@@ -158,6 +159,15 @@ still go red; they are not something to read a 20% change out of.
 For real signal on this path use `rust_reanchor_ms`, the criterion benches, and
 `real.startup.*` — that one is stabilised by min-of-3 and reports its own
 `spread_ms` alongside.
+
+**Sub-millisecond timings are never flagged.** Every `real.*` leaf is in ms and
+several are microseconds — `d:rust_get_highlights` is 0.0015ms, `process_start`
+0.002ms — so a 5% threshold flags them constantly: `0.00150 -> 0.00180` was
+printed as a 20% regression, which is 300 nanoseconds of scheduler jitter. A row
+whose baseline *and* current value are both under 1ms keeps its numbers in the
+table but takes no status. `events_per_save` is exempt, being a ratio around 1.0
+rather than a duration: a move from 1 to 2 means every save renders the document
+twice, which is the most valuable thing the loop can report.
 
 A threshold set below the noise floor doesn't catch more regressions — it just
 trains you to ignore the tool.
