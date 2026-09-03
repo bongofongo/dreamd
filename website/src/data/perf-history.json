@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "entries": [
+    {
+      "version": "0.3.0",
+      "sha": "83af926",
+      "date": "2026-09-03",
+      "runner": "linux-x86_64 (manual)",
+      "metrics": {
+        "first_paint_ms": 1669.0,
+        "save_to_paint_p50_ms": 321.0,
+        "peak_rss_mb": 156.35,
+        "appimage_mb": 100.06
+      }
+    }
+  ]
+}

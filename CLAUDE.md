@@ -1000,6 +1000,15 @@ In this repo:
   key, CLI flag and theme name it prints is checkable, and several had drifted
   before anyone checked. Change it in the same commit as the default it documents.
 - `perf/README.md` — what each performance tier measures and how much to trust it.
+- `perf/scripts/publish-history.sh` — captures a compact, *public* subset of a
+  `deep`-tier result (first paint, save-to-paint p50, peak RSS, shipped
+  AppImage size) plus the machine that produced it, into
+  `website/src/data/perf-history.json`, which `website/src/pages/perf.astro`
+  charts with zero client JS. Deliberately not the same file as the private
+  per-machine `notes/perf-baselines/`: this one is small, append-one-entry,
+  and meant to be committed to the public repo. Run by hand for now — wiring
+  it into `release.yml` so it runs on every published release is a separate,
+  not-yet-done step.
 - `website/CLAUDE.md` — the public site at `fongo.uk/dreamd`. A standalone Astro
   project, deployed separately; source of truth for everything under `website/`.
   Nothing there touches the Rust build.
