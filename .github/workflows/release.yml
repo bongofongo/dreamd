@@ -327,3 +327,178 @@ jobs:
           name: PKGBUILD
           path: PKGBUILD
           if-no-files-found: error
+
+  # Captures one perf-history data point per published release, for the public
+  # chart at website/src/pages/perf.astro. perf/scripts/publish-history.sh does
+  # the actual write; this job's only job is producing its two inputs — a
+  # `deep`-tier perf/run.sh result and the real shipped AppImage — and
+  # committing the result.
+  #
+  # Gated the same way as `tap`/`aur`: `github.event_name == 'release'` fires
+  # only when a human PUBLISHES (not on the draft-creating `push` that runs
+  # `build`/`release` above), so a discarded draft records nothing.
+  # `!github.event.release.prerelease` matches those two jobs too.
+  #
+  # ubuntu-22.04, not `ubuntu-latest`: matches the `build` matrix's Linux entry
+  # and every other perf-adjacent Linux job in this repo (ci.yml's `launch`,
+  # canary.yml), so meta.machine in the result reads as a real, describable CI
+  # environment rather than an image that silently rolls out from under it.
+  #
+  # This measures the CODE AT THE TAG: the checkout below carries no `ref:`, so
+  # on a `release` event it lands on the tag's own commit — same as `verify`'s
+  # push-triggered version check does for the same event's `push` sibling. The
+  # AppImage measured for size is the literal release asset (`gh release
+  # download`, the same pattern `tap`/`aur` already use for checksums) rather
+  # than a fresh rebuild: less CI time, no tauri-cli/packaging/build.sh needed
+  # here at all, and it is provably the bytes a user downloads rather than a
+  # separately-built stand-in.
+  #
+  # A SECOND checkout of `main` (below, `path: main-branch`) is what the result
+  # actually gets written into and committed from. `main` may have moved past
+  # this tag by the time a human gets around to publishing — straight-to-main,
+  # no branches — and publish-history.sh's idempotent-by-version merge has to
+  # run against main's CURRENT website/src/data/perf-history.json, not a copy
+  # frozen at tag time, or this push could clobber a later release's entry.
+  #
+  # No `needs:`, and `continue-on-error: true`: capturing perf data must never
+  # block or fail the release itself, and nothing here is a dependency of `tap`
+  # or `aur` — this is purely additive.
+  #
+  # `permissions: contents: write` is already set workflow-wide, at the top of
+  # this file. This job needs no permissions block of its own to push to main.
+  perf-history:
+    if: github.event_name == 'release' && !github.event.release.prerelease
+    runs-on: ubuntu-22.04
+    continue-on-error: true
+    # perf/README.md says `deep` is ~20min on the machine it was measured on.
+    # This job also pays for four separate `cargo build`s inside that tier
+    # (debug+perf and release+perf via startup.sh/loop.sh, profiling+perf and a
+    # plain release build via profile.sh — see perf/run.sh and
+    # perf/scripts/profile.sh) plus the full criterion bench sweep, on a free
+    # 2-core runner rather than a development box. 75 minutes is a guess at
+    # generous headroom, not a measurement — revisit after this has actually run.
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+
+      # Same package list ci.yml's `rust`/`launch` jobs install, plus two this
+      # job alone needs: `time` (GNU time — `/usr/bin/time -v` is what
+      # startup.sh reads peak RSS from on Linux, and it is a separate package
+      # from the shell builtin, not preinstalled) and `xvfb` (startup.sh and
+      # loop.sh launch the real windowed binary directly, with no re-exec of
+      # their own the way packaging/smoke.sh has — the display has to already
+      # exist when they run).
+      - name: Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev \
+            libssl-dev patchelf file xvfb time
+
+      # Pinned to match ci.yml/canary.yml, not this file's own `build` job's
+      # `@stable` — this isn't part of the signed release matrix, and a
+      # floating toolchain has no business changing what a perf number means
+      # from one release to the next.
+      - uses: dtolnay/rust-toolchain@1.97.1
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+          key: perf-history
+
+      # profile.sh treats cargo-bloat as optional — skipped with its install
+      # line printed if absent — and it is not required for any of the three
+      # metrics publish-history.sh reads. Installed anyway for a complete deep
+      # profile; the cache above is what keeps a repeat of this cheap.
+      - name: Install cargo-bloat
+        run: cargo install cargo-bloat --locked
+
+      # perf/run.sh itself needs node (corpus generation, the comparison step).
+      # Pinned to match ci.yml's node jobs rather than trusting the runner
+      # image's default.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      # The literal release asset, not a fresh build: provably the bytes this
+      # release ships, and downloading it needs neither tauri-cli nor
+      # packaging/build.sh's ~8-minute pipeline.
+      - name: Download the shipped AppImage
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          V="${TAG#v}"
+          gh release download "$TAG" -R bongofongo/dreamd \
+            -p "dreamd-$V-x86_64-unknown-linux-gnu.AppImage" -O dreamd.AppImage
+
+      # first_paint / save_to_paint / peak_rss all come from a binary this step
+      # builds itself with --features perf (perf/run.sh, via startup.sh and
+      # loop.sh) — necessarily a SEPARATE build from the plain release the
+      # downloaded AppImage carries, since instrumentation never ships
+      # (CLAUDE.md: perf is "off-by-default"). Two different builds of the same
+      # commit is expected, not a bug.
+      #
+      # The whole tier runs under one xvfb-run rather than per-launch: the real
+      # app is launched many times across the debug and release real-app
+      # passes, and one Xvfb instance for the duration is what
+      # packaging/smoke.sh's own re-exec achieves for a single launch.
+      # WEBKIT_DISABLE_DMABUF_RENDERER=1 matches ci.yml's `launch` job's
+      # "must stay green" arm — a hosted runner has no GPU, so the accelerated
+      # path is not the one to trust here.
+      - name: Run deep perf tier
+        env:
+          WEBKIT_DISABLE_DMABUF_RENDERER: "1"
+        run: |
+          xvfb-run -a --server-args="-screen 0 1280x1024x24" \
+            perf/run.sh deep
+
+      # A glob into an array, not `ls ... | head -1`: this repo's own
+      # perf/scripts/startup.sh carries the same warning against piping into
+      # `head` under `pipefail` (SIGPIPE kills the upstream command and takes
+      # the whole script down with it, per perf/run.sh's `sort | head -1` note).
+      # Exactly one file is expected — one tier, one run, one machine.
+      - name: Locate the result file
+        id: result
+        run: |
+          set -euo pipefail
+          files=(perf/results/deep-*.json)
+          f="${files[0]}"
+          [[ -f "$f" ]] || { echo "no deep-tier result file produced" >&2; exit 1; }
+          echo "path=$PWD/$f" >> "$GITHUB_OUTPUT"
+
+      # Deliberately a second checkout rather than switching the first one:
+      # publish-history.sh derives its own root from its own script path
+      # (`$(dirname "${BASH_SOURCE[0]}")/../..`), so invoking THIS copy of it —
+      # under main-branch/ — is what makes it read and write
+      # main-branch/website/src/data/perf-history.json against main's current
+      # tip, and compute VERSION from main-branch/src-tauri/Cargo.toml, which
+      # should already carry the released version: the version bump lands on
+      # main before the tag that names it.
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          path: main-branch
+
+      - name: Record this release's numbers
+        run: |
+          set -euo pipefail
+          main-branch/perf/scripts/publish-history.sh \
+            "${{ steps.result.outputs.path }}" "$PWD/dreamd.AppImage"
+
+      - name: Commit and push
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          cd main-branch
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add website/src/data/perf-history.json
+          git diff --staged --quiet && { echo "perf-history.json unchanged"; exit 0; }
+          # [skip ci]: GitHub natively skips workflow runs for a push whose HEAD
+          # commit carries this — ci.yml triggers on every push to main, and
+          # this commit touches only inert JSON data no job here builds against.
+          git commit -m "chore(perf): record $TAG performance history [skip ci]"
+          git push origin main
