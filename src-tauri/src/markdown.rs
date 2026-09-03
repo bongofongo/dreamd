@@ -9,7 +9,9 @@
 
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 use serde::Serialize;
-use std::collections::HashSet;
+use std::collections::hash_map::DefaultHasher;
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 use syntect::highlighting::{Theme, ThemeSet};
@@ -97,6 +99,126 @@ fn escape_html(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
+}
+
+// ---- the code-block memo -------------------------------------------------
+//
+// A `:w` in Neovim re-renders the whole document, and syntect dominates that
+// cost on anything with code — yet a save typically changes one block and
+// leaves every other one byte-identical. So highlighted blocks are memoized
+// process-wide, next to `syntaxes()`/`themes()` and for the same reason: this
+// is a property of the binary, not of a window, and putting it in `AppState`
+// would thread a Tauri handle through `render_with` into a module the benches
+// and `mcp` use.
+//
+// Soundness rests on `highlight_code` being a pure function of
+// `(lang, code, theme)`: `find_syntax_by_token` reads the immutable static
+// `SyntaxSet` and `highlighted_html_for_string` builds a fresh `HighlightLines`
+// per call. The key carries the theme **name** rather than the resolved theme,
+// which is what makes a light/dark switch actually re-colour the code — the
+// colours are baked into the HTML, not into CSS. Two names that both fall back
+// to `CODE_THEME` cost one duplicate entry and never a wrong one.
+
+/// Cap on what the memo holds, summed over every stored key *and* its html.
+/// Not optional: `render_agent_text` feeds this cache from an agent's replies,
+/// which are unbounded in a way a repo's files are not.
+const CODE_CACHE_MAX_BYTES: usize = 16 * 1024 * 1024;
+
+/// One memoized block. The **whole** key is stored and compared on every hit —
+/// the hash only narrows the search, so a 64-bit collision is a miss rather
+/// than someone else's code block rendered in place of this one.
+struct CodeEntry {
+    theme: String,
+    lang: String,
+    code: String,
+    html: String,
+}
+
+impl CodeEntry {
+    fn matches(&self, theme: &str, lang: &str, code: &str) -> bool {
+        self.theme == theme && self.lang == lang && self.code == code
+    }
+
+    fn bytes(&self) -> usize {
+        self.theme.len() + self.lang.len() + self.code.len() + self.html.len()
+    }
+}
+
+#[derive(Default)]
+struct CodeCache {
+    /// Key hash -> every entry that hashed to it, oldest first.
+    buckets: HashMap<u64, Vec<CodeEntry>>,
+    /// One hash per live entry, in insertion order: the FIFO eviction queue.
+    order: VecDeque<u64>,
+    bytes: usize,
+}
+
+impl CodeCache {
+    fn get(&self, hash: u64, theme: &str, lang: &str, code: &str) -> Option<&str> {
+        self.buckets
+            .get(&hash)?
+            .iter()
+            .find(|e| e.matches(theme, lang, code))
+            .map(|e| e.html.as_str())
+    }
+
+    fn insert(&mut self, hash: u64, entry: CodeEntry) {
+        // A block repeated within one document misses twice and comes back
+        // twice; storing it twice would also make the byte count a lie.
+        let bucket = self.buckets.entry(hash).or_default();
+        if bucket
+            .iter()
+            .any(|e| e.matches(&entry.theme, &entry.lang, &entry.code))
+        {
+            return;
+        }
+        let bytes = entry.bytes();
+        if bytes > CODE_CACHE_MAX_BYTES {
+            return;
+        }
+        bucket.push(entry);
+        self.order.push_back(hash);
+        self.bytes += bytes;
+        while self.bytes > CODE_CACHE_MAX_BYTES && !self.order.is_empty() {
+            self.evict_oldest();
+        }
+    }
+
+    fn evict_oldest(&mut self) {
+        let Some(hash) = self.order.pop_front() else {
+            return;
+        };
+        let Some(bucket) = self.buckets.get_mut(&hash) else {
+            return;
+        };
+        if !bucket.is_empty() {
+            // Entries are pushed to the back of their bucket, so index 0 is the
+            // oldest insertion carrying this hash — the one the queue popped.
+            self.bytes -= bucket.remove(0).bytes();
+        }
+        if bucket.is_empty() {
+            self.buckets.remove(&hash);
+        }
+    }
+}
+
+fn code_cache() -> &'static Mutex<CodeCache> {
+    static C: OnceLock<Mutex<CodeCache>> = OnceLock::new();
+    C.get_or_init(Default::default)
+}
+
+fn code_key_hash(theme: &str, lang: &str, code: &str) -> u64 {
+    let mut h = DefaultHasher::new();
+    theme.hash(&mut h);
+    lang.hash(&mut h);
+    code.hash(&mut h);
+    h.finish()
+}
+
+/// Empty the code memo. A test and bench hook — the app never calls it, since
+/// every entry is keyed on everything that decides its html.
+pub fn clear_code_cache() {
+    *code_cache().lock().unwrap() = CodeCache::default();
 }
 
 /// Render markdown source to a sanitized HTML string, with fenced code blocks
@@ -281,43 +403,90 @@ struct Block {
     text: String,
 }
 
-/// Highlight every block, spreading them across the available cores. Returns
-/// `(event index, html)` pairs in arbitrary order.
+/// Highlight every block, spreading the ones the memo does not already know
+/// across the available cores. Returns `(event index, html)` pairs in arbitrary
+/// order.
+///
+/// The cache lock is taken exactly **twice, on this thread**: once to partition
+/// the blocks into hits and misses, once to store what the workers produced.
+/// The workers never touch it — 640 blocks contending on one mutex would cost
+/// more than the highlighting it saves.
 fn highlight_blocks(blocks: &[Block], theme_name: &str) -> Vec<(usize, String)> {
-    if blocks.len() < 2 {
-        let theme = code_theme(theme_name);
-        return blocks
-            .iter()
-            .map(|b| (b.at, highlight_code(&b.lang, &b.text, theme)))
-            .collect();
+    let mut out: Vec<(usize, String)> = Vec::with_capacity(blocks.len());
+    // `(block, key hash)` for everything the memo could not answer.
+    let mut misses: Vec<(&Block, u64)> = Vec::new();
+
+    {
+        let cache = code_cache().lock().unwrap();
+        for b in blocks {
+            let hash = code_key_hash(theme_name, &b.lang, &b.text);
+            match cache.get(hash, theme_name, &b.lang, &b.text) {
+                Some(html) => out.push((b.at, html.to_string())),
+                None => misses.push((b, hash)),
+            }
+        }
+    }
+    if misses.is_empty() {
+        return out;
     }
 
-    // Force the lazy syntect statics here rather than letting the workers race
-    // into `OnceLock::get_or_init`, which would just serialize them again.
-    syntaxes();
     let theme = code_theme(theme_name);
+    // `(index into misses, html)`.
+    let done: Vec<(usize, String)> = if misses.len() < 2 {
+        misses
+            .iter()
+            .enumerate()
+            .map(|(i, (b, _))| (i, highlight_code(&b.lang, &b.text, theme)))
+            .collect()
+    } else {
+        // Force the lazy syntect statics here rather than letting the workers
+        // race into `OnceLock::get_or_init`, which would just serialize them
+        // again.
+        syntaxes();
 
-    let next = AtomicUsize::new(0);
-    let out = Mutex::new(Vec::with_capacity(blocks.len()));
-    let workers = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(1)
-        .min(blocks.len());
+        let next = AtomicUsize::new(0);
+        let fresh = Mutex::new(Vec::with_capacity(misses.len()));
+        let workers = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1)
+            .min(misses.len());
 
-    // Blocks vary hugely in size, so workers pull the next index rather than
-    // taking a fixed slice.
-    std::thread::scope(|scope| {
-        for _ in 0..workers {
-            scope.spawn(|| {
-                while let Some(b) = blocks.get(next.fetch_add(1, Ordering::Relaxed)) {
+        // Blocks vary hugely in size, so workers pull the next index rather
+        // than taking a fixed slice.
+        std::thread::scope(|scope| {
+            for _ in 0..workers {
+                scope.spawn(|| loop {
+                    let i = next.fetch_add(1, Ordering::Relaxed);
+                    let Some((b, _)) = misses.get(i) else {
+                        break;
+                    };
                     let html = highlight_code(&b.lang, &b.text, theme);
-                    out.lock().unwrap().push((b.at, html));
-                }
-            });
-        }
-    });
+                    fresh.lock().unwrap().push((i, html));
+                });
+            }
+        });
 
-    out.into_inner().unwrap()
+        fresh.into_inner().unwrap()
+    };
+
+    {
+        let mut cache = code_cache().lock().unwrap();
+        for (i, html) in done {
+            let (b, hash) = misses[i];
+            cache.insert(
+                hash,
+                CodeEntry {
+                    theme: theme_name.to_string(),
+                    lang: b.lang.clone(),
+                    code: b.text.clone(),
+                    html: html.clone(),
+                },
+            );
+            out.push((b.at, html));
+        }
+    }
+
+    out
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -697,6 +866,114 @@ mod tests {
         // future switch of renderer is exactly when this would regress.
         let html = render("[x](https://e.com/\"onmouseover=\"alert(1))\n");
         assert!(!html.contains("onmouseover=\"alert"), "{html:?}");
+    }
+
+    // ---- the code-block memo ----------------------------------------------
+    //
+    // Every one of these is a way the cache could be *wrong* rather than slow:
+    // a key that drops the lang or the theme is invisible until a reader
+    // switches palette and the code does not move.
+
+    const SNIPPET: &str = "fn main() { let x = 1; }\n";
+
+    fn fenced(lang: &str) -> String {
+        format!("```{lang}\n{SNIPPET}```\n")
+    }
+
+    #[test]
+    fn the_same_code_in_two_languages_is_not_one_cache_entry() {
+        let rust = render(&fenced("rust"));
+        let python = render(&fenced("python"));
+        assert_ne!(rust, python, "lang dropped from the key");
+        // ...and each is stable when it is the cached one being asked for.
+        assert_eq!(rust, render(&fenced("rust")));
+        assert_eq!(python, render(&fenced("python")));
+    }
+
+    #[test]
+    fn the_same_code_under_two_themes_is_not_one_cache_entry() {
+        let src = fenced("rust");
+        let dark = render_with(&src, CODE_THEME);
+        let light = render_with(&src, "InspiredGitHub");
+        assert_ne!(dark, light, "theme name dropped from the key");
+        assert_eq!(dark, render_with(&src, CODE_THEME));
+    }
+
+    #[test]
+    fn a_warm_cache_renders_byte_identically_to_a_cold_one() {
+        // Two blocks so the parallel path is taken, one of them repeated so the
+        // partition has to keep hits and misses in the same document straight.
+        let src = format!(
+            "intro\n\n{}\n{}\n{}",
+            fenced("rust"),
+            fenced("python"),
+            fenced("rust")
+        );
+        let warm = render(&src);
+        clear_code_cache();
+        let cold = render(&src);
+        assert_eq!(cold, warm);
+        assert_eq!(render(&src), cold);
+    }
+
+    #[test]
+    fn the_cache_stays_under_its_byte_cap_and_its_own_books_balance() {
+        // Drives `CodeCache::insert` directly rather than through `render_with`
+        // -- exercising eviction through real syntect highlighting would mean
+        // megabytes of source for a test that only needs to check bookkeeping.
+        // `clear_code_cache` makes this independent of test execution order,
+        // since the cache is a process-wide static every test in this module
+        // shares.
+        clear_code_cache();
+        let mut cache = code_cache().lock().unwrap();
+
+        // Each entry is ~100 KiB of html; comfortably more than
+        // `CODE_CACHE_MAX_BYTES` worth get inserted, so eviction must run.
+        let big = "x".repeat(100 * 1024);
+        for i in 0..400 {
+            let lang = format!("lang{i}");
+            let code = format!("code{i}");
+            let hash = code_key_hash("dark", &lang, &code);
+            cache.insert(
+                hash,
+                CodeEntry {
+                    theme: "dark".to_string(),
+                    lang,
+                    code,
+                    html: big.clone(),
+                },
+            );
+        }
+
+        assert!(
+            cache.bytes <= CODE_CACHE_MAX_BYTES,
+            "cache reports {} bytes, over the {} cap",
+            cache.bytes,
+            CODE_CACHE_MAX_BYTES
+        );
+
+        // The two structures must agree on which entries are alive: one hash
+        // in `order` per live entry, and `bytes` must equal what the live
+        // entries actually total -- not just a number that happens to be
+        // under the cap.
+        let live: usize = cache.buckets.values().map(|b| b.len()).sum();
+        assert_eq!(
+            cache.order.len(),
+            live,
+            "order queue and buckets disagree on how many entries are live"
+        );
+        let recomputed: usize = cache.buckets.values().flatten().map(CodeEntry::bytes).sum();
+        assert_eq!(
+            cache.bytes, recomputed,
+            "accounted bytes drifted from the entries actually stored"
+        );
+        assert!(
+            !cache.buckets.values().any(Vec::is_empty),
+            "empty bucket left behind after eviction"
+        );
+
+        drop(cache);
+        clear_code_cache();
     }
 
     // ---- heading slugs ----------------------------------------------------

@@ -9,8 +9,26 @@
 //!                   B3 moves it to a background thread at startup; this group
 //!                   is how we know what that's worth.
 //!
-//!   `render`        steady-state parse + highlight, with syntect already warm.
-//!                   Mixing the two would make every render number a lie.
+//!   `render`        steady-state parse + emit, with syntect **and the
+//!                   code-block memo** already warm. Mixing in the dump load
+//!                   would make every render number a lie.
+//!
+//! **`render/code/*` and `render/mixed/*` overstate the code memo enormously —
+//! do not read them as a speed-up.** `markdown::highlight_blocks` memoizes
+//! highlighted fences process-wide on `(theme, lang, code)`, and criterion runs
+//! the same document thousands of times, so from the second iteration on every
+//! fence is a hit and syntect never runs at all. Worse, the corpus repeats
+//! itself: the generated documents draw on **32 distinct code blocks**, so even
+//! the first iteration of a 640-block document highlights 32 of them. What
+//! these groups measure now is parse, memo lookup and `push_html` — real work,
+//! and a genuine regression in it still shows up here, but the ratio to the
+//! pre-memo numbers is an artefact of the corpus.
+//!
+//! The honest measure of the memo is `perf/scripts/loop.sh`'s `save_to_paint`:
+//! a real edit to a real file, where exactly one block changed and the rest
+//! were highlighted in some earlier render rather than in this iteration.
+//! `markdown::clear_code_cache()` is available if a bench ever wants the cold
+//! path back.
 
 mod common;
 

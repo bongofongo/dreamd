@@ -318,6 +318,25 @@ the upgrade procedure.
   name, and a capped listing.
 - `markdown` — pulldown-cmark → HTML, syntect for fenced code. Raw source HTML is
   re-emitted as `Event::Text` (escaped); only syntect's own markup is trusted.
+  Highlighted blocks are memoized process-wide, next to `syntaxes()`/`themes()`
+  and for the same reason — a save typically changes one block and leaves every
+  other one byte-identical, so a `:w` re-running syntect on all of them is waste.
+  The key is `(theme name, lang, code)`, and the **whole** key is stored and
+  compared on a hit, not just its hash — a 64-bit collision is a miss rather than
+  someone else's code block rendered in place of this one. The theme *name*,
+  not the resolved theme, is what's keyed on, because that's what makes an
+  appearance switch actually re-colour the code — the colours are baked into the
+  HTML, not CSS. Bounded (`CODE_CACHE_MAX_BYTES`, FIFO eviction) because
+  `render_agent_text` feeds it from an agent's replies, which are unbounded in a
+  way a repo's files are not; nothing here touches tenet 2, since none of it is
+  written to disk. The lock is taken twice, on the calling thread — once to
+  split blocks into hits and misses, once to store what the workers produced —
+  and never by the workers themselves, which is what keeps 640 blocks from
+  contending on one mutex. **`bench.render/code/*` and `render/mixed/*` are
+  misleading for this path**: the perf corpus has 32 unique fences in 640 and
+  criterion re-renders the same document every iteration, so from iteration 2
+  the memo never misses — the honest measure is `perf/scripts/loop.sh`'s
+  `save_to_paint`.
 - `annotations::Store` — `Highlight { quote, prefix, suffix, line_start/end, state }` plus an
   ordered `stack` of ids. `set_annotation` is what enqueues a pair. `mark_sent`
   stamps `sent_at`, sets `prior`, and takes the ids off the stack; the `prior` is
