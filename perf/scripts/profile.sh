@@ -90,7 +90,7 @@ if have samply; then
     fi
   fi
 else
-  skip "samply" "brew install samply"
+  skip "samply" "cargo install samply (or: brew install samply)"
 fi
 
 # ---- Instruments: App Launch + Time Profiler -----------------------------

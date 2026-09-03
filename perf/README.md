@@ -16,17 +16,31 @@ records instead of comparing, which is what a fresh clone does.
 
 ## Setup
 
-Nothing is required for the Rust benches. The rest:
+**Two tools are required**, and `run.sh` refuses to start without them rather than
+measuring for a minute and writing nothing:
 
 ```sh
-brew install hyperfine samply      # startup timing, flamegraphs
-cargo install cargo-bloat          # binary composition (deep tier)
-cd perf/harness && npm run setup   # Playwright + Chromium (test-only)
+brew install jq          # macOS
+sudo pacman -S jq        # Arch
+sudo apt install jq      # Debian / Ubuntu
 ```
 
-Every tool is optional. A missing one is skipped with its install line printed rather
-than failing the run — but a tier that skipped half its work says so, and you should
-believe it.
+`node` is the other, and is assumed — it drives the corpus generator, the Chromium
+scenarios and the comparison. `jq` assembles every result file, here and in
+`scripts/`. A machine without it used to run the whole sweep, produce no result
+file, and exit 0, which reads exactly like a tier that passed; now it is a
+two-line failure before anything is measured.
+
+Everything else is optional and is skipped with its install line printed:
+
+```sh
+brew install hyperfine samply       # startup timing, flamegraphs (macOS)
+cargo install hyperfine samply      # the same two, any platform
+cargo install cargo-bloat           # binary composition (deep tier)
+cd perf/harness && npm run setup    # Playwright + Chromium (test-only)
+```
+
+A tier that skipped half its work says so, and you should believe it.
 
 **Nothing here ships.** `perf/harness/` has its own `package.json`, `node_modules` is
 gitignored, and `tauri.conf.json` still points `frontendDist` at `../ui`. Node is a
@@ -57,7 +71,7 @@ report should keep that distinction visible.
 ```
 perf/
 ├── run.sh                  the only entry point
-├── baseline.json           reference numbers, if any — gitignored, see Baselines
+├── baselines/<machine>.json this machine's reference numbers — gitignored, see Baselines
 ├── corpus/gen.mjs          deterministic fixture generator
 ├── corpus/manifest.json    committed sizes + sha256
 ├── lib/report.mjs          flatten + diff + render the table
@@ -156,33 +170,59 @@ statistically the way a microbenchmark can:
 
 ## Baselines
 
-**The baseline is not in this repo.** It is one developer's machine — an arm64
-Mac, WKWebView, APFS, FSEvents — and it is working material rather than product,
-so it lives in the private notes repo alongside the session log. `run.sh`
-resolves it, first hit wins:
+**Baselines are per machine, and none of them is in this repo.** A timing is a
+fact about a computer as much as about the code, so there is one reference file
+per machine and a comparison only ever happens against a file *this* machine
+wrote. They are working material rather than product, so they live in the
+private notes repo alongside the session log when it is cloned.
+
+The machine's identity is `<os>-<arch>-<hostname>` — `darwin-arm64-mbp`,
+`linux-x86_64-arch-fongo` — computed from `uname`, slugged because it becomes a
+filename, and recorded in every result file under `meta.machine`. A result file
+therefore says which computer produced it, which matters because a baseline is
+just a result that was kept. `run.sh` prints the id at the top of every run.
+
+`run.sh` resolves the baseline, first hit wins:
 
 | | |
 | --- | --- |
 | `$DREAMD_PERF_BASELINE` | explicit override, for an A/B against an arbitrary file |
-| `notes/perf-baseline.json` | the private notes repo, cloned at `notes/` |
-| `perf/baseline.json` | a purely local one — gitignored, never committed here |
+| `notes/perf-baselines/<machine>.json` | the private notes repo, cloned at `notes/` |
+| `perf/baselines/<machine>.json` | a purely local one — gitignored, never committed here |
 
 None of the three is required, and a missing baseline is **not an error**: the
 tier runs, `perf/results/` is written, the comparison is skipped with a line
 saying so, and the exit status is the tier's own. A red table about a machine
 nobody has would be worse than no table.
 
-The baseline is only ever written by `./perf/run.sh deep --update-baseline`, to
-whichever of the three paths resolves for writing (the notes clone when it is
-there, `perf/baseline.json` otherwise). Never by `quick` or `pass` — their
-reduced sample counts are not a reference point, and the runner refuses. It is
-also refused off Darwin, where it would re-zero every macOS comparison against a
-different computer.
+An explicitly named `$DREAMD_PERF_BASELINE` is compared whatever machine it came
+from — naming one is a deliberate act, and an A/B against an arbitrary file is
+what the variable is for. The keyed paths need no such check: matching one means
+this machine's id is in the filename.
+
+The baseline is only ever written by `./perf/run.sh deep --update-baseline`, and
+always to a keyed path (the notes clone when it is there, `perf/baselines/`
+otherwise). Never by `quick` or `pass` — their reduced sample counts are not a
+reference point, and the runner refuses. **Every machine can update its own**,
+which is safe precisely because the filename carries the id: no run can name
+another machine's file, so the guarantee the old Darwin-only rule was making —
+that a Linux run cannot re-zero a macOS reference — now holds without confining
+the tool to one computer.
 
 A baseline that drifts on its own hides exactly the slow regression it exists to
 catch. Update it deliberately, in the same commit as the change that justified it,
 with the before/after in the commit message — that commit lands in the notes repo,
 next to the dreamd commit it belongs to.
+
+### The pre-keying baselines
+
+`notes/perf-baseline.json` and `perf/baseline.json` are the old single-file
+names, written before baselines were keyed. There was one machine then and it
+was the arm64 Mac, so an unstamped file is compared **only on macOS**. Elsewhere
+it still resolves, so the run can name the file it is declining to use rather
+than claiming there is no baseline at all while one sits right there. The first
+`deep --update-baseline` on any machine writes a keyed file, which outranks
+these, and the old name ages out on its own. Nothing needs migrating by hand.
 
 **The deep tier runs the real app twice**, once debug and once release, and that is
 what makes the pass tier's `real.*` numbers checkable at all. Metric paths carry the
@@ -192,10 +232,10 @@ measured release alone would leave every pass-tier `real.*` metric permanently
 baseline-less, including `events_per_save` and `save_to_paint_ms`. Deep is a superset
 of pass: the same debug workload pass runs, plus the release one on top.
 
-**Known-stale:** the current baseline's `real.*` entries predate profile keying and
-sit at the old paths, so every `real.*` metric shows as `new` and the old names show
-under "not measured this run". The next `./perf/run.sh deep --update-baseline`
-realigns them — for both profiles, now that deep measures both. `bench.*` and
+**Known-stale:** the arm64 Mac's baseline has `real.*` entries that predate profile
+keying and sit at the old paths, so every `real.*` metric shows as `new` and the old
+names show under "not measured this run". The next `./perf/run.sh deep
+--update-baseline` on that machine realigns them — for both profiles, now that deep measures both. `bench.*` and
 `chromium.*` are current. The baseline is deliberately not hand-edited to patch this:
 a baseline you can edit by hand is not evidence of anything.
 

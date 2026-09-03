@@ -22,7 +22,7 @@ cargo bench --bench render           # one bench target: render | locate | searc
 cargo bench --bench locate -- locate_single/today  # a single case (filter is a regex)
 
 ./perf/run.sh quick|pass|deep [--verbose] [--no-window]
-./perf/run.sh deep --update-baseline # the ONLY way the perf baseline changes (it lives in notes/)
+./perf/run.sh deep --update-baseline # the ONLY way a perf baseline changes (per machine, in notes/)
 node perf/corpus/gen.mjs             # rebuild fixtures (run.sh does this itself)
 cd perf/harness && npm run setup     # Playwright + Chromium, test-only, never ships
 ```
@@ -850,17 +850,31 @@ highlights from a corpus fixture.
   `/perf-pass` (~5min) before a large commit touching `src-tauri/` or `ui/` (do `/perf-quick` for smaller commits), `/perf-deep`
   (~20min) to profile or move the baseline only on user request. The baseline
   changes only via `perf-deep`, alongside the change that justified it.
-  **The baseline is not in this repo.** It is one machine's numbers, so it is
-  working material, and it lives at `notes/perf-baseline.json`. `run.sh` resolves
-  `$DREAMD_PERF_BASELINE`, then `notes/perf-baseline.json`, then a gitignored
-  local `perf/baseline.json`, and **a missing one is not an error** — the tier
-  runs, `perf/results/` is written, the comparison is skipped with a line saying
-  so, and the exit status is the tier's own. That is what a clone without `notes/`
-  gets, and nothing tracked here may assume otherwise.
-  **The baseline is also macOS-only and `run.sh` enforces it**: off Darwin no
-  comparison is made and `--update-baseline` is refused. To detect a regression on
-  Linux, A/B two trees on the same machine — a diff against one arm64 Mac's numbers
-  is noise wearing a regression's clothes.
+  **Baselines are per machine and none is in this repo.** They are working
+  material, so they live at `notes/perf-baselines/<machine>.json`. The machine id
+  is `<os>-<arch>-<hostname>` from `uname` (`darwin-arm64-mbp`,
+  `linux-x86_64-arch-fongo`), slugged because it is a filename, and stamped into
+  every result under `meta.machine` — a baseline is just a result that was kept,
+  so it says which computer wrote it rather than relying on where it is filed.
+  `run.sh` resolves `$DREAMD_PERF_BASELINE`, then
+  `notes/perf-baselines/<machine>.json`, then a gitignored local
+  `perf/baselines/<machine>.json`, and **a missing one is not an error** — the
+  tier runs, `perf/results/` is written, the comparison is skipped with a line
+  saying so, and the exit status is the tier's own. That is what a clone without
+  `notes/` gets, and nothing tracked here may assume otherwise.
+  **Every machine may update its own**, and that is safe because the filename
+  carries the id: no run can name another machine's file. This replaced a
+  `uname -s != Darwin` refusal that was a proxy for "the one Mac the baseline came
+  from" — right about the danger, wrong that it needed one computer, and it left
+  every other machine with no regression signal but a hand-run A/B.
+  `notes/perf-baseline.json` and `perf/baseline.json` are the pre-keying names,
+  still *read* but compared **only on macOS**, since an unstamped file can only be
+  that Mac's; off it they resolve so the run can name what it is declining to use.
+  The first `deep --update-baseline` anywhere writes a keyed file, which outranks
+  them.
+  **`jq` and `node` are required** and `run.sh` refuses to start without them —
+  before that check a machine without `jq` ran the whole sweep, wrote no result
+  file and exited 0, which is indistinguishable from a clean tier.
 - Numbers from `perf/harness/` are Chromium, **not** WKWebView — relative regression
   signal only. Say so whenever quoting one. `perf/harness/ui-check.mjs` is the exception:
   it lives there for the Playwright install, asserts on DOM and IPC rather than timings,
@@ -952,7 +966,8 @@ In `notes/`:
 - `notes/todo.md`, `notes/todo2.md` — queues, not logs. An item is **deleted**
   when it lands; the history is `session-log.md`'s job. A queue nobody clears
   reads as a list of things that don't work.
-- `notes/perf-baseline.json` — the perf reference numbers; see Working practices.
+- `notes/perf-baselines/<machine>.json` — the perf reference numbers, one file
+  per machine; see Working practices.
 - `notes/workflows/perf.yml` — the perf workflow, parked rather than run.
 
 Keep this CLAUDE.md terse and machine-facing — human-facing guidance belongs in

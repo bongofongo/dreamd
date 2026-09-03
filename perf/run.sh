@@ -11,6 +11,10 @@
 # against the baseline, if there is one. See "where is the baseline?" below —
 # it is not tracked in this repo, and a tree without one still runs every tier.
 #
+# Baselines are PER MACHINE. Every machine can record and update its own, and a
+# comparison only ever happens against a file this machine wrote — those are the
+# same rule, since timings are a property of the computer as much as the code.
+#
 # The baseline is NEVER updated automatically. A baseline that drifts on its own
 # hides exactly the slow regression it exists to catch.
 #
@@ -43,15 +47,72 @@ case "$TIER" in
   *) echo "usage: ./perf/run.sh {quick|pass|deep} [--update-baseline] [--verbose] [--no-window]" >&2; exit 2 ;;
 esac
 
+# ---- required tools ------------------------------------------------------
+# Everything in perf/README.md's Setup section is optional and is skipped with
+# its install line printed. These two are not: `node` drives the corpus, the
+# Chromium scenarios and the comparison, and `jq` assembles every result file
+# here and in scripts/. Unchecked, a machine without jq ran the entire sweep,
+# wrote nothing, and exited 0 — which is indistinguishable from a clean tier.
+# Fail before the lock and before anything is measured.
+MISSING_TOOLS=()
+for tool in node jq; do
+  command -v "$tool" >/dev/null 2>&1 || MISSING_TOOLS+=("$tool")
+done
+if (( ${#MISSING_TOOLS[@]} )); then
+  echo "perf/run.sh requires: ${MISSING_TOOLS[*]}" >&2
+  echo "  macOS:   brew install ${MISSING_TOOLS[*]}" >&2
+  echo "  Arch:    sudo pacman -S ${MISSING_TOOLS[*]}" >&2
+  echo "  Debian:  sudo apt install ${MISSING_TOOLS[*]}" >&2
+  exit 2
+fi
+
+# ---- which machine is this? ----------------------------------------------
+# A timing is a fact about a machine as much as about the code, so a comparison
+# is only meaningful against numbers *this* machine produced. That rule used to
+# be spelled "Darwin only", which was a proxy for "the one Mac the baseline came
+# from" — true while there was one machine, and wrong the moment there were two:
+# it left every other machine unable to record a reference of its own, so the
+# only regression signal off that Mac was a hand-run A/B.
+#
+# The identity is recorded in the results and the baseline file is named after
+# it. Two machines therefore cannot overwrite each other's references, and
+# cannot be diffed against each other by accident — the same two guarantees the
+# Darwin check was making, without being confined to one computer.
+MACHINE_OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
+MACHINE_ARCH="$(uname -m)"
+# `uname -n` rather than `hostname`: hostname is not installed on a minimal Arch
+# box (it is inetutils, not coreutils), and falling back to a literal "unknown"
+# would key every such machine to the same file. uname is POSIX and is already
+# being run twice above. The first dot-component only — a Mac's name picks up a
+# `.local` suffix that comes and goes with the network, and the id has to be the
+# same file every day.
+MACHINE_HOST="$(uname -n 2>/dev/null || echo unknown)"
+MACHINE_HOST="${MACHINE_HOST%%.*}"
+[[ -n "$MACHINE_HOST" ]] || MACHINE_HOST="unknown"
+# `sysctl` is macOS, `nproc` is Linux. This was a bare `sysctl … || echo 8`, so
+# every Linux run silently recorded 8 cores and sized the load warning against a
+# core count it had made up.
+NCPU="$(sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 8)"
+case "$MACHINE_OS" in
+  darwin) MACHINE_CPU="$(sysctl -n machdep.cpu.brand_string 2>/dev/null || echo "")" ;;
+  linux)  MACHINE_CPU="$(sed -n 's/^model name[[:space:]]*: //p' /proc/cpuinfo 2>/dev/null | head -1)" ;;
+  *)      MACHINE_CPU="" ;;
+esac
+[[ -n "$MACHINE_CPU" ]] || MACHINE_CPU="unknown"
+# The id becomes a filename, so it is slugged rather than trusted. os+arch alone
+# would collide two different Linux boxes; the hostname is what separates them.
+MACHINE_ID="$(printf '%s-%s-%s' "$MACHINE_OS" "$MACHINE_ARCH" "$MACHINE_HOST" \
+  | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9._-' '-' | sed -E 's/-+/-/g; s/^-//; s/-$//')"
+
 # ---- where is the baseline? ----------------------------------------------
 # The reference numbers are not tracked in this repo. They are working material
-# — one developer's machine, moved by hand in the commit that justified it — and
-# they live in the private notes repo, cloned at notes/ and gitignored here.
+# — one machine's, moved by hand in the commit that justified it — and they live
+# in the private notes repo, cloned at notes/ and gitignored here.
 #
 # Resolution order, first hit wins:
-#   $DREAMD_PERF_BASELINE   explicit override, for A/B against an arbitrary file
-#   notes/perf-baseline.json    the checked-out private notes
-#   perf/baseline.json          a purely local one, also gitignored
+#   $DREAMD_PERF_BASELINE                     explicit override, for an A/B
+#   notes/perf-baselines/<machine>.json       the checked-out private notes
+#   perf/baselines/<machine>.json             a purely local one, also gitignored
 #
 # None of the three is required. A clone without notes/ — which is what a
 # contributor has — runs every tier in full and simply has nothing to diff
@@ -59,45 +120,49 @@ esac
 # thing that can fail this script. Silence about a comparison nobody can make
 # beats a red table about a machine nobody has.
 BASELINE=""
+BASELINE_APPLIES=0
 for candidate in \
   "${DREAMD_PERF_BASELINE:-}" \
-  "$ROOT/notes/perf-baseline.json" \
-  "$ROOT/perf/baseline.json"
+  "$ROOT/notes/perf-baselines/$MACHINE_ID.json" \
+  "$ROOT/perf/baselines/$MACHINE_ID.json"
 do
-  if [[ -n "$candidate" && -f "$candidate" ]]; then BASELINE="$candidate"; break; fi
+  if [[ -n "$candidate" && -f "$candidate" ]]; then
+    # An explicitly named file is compared whatever machine it came from: naming
+    # one is a deliberate act, and A/B against an arbitrary file is what the
+    # variable is for. The keyed paths carry this machine's id in the name, so
+    # matching one is itself the proof that it applies.
+    BASELINE="$candidate"; BASELINE_APPLIES=1; break
+  fi
 done
+
+# The pre-keying baselines: a single file, no machine recorded. There was one
+# machine when they were written and it was the arm64 Mac, so that is the only
+# thing an unstamped file may be compared against. Elsewhere it still *resolves*
+# — so the run can name the file it is declining to use — but it does not apply.
+# The first `deep --update-baseline` on any machine writes a keyed file, which
+# outranks these, and the legacy file ages out on its own.
+if [[ -z "$BASELINE" ]]; then
+  for candidate in "$ROOT/notes/perf-baseline.json" "$ROOT/perf/baseline.json"; do
+    if [[ -f "$candidate" ]]; then
+      BASELINE="$candidate"
+      [[ "$MACHINE_OS" == "darwin" ]] && BASELINE_APPLIES=1
+      break
+    fi
+  done
+fi
 
 # Where --update-baseline writes. Not the same question: the file may not exist
 # yet, and the first `deep --update-baseline` in a fresh tree has to put it
 # somewhere. Prefer the notes clone when it is present, so the numbers keep
 # moving through that repo's history rather than accumulating untracked here.
+# Always a keyed path — this is what makes updating safe on every machine
+# rather than on one, since no run can name another machine's file.
 if [[ -n "${DREAMD_PERF_BASELINE:-}" ]]; then
   BASELINE_WRITE="$DREAMD_PERF_BASELINE"
 elif [[ -d "$ROOT/notes/.git" ]]; then
-  BASELINE_WRITE="$ROOT/notes/perf-baseline.json"
+  BASELINE_WRITE="$ROOT/notes/perf-baselines/$MACHINE_ID.json"
 else
-  BASELINE_WRITE="$ROOT/perf/baseline.json"
-fi
-
-# ---- whose numbers are these? --------------------------------------------
-# The baseline is one machine's numbers — an arm64 Mac, WKWebView, APFS,
-# FSEvents. Diffing a Linux run against it does not measure a regression, it
-# measures the two machines, and every row would come back red on a tree nobody
-# touched. The tiers still RUN on Linux and still write perf/results/ — what is
-# withheld is the comparison, because a comparison against the wrong reference
-# is worse than none: it is noise wearing a regression's clothes.
-#
-# Updating it from here is refused outright for the same reason, one step
-# harder: that would replace the reference rather than misread it.
-BASELINE_APPLIES=1
-if [[ "$(uname -s)" != "Darwin" ]]; then
-  BASELINE_APPLIES=0
-  if (( UPDATE_BASELINE )); then
-    echo "refusing to update ${BASELINE_WRITE#"$ROOT"/} from $(uname -s)." >&2
-    echo "the baseline is a macOS machine's numbers; overwriting it here would" >&2
-    echo "silently re-zero every macOS comparison against a different computer." >&2
-    exit 2
-  fi
+  BASELINE_WRITE="$ROOT/perf/baselines/$MACHINE_ID.json"
 fi
 
 # A baseline that is not there is a fine state to be in; one named explicitly
@@ -123,10 +188,14 @@ fi
 cleanup_lock() { rmdir "$LOCK" 2>/dev/null || true; }
 
 # ---- machine state -------------------------------------------------------
-# Timings are only meaningful relative to the machine that produced them, so
-# the state gets recorded alongside them rather than assumed.
-NCPU="$(sysctl -n hw.ncpu 2>/dev/null || echo 8)"
-LOAD1="$(uptime | sed -E 's/.*load averages?: ([0-9.]+).*/\1/')"
+# Which machine this is was settled above and is recorded in meta.machine. What
+# is left is the part that changes minute to minute: how busy it is right now.
+echo "machine: $MACHINE_ID ($MACHINE_CPU, $NCPU cores)" >&2
+# macOS says "load averages: 1.2 3.4 5.6", Linux "load average: 1.2, 3.4, 5.6".
+# Both are covered; anything else falls back to 0 rather than feeding a sentence
+# to --argjson, which would abort the assemble step after the whole sweep ran.
+LOAD1="$(uptime | sed -E 's/.*load averages?:[[:space:]]*([0-9.]+).*/\1/')"
+[[ "$LOAD1" =~ ^[0-9]+(\.[0-9]+)?$ ]] || LOAD1=0
 if awk -v l="$LOAD1" -v n="$NCPU" 'BEGIN { exit !(l > n * 0.6) }'; then
   echo "" >&2
   echo "WARNING: load average is $LOAD1 on $NCPU cores — the machine is busy." >&2
@@ -300,6 +369,9 @@ esac
 jq -n \
   --arg tier "$TIER" --arg sha "$SHA" --arg stamp "$STAMP" \
   --argjson load1 "${LOAD1:-0}" --argjson ncpu "$NCPU" \
+  --arg machine_id "$MACHINE_ID" --arg machine_os "$MACHINE_OS" \
+  --arg machine_arch "$MACHINE_ARCH" --arg machine_host "$MACHINE_HOST" \
+  --arg machine_cpu "$MACHINE_CPU" \
   --argjson benches "$BENCHES" \
   --argjson startup "$STARTUP" --argjson loop "$LOOP" --argjson profile "$PROFILE" \
   --argjson startup_debug "$STARTUP_DEBUG" --argjson loop_debug "$LOOP_DEBUG" \
@@ -318,7 +390,17 @@ jq -n \
    # of one overwriting the other.
    def both(a; b): ((a // {}) + (b // {})) | if . == {} then null else . end;
    {
-     meta: { tier: $tier, sha: $sha, stamp: $stamp, load1: $load1, ncpu: $ncpu },
+     # meta.machine is what makes a result file self-describing: a baseline is
+     # just a result that was kept, so a file found later says which computer it
+     # came from instead of relying on where it happens to be filed.
+     # report.mjs skips everything under meta., so none of this reaches the table.
+     meta: {
+       tier: $tier, sha: $sha, stamp: $stamp, load1: $load1, ncpu: $ncpu,
+       machine: {
+         id: $machine_id, os: $machine_os, arch: $machine_arch,
+         host: $machine_host, cpu: $machine_cpu
+       }
+     },
      bench: $benches,
      # Keyed by build profile as well as workload. `pass` measures the debug
      # binary and `deep` measures both — the same code differs several-fold
@@ -351,20 +433,24 @@ say "results -> ${OUT#"$ROOT"/}"
 STATUS=0
 if [[ -z "$BASELINE" ]]; then
   # Not an error. The tier ran, the numbers are on disk, there is simply
-  # nothing on this machine to compare them to.
+  # nothing for this machine to compare them to yet.
   echo "" >&2
-  echo "no baseline on this machine — recorded, but not compared." >&2
+  echo "no baseline for $MACHINE_ID — recorded, but not compared." >&2
   echo "raw numbers: ${OUT#"$ROOT"/}" >&2
-  echo "the reference numbers live in the private notes repo; clone it at notes/" >&2
-  echo "to get them, or establish your own with: ./perf/run.sh deep --update-baseline" >&2
+  echo "establish this machine's reference with: ./perf/run.sh deep --update-baseline" >&2
+  echo "  -> ${BASELINE_WRITE#"$ROOT"/}" >&2
 elif (( BASELINE_APPLIES )); then
   node perf/lib/compare.mjs "$OUT" "$BASELINE" "$VERBOSE" || STATUS=$?
 else
+  # Reached only by a legacy unstamped baseline on a machine that is not the Mac
+  # that wrote it. Naming the file matters: the alternative reads as "you have no
+  # baseline", and the reader goes looking for one that is sitting right there.
   echo "" >&2
-  echo "no baseline comparison on $(uname -s) — ${BASELINE#"$ROOT"/} is macOS-only." >&2
+  echo "not comparing against ${BASELINE#"$ROOT"/}: it carries no machine stamp," >&2
+  echo "so it can only be the arm64 Mac's, and this is $MACHINE_ID." >&2
   echo "raw numbers: ${OUT#"$ROOT"/}" >&2
-  echo "to detect a regression here, A/B this tree against the one you changed it from" >&2
-  echo "on this same machine." >&2
+  echo "give this machine its own with: ./perf/run.sh deep --update-baseline" >&2
+  echo "  -> ${BASELINE_WRITE#"$ROOT"/}" >&2
 fi
 
 if (( UPDATE_BASELINE )); then
@@ -377,7 +463,7 @@ if (( UPDATE_BASELINE )); then
   mkdir -p "$(dirname "$BASELINE_WRITE")"
   cp "$OUT" "$BASELINE_WRITE"
   echo "" >&2
-  echo "baseline updated from $OUT" >&2
+  echo "baseline for $MACHINE_ID updated from $OUT" >&2
   echo "  -> ${BASELINE_WRITE#"$ROOT"/}" >&2
   if [[ "$BASELINE_WRITE" == "$ROOT/notes/"* ]]; then
     echo "commit it in notes/, alongside the dreamd change that justified it." >&2

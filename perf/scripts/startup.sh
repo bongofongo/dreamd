@@ -80,7 +80,7 @@ if command -v hyperfine >/dev/null 2>&1; then
   prewindow="$(jq '[.results[] | {name: .command, mean_ms: (.mean*1000), stddev_ms: (.stddev*1000), min_ms: (.min*1000)}]' "$hyperfine_json")"
 else
   echo "hyperfine not installed — skipping the statistical sweep." >&2
-  echo "  install it with:  brew install hyperfine" >&2
+  echo "  install it with:  brew install hyperfine   (or: cargo install hyperfine)" >&2
   prewindow='[]'
 fi
 
