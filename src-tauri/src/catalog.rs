@@ -9,15 +9,19 @@
 //! instead of the whole process blocking before the window exists.
 
 use std::path::Path;
-use std::sync::{Condvar, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 
 use crate::fs_walk::{self, FileNode};
 use crate::perf;
 use crate::search::SearchIndex;
 
+/// `Arc`s so a handover is a refcount bump: `wait_tree` used to deep-clone the
+/// whole tree per call — thousands of `String` allocations on a big repo —
+/// and `wait_query` ran the whole match under the gate's mutex, where it
+/// contended with the walk handover.
 struct Built {
-    tree: FileNode,
-    index: SearchIndex,
+    tree: Arc<FileNode>,
+    index: Arc<SearchIndex>,
 }
 
 pub struct Catalog {
@@ -49,8 +53,8 @@ impl Catalog {
     /// hang on `list_markdown_files` rather than reaching its empty state.
     pub fn settle_empty(&self, repo_root: &Path) {
         self.replace(Built {
-            tree: fs_walk::build_tree(repo_root, &[]),
-            index: SearchIndex::build(repo_root, &[]),
+            tree: Arc::new(fs_walk::build_tree(repo_root, &[])),
+            index: Arc::new(SearchIndex::build(repo_root, &[])),
         });
     }
 
@@ -60,21 +64,24 @@ impl Catalog {
     /// deliberate: two rapid `rebuild_index` calls already race the same way,
     /// and the window is tiny in practice because `watcher` only spawns inside
     /// `.setup()` and debounces 60 ms on top of that.
-    pub fn rebuild(&self, repo_root: &Path, extra_ignores: &[String]) -> FileNode {
+    pub fn rebuild(&self, repo_root: &Path, extra_ignores: &[String]) -> Arc<FileNode> {
         let built = walk(repo_root, extra_ignores);
-        let tree = built.tree.clone();
+        let tree = Arc::clone(&built.tree);
         self.replace(built);
         tree
     }
 
-    /// Block until built, then clone the tree.
-    pub fn wait_tree(&self) -> FileNode {
-        self.wait().as_ref().unwrap().tree.clone()
+    /// Block until built, then share the tree.
+    pub fn wait_tree(&self) -> Arc<FileNode> {
+        Arc::clone(&self.wait().as_ref().unwrap().tree)
     }
 
-    /// Block until built, then run the fuzzy query.
+    /// Block until built, then run the fuzzy query — outside the gate's lock,
+    /// so a keystroke's query neither blocks a rebuild's handover nor is
+    /// blocked by one.
     pub fn wait_query(&self, q: &str) -> Vec<FileNode> {
-        self.wait().as_ref().unwrap().index.query(q)
+        let index = Arc::clone(&self.wait().as_ref().unwrap().index);
+        index.query(q)
     }
 
     fn replace(&self, built: Built) {
@@ -103,5 +110,8 @@ fn walk(repo_root: &Path, extra_ignores: &[String]) -> Built {
     let tree = fs_walk::build_tree(repo_root, &paths);
     perf::mark("tree_built");
 
-    Built { tree, index }
+    Built {
+        tree: Arc::new(tree),
+        index: Arc::new(index),
+    }
 }

@@ -68,13 +68,24 @@ impl SearchIndex {
                 .map(FileNode::from)
                 .collect();
         }
-        let mut matcher = Matcher::new(Config::DEFAULT);
+        // One matcher per thread, reused across keystrokes: nucleo's matcher
+        // is built to be long-lived — its internal slabs grow while matching,
+        // and a fresh one per query re-paid that growth over the whole entry
+        // list every keystroke. Thread-local rather than a `Mutex` in the
+        // index, which is otherwise pure; queries run on Tauri's bounded
+        // blocking pool, so this is a handful of matchers, warm.
+        thread_local! {
+            static MATCHER: std::cell::RefCell<Matcher> =
+                std::cell::RefCell::new(Matcher::new(Config::DEFAULT));
+        }
         let pattern = Pattern::parse(q, CaseMatching::Smart, Normalization::Smart);
-        pattern
-            .match_list(&self.entries, &mut matcher)
-            .into_iter()
-            .take(LIMIT)
-            .map(|(e, _score)| FileNode::from(e))
-            .collect()
+        MATCHER.with(|m| {
+            pattern
+                .match_list(&self.entries, &mut m.borrow_mut())
+                .into_iter()
+                .take(LIMIT)
+                .map(|(e, _score)| FileNode::from(e))
+                .collect()
+        })
     }
 }

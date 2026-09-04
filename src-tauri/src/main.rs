@@ -383,10 +383,23 @@ fn flush_marks(app: &tauri::AppHandle) {
 /// yet: blocking a synchronous command would block whatever thread Tauri runs
 /// it on, and the frontend can't tell a late-resolving promise from a slow one
 /// anyway.
+/// The catalog's shared tree, serialized in place. The `Arc` never crosses to
+/// the frontend — JSON on the wire is byte-identical to the owned `FileNode`
+/// this replaces; what it removes is the per-handover deep clone (three
+/// `String`s and a `Vec` per node). A five-line delegate rather than serde's
+/// `rc` feature, which would turn the same knob crate-wide.
+struct TreeView(Arc<FileNode>);
+
+impl serde::Serialize for TreeView {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        self.0.serialize(s)
+    }
+}
+
 #[tauri::command]
-async fn list_markdown_files(state: State<'_, AppState>) -> Result<FileNode, String> {
+async fn list_markdown_files(state: State<'_, AppState>) -> Result<TreeView, String> {
     let catalog = state.catalog.clone();
-    tauri::async_runtime::spawn_blocking(move || catalog.wait_tree())
+    tauri::async_runtime::spawn_blocking(move || TreeView(catalog.wait_tree()))
         .await
         .map_err(|e| e.to_string())
 }
@@ -488,11 +501,11 @@ async fn fuzzy_search(state: State<'_, AppState>, query: String) -> Result<Vec<F
 /// straight back. The frontend used to follow this with `list_markdown_files`,
 /// which walked the whole repo a second time for the same answer.
 #[tauri::command]
-async fn rebuild_index(state: State<'_, AppState>) -> Result<FileNode, String> {
+async fn rebuild_index(state: State<'_, AppState>) -> Result<TreeView, String> {
     let catalog = state.catalog.clone();
     let repo_root = state.root();
     let ignores = state.config.lock().unwrap().extra_ignores.clone();
-    tauri::async_runtime::spawn_blocking(move || catalog.rebuild(&repo_root, &ignores))
+    tauri::async_runtime::spawn_blocking(move || TreeView(catalog.rebuild(&repo_root, &ignores)))
         .await
         .map_err(|e| e.to_string())
 }
@@ -1388,7 +1401,11 @@ fn adopt_root(app: &tauri::AppHandle, path: PathBuf) {
     let catalog = state.catalog.clone();
     let handle = app.clone();
     std::thread::spawn(move || {
-        catalog.rebuild(&root, &ignores);
+        // `build`, not `rebuild`: the fresh tree the latter hands back was
+        // discarded here — a whole-tree clone for nothing on every File ▸ Open
+        // back when it cloned, and a needless refcount dance now. The frontend
+        // asks for the tree itself when `repo-changed` lands.
+        catalog.build(&root, &ignores);
         let _ = handle.emit("repo-changed", initial);
         if let Some(win) = handle.get_webview_window("main") {
             // The config was re-read above, so the chrome is re-applied for the
