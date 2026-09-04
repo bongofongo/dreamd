@@ -34,6 +34,15 @@ use tauri::{Emitter, Manager, State};
 /// dragging a selection across a paragraph writes once rather than per chip.
 const SAVE_DEBOUNCE: Duration = Duration::from_millis(500);
 
+/// One pre-rendered document: everything that decided the output, plus the
+/// output — so the consult is three comparisons, not a protocol.
+struct Prerendered {
+    path: String,
+    theme: String,
+    source: String,
+    html: String,
+}
+
 struct AppState {
     /// Behind a lock because File -> Open can move it: a `.app` launched from
     /// Finder starts with no repo at all, and picking one is how it gets one.
@@ -91,6 +100,15 @@ struct AppState {
     open_doc: Arc<Mutex<Option<PathBuf>>>,
     /// A file to open on load (nvim-style `dreamd file.md`), if any.
     initial_file: Option<String>,
+    /// [`initial_file`](Self::initial_file), rendered while the webview boots.
+    ///
+    /// `.setup()` spawns a thread that renders it with the same theme
+    /// `render_markdown` would use; the first `render_markdown` takes the slot
+    /// and uses it only if path, theme *and the bytes on disk* still match, so
+    /// there is nothing to invalidate — a miss just renders as if this never
+    /// existed. `Arc` for the reason every other one here is: the rendering
+    /// thread outlives `.setup()`.
+    prerender: Arc<Mutex<Option<Prerendered>>>,
     /// Behind a lock because the settings panel rewrites it at runtime — the
     /// only mutable-at-runtime configuration dreamd has.
     config: Mutex<Config>,
@@ -469,6 +487,14 @@ fn render_markdown(state: State<AppState>, path: String) -> Result<String, Strin
     // The palette names the syntect theme for fenced code, so switching themes
     // has to re-render: the code colours are baked into the HTML, not CSS.
     let code_theme = state.syntax_theme();
+    // The boot pre-render, consulted once and taken whatever the outcome — a
+    // hit removes the whole parse+highlight from the first paint's serial
+    // path; a miss (file or theme moved since launch) costs three compares.
+    if let Some(pre) = state.prerender.lock().unwrap().take() {
+        if pre.path == path && pre.theme == code_theme && pre.source == source {
+            return Ok(pre.html);
+        }
+    }
     Ok(markdown::render_with(&source, &code_theme))
 }
 
@@ -2025,6 +2051,7 @@ fn main() {
         mcp_status: Mutex::new(None),
         mcp_registered: Mutex::new(None),
         initial_file: initial,
+        prerender: Arc::new(Mutex::new(None)),
         config: Mutex::new(cfg),
         store: store.clone(),
         open_doc: open_doc.clone(),
@@ -2182,6 +2209,31 @@ fn main() {
             // `render_markdown` — the same shape, and the other lazy cost the
             // first paint used to carry. See `markdown::warm`.
             markdown::warm();
+            // On a file launch, the whole first render too: the webview takes
+            // hundreds of ms to boot, and the document's parse+highlight fits
+            // inside that shadow. Everything that decides the output is known
+            // here — the appearance was corrected above, so `syntax_theme`
+            // answers what the first render will ask. See `AppState::prerender`
+            // for the one-shot consult. (This thread races `markdown::warm`'s
+            // into the syntect `OnceLock`; they serialize there, loading once.)
+            {
+                let state = app.state::<AppState>();
+                if let Some(path) = state.initial_file.clone() {
+                    let theme = state.syntax_theme();
+                    let slot = state.prerender.clone();
+                    std::thread::spawn(move || {
+                        if let Ok(source) = read_source(&path) {
+                            let html = markdown::render_with(&source, &theme);
+                            *slot.lock().unwrap() = Some(Prerendered {
+                                path,
+                                theme,
+                                source,
+                                html,
+                            });
+                        }
+                    });
+                }
+            }
 
             // Not armed when there is no repo: `watch` is recursive, and the
             // root would be `/`.
