@@ -7,11 +7,13 @@
 # Two layers, because they answer different questions:
 #
 #   1. `--bench-startup` — the pre-window Rust sequence (resolve target, load
-#      config, walk the repo, build the search index) then exit. Measured with
-#      hyperfine, so it includes process spawn and dyld. This is the half we
-#      control directly. Run once per repo size, plus once on a *file*
-#      argument, where the walk is deferred to a background thread and so
-#      should not appear in the number at all.
+#      config, load marks) then exit. Measured with hyperfine, so it includes
+#      process spawn and dyld. This is the half we control directly. The walk
+#      is deferred to a background thread on *every* launch now, so it should
+#      not appear in any of these numbers — the per-repo-size runs are kept
+#      because they assert exactly that (a size-dependent prewindow number
+#      means the walk crept back onto the critical path), and the walk itself
+#      is priced by `bench.walk_scan` and the launch phase's `walk_done` mark.
 #
 #   2. Full launch to `first_paint` — the real app, real WKWebView, parsed out
 #      of the NDJSON perf stream. This is what the user actually waits for.

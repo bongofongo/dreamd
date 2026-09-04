@@ -257,10 +257,10 @@ struct Cli {
     /// window. Lets hyperfine measure the Rust half of cold start on its own.
     /// Only emits timings when built with `--features perf`.
     ///
-    /// On a *file* argument the walk is deferred to a background thread, so
-    /// there is nothing pre-window to measure and this exits without either
-    /// walking or spawning — timing a teardown that races a live thread would
-    /// measure nothing meaningful.
+    /// The walk is deferred to a background thread on every launch, so what
+    /// is left pre-window — and all this measures — is resolve + config +
+    /// marks. It exits before the walk thread spawns: timing a teardown that
+    /// races a live thread would measure nothing meaningful.
     #[arg(long, hide = true)]
     bench_startup: bool,
 
@@ -1929,42 +1929,39 @@ fn main() {
         warn_secondary(&repo_root);
     }
 
-    // `dreamd file.md` is a Preview-style "open this one document" gesture: the
-    // document is the only thing on screen, the sidebar starts collapsed, and
-    // the repo walk has no business on the critical path. Anything else — a
-    // directory, no argument, or a non-markdown file, all of which leave the
-    // sidebar as the only usable surface — builds synchronously exactly as
-    // before.
+    // The walk is never on the critical path to a window. It used to be for a
+    // directory launch — "the sidebar is the only usable surface, so build it
+    // synchronously" — but the readiness gate makes that conservatism cost
+    // real time for nothing: the walk thread runs while GTK initialises and
+    // the webview loads (hundreds of ms this walk almost always fits inside),
+    // and `list_markdown_files` blocks on the gate for whatever is left. The
+    // window can only appear earlier this way, and the sidebar no later.
     //
-    // `has_repo` is the other guard, and it is the one that matters for a
-    // packaged `.app`: LaunchServices gives a Finder launch cwd `/`, the
-    // walk-up finds no `.git`, and `repo_root` would be `/`. Walking that is
-    // unbounded — `WalkBuilder` here has `hidden(false)` and no depth limit —
-    // and it happens *before* the Tauri builder exists, so the window never
-    // appears. With no repo, nothing walks and nothing is shown until
-    // File -> Open says where to look.
-    let deferred = initial.is_some();
+    // `has_repo` is the guard that matters for a packaged `.app`:
+    // LaunchServices gives a Finder launch cwd `/`, the walk-up finds no
+    // `.git`, and `repo_root` would be `/`. Walking that is unbounded —
+    // `WalkBuilder` here has `hidden(false)` and no depth limit — even on a
+    // thread it is a disk-chewing runaway. With no repo, nothing walks and
+    // nothing is shown until File -> Open says where to look.
     let catalog = Arc::new(Catalog::pending());
-    if !deferred && has_repo {
-        catalog.build(&repo_root, &cfg.extra_ignores);
-    }
 
-    // Above the spawn deliberately: on the deferred path there is no pre-window
-    // work left to measure, and exiting into a live walk thread would time the
-    // teardown racing it.
+    // Above the spawn deliberately: what this flag measures is the pre-window
+    // sequence — resolve, config, marks — and exiting into a live walk thread
+    // would time the teardown racing it. The walk itself is priced by
+    // `bench.walk_scan` and, in a live launch, by the `walk_done` mark.
     if cli.bench_startup {
         perf::mark("bench_startup_exit");
         return;
     }
 
-    if deferred && has_repo {
+    if has_repo {
         let (c, root, ignores) = (
             catalog.clone(),
             repo_root.clone(),
             cfg.extra_ignores.clone(),
         );
         std::thread::spawn(move || c.build(&root, &ignores));
-    } else if !has_repo {
+    } else {
         // Nothing to walk, so nothing will ever resolve the catalog's readiness
         // gate — and `list_markdown_files` waits on it. Settle it empty so the
         // frontend's boot completes and shows the empty state.

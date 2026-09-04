@@ -2,13 +2,11 @@
 //! behind one readiness gate.
 //!
 //! They come from a single walk and share a single lifecycle, so they are one
-//! type rather than two independent `Mutex`es. The gate is what makes a
-//! *deferred* build possible: on `dreamd file.md` the walk moves to a
-//! background thread and the commands that need it block until it lands
+//! type rather than two independent `Mutex`es. The gate is what makes the
+//! *deferred* build possible: the walk runs on a background thread on every
+//! launch — overlapping GTK init and the webview load instead of preceding
+//! them — and the commands that need its products block until it lands,
 //! instead of the whole process blocking before the window exists.
-//!
-//! A directory or no-arg launch calls [`Catalog::build`] synchronously before
-//! the Tauri builder, exactly as before, so it never waits on anything.
 
 use std::path::Path;
 use std::sync::{Condvar, Mutex, MutexGuard};
@@ -90,8 +88,8 @@ impl Catalog {
     }
 }
 
-/// The marks are emitted here rather than at the call site so the synchronous
-/// and the deferred path report identical phases. `perf::mark` measures from a
+/// The marks are emitted here rather than at the call site so every path to a
+/// walk reports identical phases. `perf::mark` measures from a
 /// global origin set in `main`'s first statement and writes one line under the
 /// stderr lock, so a `walk_done` emitted late from a background thread is still
 /// a correct timestamp and still lands in one uncorrupted NDJSON stream.
