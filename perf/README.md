@@ -210,7 +210,7 @@ wrote. They are working material rather than product, so they live in the
 private notes repo alongside the session log when it is cloned.
 
 The machine's identity is `<os>-<arch>-<hostname>` — `darwin-arm64-mbp`,
-`linux-x86_64-arch-fongo` — computed from `uname`, slugged because it becomes a
+`linux-x86_64-devbox` — computed from `uname`, slugged because it becomes a
 filename, and recorded in every result file under `meta.machine`. A result file
 therefore says which computer produced it, which matters because a baseline is
 just a result that was kept. `run.sh` prints the id at the top of every run.

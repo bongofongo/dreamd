@@ -925,7 +925,7 @@ highlights from a corpus fixture.
   **Baselines are per machine and none is in this repo.** They are working
   material, so they live at `notes/perf-baselines/<machine>.json`. The machine id
   is `<os>-<arch>-<hostname>` from `uname` (`darwin-arm64-mbp`,
-  `linux-x86_64-arch-fongo`), slugged because it is a filename, and stamped into
+  `linux-x86_64-devbox`), slugged because it is a filename, and stamped into
   every result under `meta.machine` — a baseline is just a result that was kept,
   so it says which computer wrote it rather than relying on where it is filed.
   `run.sh` resolves `$DREAMD_PERF_BASELINE`, then
