@@ -5146,11 +5146,34 @@ function inTerminal(el) {
   return !!(el && el.closest && el.closest("#pty-pane"));
 }
 
+/// One walk per burst, not one per file.
+///
+/// The watcher's 60ms window coalesces duplicate events per *path*, so a
+/// `git checkout` that adds or removes N markdown files still arrives as N
+/// events — and each `rebuild_index` is a full repo walk, index build and
+/// sidebar repaint. A trailing 100ms (just past the watcher's own window)
+/// gathers the burst into a single rebuild; the one-file case pays a delay on
+/// a sidebar row, not on anything the reader is looking at.
+///
+/// `rebuild_index` hands back the tree from the walk it just did; asking for
+/// it separately walked the whole repo a second time.
+let treeRebuildTimer = null;
+function scheduleTreeRebuild() {
+  if (treeRebuildTimer) clearTimeout(treeRebuildTimer);
+  treeRebuildTimer = setTimeout(async () => {
+    treeRebuildTimer = null;
+    const t0 = perf.now();
+    paintTree(await invoke("rebuild_index"));
+    perf.span("tree_rebuild", t0);
+  }, 100);
+}
+
 function wireEvents() {
   listen("file-changed", async (e) => {
     // `save_to_paint` is the core product loop: one :w in Neovim through to a
     // fully re-anchored, repainted document. `watcher_event` counts emissions
-    // per save — anything above 1 is the missing debounce (fix B2).
+    // per save — anything above 1 means the watcher's coalescing window is
+    // not holding (see `events_per_save` in perf/scripts/loop.sh).
     perf.at("watcher_event");
     if (e.payload && e.payload.path === currentFile) {
       const t0 = perf.now();
@@ -5159,7 +5182,7 @@ function wireEvents() {
       perf.span("save_to_paint", t0);
     }
   });
-  listen("file-added", async (e) => {
+  listen("file-added", (e) => {
     // Most `file-added` events are an atomic-replace save of a file the tree
     // already has — Neovim's default `backupcopy=auto` and Claude Code's writer
     // both save that way, and the watcher cannot tell those from a genuinely
@@ -5168,17 +5191,11 @@ function wireEvents() {
     // counting events that caused work rather than events that arrived.
     if (e.payload && e.payload.path && knownPaths.has(e.payload.path)) return;
     perf.at("watcher_event");
-    const t0 = perf.now();
-    // `rebuild_index` hands back the tree from the walk it just did; asking for
-    // it separately walked the whole repo a second time.
-    paintTree(await invoke("rebuild_index"));
-    perf.span("tree_rebuild", t0);
+    scheduleTreeRebuild();
   });
-  listen("file-removed", async (e) => {
+  listen("file-removed", (e) => {
     perf.at("watcher_event");
-    const t0 = perf.now();
-    paintTree(await invoke("rebuild_index"));
-    perf.span("tree_rebuild", t0);
+    scheduleTreeRebuild();
     // Before the early-out below, because a removed file is usually *not* the
     // one on screen and the stale frames pointing at it still have to go.
     if (e.payload && e.payload.path) forgetPath(e.payload.path);
