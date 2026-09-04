@@ -1717,8 +1717,13 @@ function applyHighlights(list) {
       continue;
     }
     const p = locateInNodes(doc, quote);
-    if (p) placements.push({ ...p, id: h.id, prior: h.prior });
-    else crossNode.push(h);
+    if (p && p.node) placements.push({ ...p, id: h.id, prior: h.prior });
+    // A cross-node quote carries the offset `locateInNodes` already paid a
+    // full-document scan to find — wrapping never changes the flattened
+    // *text*, only the node structure, so it stays valid in the fresh
+    // flatten `placeAcrossNodes` builds. `at` is undefined on the walk path
+    // below the threshold, and -1 when the quote is not on screen at all.
+    else crossNode.push({ ...h, at: p ? p.at : -1 });
   }
 
   // Wrapping splits a text node, which invalidates every offset computed after
@@ -1768,7 +1773,18 @@ function placeAcrossNodes(doc, highlights) {
   for (const h of highlights) {
     const quote = h.quote.trim();
     if (!quote) continue;
-    const at = doc.text.indexOf(quote);
+    // The offset the first flatten already found, when there is one: wrapping
+    // split nodes but changed no text, so it is valid here too, and re-finding
+    // it was a second full-document scan per cross-node mark. `startsWith` is
+    // the cheap insurance; a disagreement (there should be none) falls back to
+    // the search. `undefined` is the walk path, which never searched; -1 was
+    // searched and is genuinely not on screen — the store keeps it.
+    const at =
+      h.at >= 0 && doc.text.startsWith(quote, h.at)
+        ? h.at
+        : h.at === -1
+          ? -1
+          : doc.text.indexOf(quote);
     if (at < 0) continue; // genuinely not on screen; the store keeps it
     const slices = segmentsIn(doc, at, quote.length);
     slices.forEach((s, i) => {
@@ -1852,16 +1868,23 @@ function scanTextNodes(container) {
 // First occurrence of `needle` that lies wholly within a single text node,
 // found without re-walking the DOM. Occurrences straddling a node boundary are
 // skipped, not failed — matching the previous per-node search exactly.
+//
+// A miss is two different answers: `null` when the needle is nowhere in the
+// text at all, and `{ at }` (no node) when every occurrence straddles a node
+// boundary — `at` being the first of them, which is exactly the occurrence
+// `placeAcrossNodes` would re-scan the whole document to find.
 function locateInNodes(doc, needle) {
   if (!needle) return null;
+  let first = -1;
   for (let at = doc.text.indexOf(needle); at >= 0; at = doc.text.indexOf(needle, at + 1)) {
+    if (first < 0) first = at;
     const i = nodeIndexAt(doc.starts, at);
     const node = doc.nodes[i];
     if (at + needle.length <= doc.starts[i] + node.nodeValue.length) {
       return { node, offset: at - doc.starts[i], length: needle.length, at };
     }
   }
-  return null;
+  return first < 0 ? null : { at: first };
 }
 
 // Index of the last entry in the sorted `starts` that is <= `at`.
