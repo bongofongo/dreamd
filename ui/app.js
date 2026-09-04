@@ -126,13 +126,28 @@ const staleRail = $("stale-rail");
 
 // ---- init ----------------------------------------------------------------
 async function init() {
+  // Every boot IPC goes out *now*, before anything is awaited: the five
+  // commands read independent Rust state (CLI arg, theme files, root, config
+  // lock) and none needs another's answer, so what used to be a serial chain
+  // of round trips — each its own `ipc_*` mark, back to back — is one
+  // overlapped batch. Only the *application* of the answers is ordered below:
+  // theme before first paint, sizes before layout, keymap before the hint.
+  // The `.catch`es on the pair applied last keep an early failure from being
+  // an unhandled rejection while later awaits run. (The `perf.probe()` await
+  // sits ahead of the marks because `perf.on` must be known before the first
+  // `perf.at` — the probe rides the same overlap.)
+  const pInitial = invoke("initial_file").catch(() => null);
+  const pTheme = invoke("get_theme");
+  const pInfo = invoke("repo_info");
+  const pKm = invoke("get_keymap").catch(() => null);
+  const pUi = invoke("get_ui").catch(() => null);
   await perf.probe();
   perf.at("js_start");
   if (/Macintosh/.test(navigator.userAgent)) {
     document.body.classList.add("mac");
     // `config::TITLEBAR_FADE_DEFAULT`, restated here for the same reason the
-    // `data-mode` bootstrap at the top of this file exists: `get_ui` is two
-    // round trips away, and a bar that painted solid and then dissolved would
+    // `data-mode` bootstrap at the top of this file exists: `get_ui` is still
+    // an await away, and a bar that painted solid and then dissolved would
     // do it in front of the reader. `applyWindowChrome` corrects it when the
     // config lands, which is the only thing that can disagree.
     document.body.classList.add("chrome-fade");
@@ -142,27 +157,27 @@ async function init() {
   // ships collapsed and we *remove* the class here, so the single-file case is
   // deterministically flash-free; a directory launch gets its sidebar a few ms
   // into JS boot, which is invisible against the time the window took to exist.
-  const initial = await invoke("initial_file").catch(() => null);
+  const initial = await pInitial;
   if (!initial) document.body.classList.remove("nav-collapsed");
 
-  // Theme next: index.html only carries fallback colours, so every IPC we do
-  // ahead of this is time the window spends in the default theme rather than
-  // the user's.
-  await loadTheme();
+  // Theme applied next: index.html only carries fallback colours, so every
+  // await ahead of this is time the window spends in the default theme rather
+  // than the user's.
+  try {
+    await applyTheme(await pTheme);
+  } catch (e) { console.error(e); }
   perf.at("ipc_theme");
 
   try {
-    await adoptRepoInfo();
+    await adoptRepoInfo(await pInfo);
   } catch (e) { console.error(e); }
   perf.at("ipc_repo_info");
 
-  // One round trip, two answers: the tree, the stack panel and the agent pane
-  // cannot lay themselves out at their persisted sizes without `[ui]`, and
-  // asking for it after the keymap would put a second serial IPC in front of
-  // the first paint. `get_ui` is a lock read — `get_settings`, which also
-  // carries it, walks the themes directory.
+  // The tree, the stack panel and the agent pane cannot lay themselves out at
+  // their persisted sizes without `[ui]`. `get_ui` is a lock read —
+  // `get_settings`, which also carries it, walks the themes directory.
   try {
-    const [km, ui] = await Promise.all([invoke("get_keymap"), invoke("get_ui")]);
+    const [km, ui] = [await pKm, await pUi];
     if (km) keymap = km;
     applyPanelSizes(ui);
     applyDocumentZoom(ui);
@@ -350,8 +365,10 @@ async function loadTree() {
 // The header's idea of which repo is open. Split out of `init` because
 // File → Open moves the root at runtime and the same three fields have to
 // follow it.
-async function adoptRepoInfo() {
-  const info = await invoke("repo_info");
+/// Adopt a `repo_info` answer. `init` hands in one it already has in flight;
+/// every other caller lets the default argument fetch.
+async function adoptRepoInfo(info) {
+  info = info ?? (await invoke("repo_info"));
   repoRoot = info.root || "";
   hasRepo = info.hasRepo !== false;
   paintRootField();
