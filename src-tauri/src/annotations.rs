@@ -523,7 +523,24 @@ impl Store {
     /// therefore happens if and only if the source changed such that the quote is
     /// gone — which is the only claim the margin chip is entitled to make.
     pub fn reanchor_file(&mut self, file_path: &str, source: &str) -> Vec<Highlight> {
+        self.reanchor_in_place(file_path, source);
+        self.for_file(file_path)
+    }
+
+    /// [`reanchor_file`](Self::reanchor_file) without the cloned return —
+    /// for the caller that only wants the store brought up to date
+    /// ([`ensure_reanchored`](Self::ensure_reanchored), whose own caller asks
+    /// `for_file` separately and was paying for the same clone twice).
+    fn reanchor_in_place(&mut self, file_path: &str, source: &str) {
+        // First, and unconditionally: the gate must remember a file that has
+        // no marks too, or every save of it would re-run this.
         self.reanchored.insert(file_path.to_string());
+        // Zero marks means nothing to move: skip the SourceIndex, whose
+        // line-starts pass scans the whole source — the commonest `:w` is on a
+        // file with no marks at all.
+        if !self.has_marks_for(file_path) {
+            return;
+        }
         // One index for the whole file, not one per highlight — see
         // [`markdown::SourceIndex`].
         let mut index = markdown::SourceIndex::new(source);
@@ -550,7 +567,11 @@ impl Store {
                 None => {}
             }
         }
-        self.for_file(file_path)
+    }
+
+    /// Whether any highlight names `file_path` — without cloning any of them.
+    pub fn has_marks_for(&self, file_path: &str) -> bool {
+        self.highlights.iter().any(|h| h.file_path == file_path)
     }
 
     /// Re-anchor `file_path` the *first* time this session looks at it, and
@@ -563,7 +584,7 @@ impl Store {
     /// inside work that was already scanning that file.
     pub fn ensure_reanchored(&mut self, file_path: &str, source: &str) {
         if !self.reanchored.contains(file_path) {
-            self.reanchor_file(file_path, source);
+            self.reanchor_in_place(file_path, source);
         }
     }
 }
@@ -1363,6 +1384,16 @@ mod tests {
         let h = store.get(&other).expect("present");
         assert_eq!(h.line_start, 7);
         assert_eq!(h.state, HighlightState::Active);
+    }
+
+    #[test]
+    fn reanchoring_a_file_with_no_marks_is_empty_and_still_settles_the_gate() {
+        let mut store = Store::default();
+        assert!(store.reanchor_file("/repo/empty.md", "text\n").is_empty());
+        // The gate must remember the file anyway, or `ensure_reanchored`
+        // would re-run this on every later sight of it.
+        assert!(store.reanchored.contains("/repo/empty.md"));
+        assert!(!store.has_marks_for("/repo/empty.md"));
     }
 
     #[test]

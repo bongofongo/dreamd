@@ -638,6 +638,15 @@ fn reanchor(state: State<AppState>, path: String) -> Result<Vec<Highlight>, Stri
     // that was just replaced. It read 1020ms at 100 highlights against a
     // `reanchor_today/100` bench of 64.5ms.
     perf::span("rust_reanchor", || {
+        // The commonest `:w` is on a file with no marks: skip the read and the
+        // index for it. Locks taken one at a time, per the order documented on
+        // `flush_marks`; the race (a mark landing between this probe and the
+        // return) is benign — a mark created this session was anchored against
+        // the bytes on screen, and its creating command's return repaints it.
+        if !state.store.lock().unwrap().has_marks_for(&path) {
+            state.pending_reanchor.lock().unwrap().remove(&path);
+            return Ok(Vec::new());
+        }
         let source = read_source(&path)?;
         // This *is* the re-anchor the pending set exists to force, so nothing
         // is owed for this path any more.
