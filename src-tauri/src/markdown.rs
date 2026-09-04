@@ -465,9 +465,7 @@ fn highlight_blocks(blocks: &[Block], theme_name: &str) -> Vec<(usize, Arc<str>)
             match cache.get(hashes[i], theme_name, &b.lang, &b.text) {
                 Some(html) => out.push((b.at, html)),
                 None => match seen.entry((b.lang.as_str(), b.text.as_str())) {
-                    std::collections::hash_map::Entry::Occupied(e) => {
-                        misses[*e.get()].2.push(b.at)
-                    }
+                    std::collections::hash_map::Entry::Occupied(e) => misses[*e.get()].2.push(b.at),
                     std::collections::hash_map::Entry::Vacant(v) => {
                         v.insert(misses.len());
                         misses.push((i, hashes[i], vec![b.at]));
