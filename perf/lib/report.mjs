@@ -13,12 +13,14 @@ const HIGHER_IS_BETTER = [/\bapplied$/, /\bthroughput/];
 /**
  * Per-source sensitivity, set from the measured noise floor rather than taste.
  *
- * Two consecutive runs on identical code were compared to find these. Rust
- * benches did not move — criterion's sampling does its job, and every tier now
- * uses identical criterion settings so their numbers are directly comparable.
- * The Chromium scenarios drifted up to 17% on raster and composite from run to
- * run with nothing changed, because they are single-sample measurements of a
- * whole browser engine.
+ * Two consecutive runs on identical code were compared to find these, and
+ * perf/README.md's "Noise" table is the record of what they showed — read it
+ * there rather than restating a figure here, which is how this comment and that
+ * table came to disagree about the Chromium drift. Rust benches did not move:
+ * criterion's sampling does its job, and every tier uses identical criterion
+ * settings so their numbers are directly comparable. The Chromium scenarios
+ * drift the most by far, being single-sample measurements of a whole browser
+ * engine.
  *
  * Thresholds below the noise floor don't catch more regressions, they just
  * produce noise that trains you to ignore the tool.
@@ -251,7 +253,9 @@ export function render(result, { verbose = false } = {}) {
     "",
     `${result.rows.length} metrics compared: ${fails} regressed, ${warns} slower, ${betters} improved.`,
   );
-  if (!interesting.length) lines.push("nothing moved beyond +/-5%.");
+  // Not a single percentage: THRESHOLDS is per-path, so this line used to
+  // promise +/-5% while chromium rows were judged at 20% and the save loop at 15%.
+  if (!interesting.length) lines.push("nothing moved beyond its threshold.");
 
   return lines.join("\n");
 }

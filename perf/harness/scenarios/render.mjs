@@ -56,7 +56,8 @@ const samples = await page.evaluate(
       images: el.querySelectorAll("img[src]").length,
       codeBlocks: el.querySelectorAll("pre").length,
       // syntect emits one span per token; this is the payload-inflation number
-      // that fix B9 (ClassedHTMLGenerator) is meant to cut.
+      // that switching it to syntect's ClassedHTMLGenerator would cut. Still
+      // inline styles today, so this number is the size of the prize.
       inlineStyledSpans: el.querySelectorAll("span[style]").length,
     };
   },

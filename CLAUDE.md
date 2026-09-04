@@ -1002,13 +1002,15 @@ In this repo:
 - `perf/README.md` — what each performance tier measures and how much to trust it.
 - `perf/scripts/publish-history.sh` — captures a compact, *public* subset of a
   `deep`-tier result (first paint, save-to-paint p50, peak RSS, shipped
-  AppImage size) plus the machine that produced it, into
-  `website/src/data/perf-history.json`, which `website/src/pages/perf.astro`
-  charts with zero client JS. Deliberately not the same file as the private
-  per-machine `notes/perf-baselines/`: this one is small, append-one-entry,
-  and meant to be committed to the public repo. Run by hand for now — wiring
-  it into `release.yml` so it runs on every published release is a separate,
-  not-yet-done step.
+  AppImage size) into `website/src/data/perf-history.json`, which
+  `website/src/pages/perf.astro` charts with zero client JS. Deliberately not
+  the same file as the private per-machine `notes/perf-baselines/`: this one is
+  small, append-one-entry, idempotent by version, and meant to be committed to
+  the public repo. That difference is also why the entry names a *runner label*
+  and never `.meta.machine.id` — the id carries a hostname, which has no
+  business leaving the machine that produced it. `release.yml`'s `perf-history`
+  job runs it on every published release, with no `needs:` and
+  `continue-on-error`, so capturing a number can never fail a release.
 - `website/CLAUDE.md` — the public site at `fongo.uk/dreamd`. A standalone Astro
   project, deployed separately; source of truth for everything under `website/`.
   Nothing there touches the Rust build.

@@ -15,10 +15,13 @@
 // scroll is driven through the real input pipeline (`mouse.wheel`) with the
 // renderer traced via CDP, and the engine's own timeline events are summed.
 //
-// Chromium is still not WKWebService — treat these as relative numbers for
+// Chromium is still not WKWebView — treat these as relative numbers for
 // detecting regressions and ranking fixes, not as the app's true timings.
-// `paint_ms` and `raster_ms` are what `content-visibility: auto` (fix B12) is
-// meant to cut.
+// `paint_ms` and `raster_ms` are the half of the `content-visibility: auto`
+// trade that decided it: measured here, it cut forced layout 97% and raised
+// scroll main-thread time 81%, so it is deliberately not in the stylesheet.
+// index.html's `#content` block carries the numbers and why the WebKit re-test
+// is blocked — this scenario is the only thing that can measure that half.
 
 import { launch, finish, stats } from "../tauri-stub.mjs";
 import { withTrace, summarizeTrace } from "../lib/trace.mjs";

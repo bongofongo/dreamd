@@ -9,10 +9,14 @@
 # Two findings come out of this, and they are independent:
 #
 #   events_per_save   How many `file-changed` events one atomic save produces.
-#                     Anything above 1.0 is the missing watcher debounce (fix
-#                     B2) — macOS FSEvents emits several per save and
-#                     `watcher.rs` forwards each one, so the document is
-#                     re-rendered two or three times for a single :w.
+#                     Should be 1.0: `watcher.rs` coalesces within a 60ms
+#                     DEBOUNCE window, which is what a single `:w` needs it for
+#                     — macOS FSEvents reports one save as ~1.58 events, and
+#                     before the window each cost a full re-render. Above 1.0
+#                     means the coalescing is not holding and the document is
+#                     rendered two or three times per save, which is why
+#                     report.mjs flags this ratio where it ignores the raw
+#                     counts either side of it.
 #
 #   save_to_paint     Wall time from the event arriving in JS to highlights
 #                     re-applied, p50/p95. Scales with highlight count via

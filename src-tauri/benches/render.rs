@@ -4,10 +4,10 @@
 //! Two things are measured separately on purpose:
 //!
 //!   `syntect_cold`  the one-time flate2+bincode load of syntect's bundled
-//!                   syntaxes and themes. Today this is lazy (`OnceLock` in
-//!                   markdown.rs), so the *first document paint* pays it. Fix
-//!                   B3 moves it to a background thread at startup; this group
-//!                   is how we know what that's worth.
+//!                   syntaxes and themes. Still lazy (`OnceLock` in
+//!                   markdown.rs), so the *first document paint* pays it; this
+//!                   group is what moving it to a background thread at startup
+//!                   would be worth.
 //!
 //!   `render`        steady-state parse + emit, with syntect **and the
 //!                   code-block memo** already warm. Mixing in the dump load
