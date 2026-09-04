@@ -3977,12 +3977,20 @@ function terminalTheme() {
 }
 
 /// UTF-8 ↔ base64. The wire is base64 in both directions: output because a
-/// 4 KiB read splits multi-byte characters (see `pty.rs`), input because a
+/// fixed-size read splits multi-byte characters (see `pty.rs`), input because a
 /// paste is arbitrary bytes and `btoa` alone throws on anything above U+00FF.
 const enc = new TextEncoder();
 function toB64(text) {
+  const bytes = enc.encode(text);
+  // Chunked apply rather than a char-at-a-time append: a keystroke never
+  // noticed, but a large paste is O(n) string reallocations that way. 32KiB
+  // stays comfortably under engine argument-count limits; subarray is a view,
+  // not a copy.
+  const CHUNK = 0x8000;
   let s = "";
-  for (const b of enc.encode(text)) s += String.fromCharCode(b);
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    s += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  }
   return btoa(s);
 }
 function fromB64(b64) {

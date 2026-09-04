@@ -377,15 +377,29 @@ pub fn b64(bytes: &[u8]) -> String {
 /// Strict on purpose: this decodes what the frontend's `btoa` produced, so
 /// anything else is a bug, not input to be salvaged.
 pub fn from_b64(s: &str) -> Result<Vec<u8>, String> {
+    // ALPHABET inverted, built from it at compile time so the two cannot
+    // disagree; 0xFF marks a byte outside it. A table lookup per byte rather
+    // than a scan of the alphabet — keystrokes never noticed, a large paste
+    // did. Strictness is unchanged: '=' is filtered before lookup exactly as
+    // before, and any other non-alphabet byte is still an error, not salvage.
+    const REV: [u8; 256] = {
+        let mut t = [0xFFu8; 256];
+        let mut i = 0;
+        while i < 64 {
+            t[ALPHABET[i] as usize] = i as u8;
+            i += 1;
+        }
+        t
+    };
     let mut out = Vec::with_capacity(s.len() / 4 * 3);
     let mut acc = 0u32;
     let mut bits = 0u8;
     for ch in s.bytes().filter(|c| *c != b'=') {
-        let v = ALPHABET
-            .iter()
-            .position(|c| *c == ch)
-            .ok_or("keystrokes were not base64")? as u32;
-        acc = acc << 6 | v;
+        let v = REV[ch as usize];
+        if v == 0xFF {
+            return Err("keystrokes were not base64".into());
+        }
+        acc = acc << 6 | u32::from(v);
         bits += 6;
         if bits >= 8 {
             bits -= 8;
