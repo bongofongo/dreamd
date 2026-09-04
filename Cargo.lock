@@ -932,6 +932,7 @@ dependencies = [
  "criterion",
  "dirs 5.0.1",
  "ignore",
+ "libc",
  "notify",
  "nucleo",
  "open",

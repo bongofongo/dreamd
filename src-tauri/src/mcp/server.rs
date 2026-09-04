@@ -33,19 +33,45 @@ use crate::{config, marks_file};
 use serde_json::{json, Value};
 use std::io::{self, BufReader, Write};
 use std::os::unix::fs::PermissionsExt;
+use std::os::unix::io::AsRawFd;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-/// How long the accept loop blocks before rechecking `cancel`.
+/// How long the accept loop waits in `poll(2)` before rechecking `cancel`.
 ///
 /// The listener is non-blocking and polled rather than blocking on `accept`,
 /// because retiring the thread has to work when nothing is connected —
 /// `adopt_root` moves the repo root and the old socket must go with it. The
-/// cost is one syscall every 200ms on an idle background thread.
+/// cost is one syscall every 200ms on an idle background thread. The wait is
+/// [`wait_readable`], not a sleep: the shim connects **per tool call**, so a
+/// nap here was an average ~100ms of pure latency on every call an agent made.
 const ACCEPT_POLL: Duration = Duration::from_millis(200);
+
+/// Block until `listener` has a connection queued or `timeout` passes.
+///
+/// This is the cancellable wait both accept loops (here and
+/// `agent::gate_server`, whose client also connects per call) sit in: `poll(2)`
+/// wakes on the connect itself, where the `thread::sleep` it replaced made
+/// every caller wait out the remainder of the nap. The timeout is how often the
+/// caller's `cancel` flag is re-read, so it must stay bounded. A `poll` error
+/// other than EINTR degrades to the old sleep — never to a spin, which an
+/// immediately-returning error in a loop would otherwise be.
+pub(crate) fn wait_readable(listener: &UnixListener, timeout: Duration) {
+    let mut fds = libc::pollfd {
+        fd: listener.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    let millis = timeout.as_millis().min(i32::MAX as u128) as i32;
+    if unsafe { libc::poll(&mut fds, 1, millis) } == -1
+        && io::Error::last_os_error().kind() != io::ErrorKind::Interrupted
+    {
+        std::thread::sleep(timeout);
+    }
+}
 
 /// What the window can say about its own MCP socket, without asking the socket.
 ///
@@ -217,7 +243,9 @@ pub fn serve(
                     serve_connection(stream, &store, &root, &notify, &open_doc, &cancel);
                 });
             }
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => std::thread::sleep(ACCEPT_POLL),
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                wait_readable(&listener, ACCEPT_POLL)
+            }
             Err(e) => {
                 eprintln!("dreamd: MCP socket stopped accepting: {e}");
                 break;

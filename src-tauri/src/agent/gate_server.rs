@@ -37,8 +37,9 @@ use std::time::Duration;
 use super::gate::{Gate, Verdict, HOOK_TIMEOUT_SECS};
 use crate::config;
 
-/// How often the accept loop looks at its cancel flag. Same value and same
-/// reason as the MCP server's.
+/// How often the accept loop looks at its cancel flag. Same value, same
+/// reason, and same `poll(2)` wait as the MCP server's — the hook connects per
+/// gated tool call, so a sleep here taxed every one of them an average ~100ms.
 const ACCEPT_POLL: Duration = Duration::from_millis(200);
 
 /// Longest hook payload we will read. A `tool_input` carrying a whole file's
@@ -113,7 +114,9 @@ pub fn serve(listener: UnixListener, path: &Path, gate: Arc<Gate>, cancel: Arc<A
                     serve_connection(stream, &gate);
                 });
             }
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => std::thread::sleep(ACCEPT_POLL),
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                crate::mcp::server::wait_readable(&listener, ACCEPT_POLL)
+            }
             Err(e) => {
                 eprintln!("dreamd: the permission socket stopped accepting: {e}");
                 break;

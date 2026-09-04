@@ -85,6 +85,11 @@ portable-pty = "0.9.0"
 # was what kept `adopt_root` — the config reload, re-walk, watcher re-arm and
 # marks swap — from ever being compiled off macOS.
 rfd = "0.17"
+# One function: poll(2) in the two socket accept loops (`mcp::server`,
+# `agent::gate_server`), so a connect wakes accept immediately instead of
+# waiting out the remainder of a 200ms cancel-check nap. Already in the tree
+# transitively; this only makes it addressable.
+libc = "0.2"
 
 # `arboard`'s defaults are off for `image-data`; Wayland's clipboard protocol is
 # a separate feature and dreamd needs it back, or the clipboard fallback in
