@@ -783,6 +783,9 @@ function stepFile(d) {
 // diff against it would replace every block carrying a highlight.
 let lastBlocks = null;
 let lastBlocksFile = null;
+// The raw html of the previous render, for the byte-identical short-circuit
+// below. Lives and dies with `lastBlocks`.
+let lastHtml = null;
 /// Put `html` on screen, replacing as little of the document as possible.
 ///
 /// A `:w` in Neovim re-renders the whole file, and writing `innerHTML` makes the
@@ -817,8 +820,16 @@ function writeContent(html) {
     // half seconds of the window looking half-drawn.
     lastBlocks = [...live].map((el) => el.outerHTML);
     lastBlocksFile = currentFile;
+    lastHtml = html;
     return null;
   }
+
+  // A byte-identical render — a `:w` with no edit, a touch, a watcher
+  // double-fire — needs no parse, no serialization and no walk to discover
+  // that nothing moved: the string compare is a memcmp. `[]`, not null: the
+  // caller's contract reads null as "whole document rewritten" and would skip
+  // clearHighlights, double-wrapping every surviving mark.
+  if (html === lastHtml) return [];
 
   // Only the patch path parses and serializes, and it is the one with a
   // previous render behind it to compare against.
@@ -856,6 +867,7 @@ function writeContent(html) {
   }
 
   lastBlocks = next;
+  lastHtml = html;
   return added;
 }
 
@@ -867,6 +879,7 @@ function showContentMessage(html) {
   contentEl.innerHTML = html;
   lastBlocks = null;
   lastBlocksFile = null;
+  lastHtml = null;
 }
 
 /// `querySelectorAll` across several roots, each of which may itself match.
@@ -933,6 +946,17 @@ async function renderCurrent({ preserveScroll, reanchor }) {
   const changed = writeContent(html);
   perf.span("innerhtml", t);
 
+  // Restored here — before the await below yields — not after the highlights
+  // land: on the full-write path the `innerHTML` assignment collapsed the
+  // scroll extent and clamped `scrollTop` toward 0, and the old ordering let
+  // the browser paint a frame at that wrong position while the reanchor IPC
+  // ran, a visible jump-to-top-and-back on a `:w` whose block count changed.
+  // Nothing between here and the old site reads scroll-dependent geometry
+  // (`applyHighlights` walks text nodes; `findRecompute`, which does, runs
+  // after). On the patch path this writes the value it already has — a no-op
+  // that fires no scroll event.
+  scrollEl.scrollTop = prevScroll;
+
   // Decoration is scoped to what was actually inserted. `prepareImages` in
   // particular *must* be: it adds a click listener per image and is not
   // idempotent, and it used to rely on the `innerHTML` write having thrown the
@@ -970,7 +994,6 @@ async function renderCurrent({ preserveScroll, reanchor }) {
 
   refreshOutline();
 
-  scrollEl.scrollTop = prevScroll;
   // The search equivalent of `reanchor`, and the reason `invalidateFind` above
   // is not the whole story: without this, a `:w` in Neovim under an open find
   // bar leaves stale paint and a dead `n`. `move: false` — the reader asked for
