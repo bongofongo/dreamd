@@ -891,6 +891,16 @@ async function renderCurrent({ preserveScroll, reanchor }) {
   // Before the `innerHTML` write below, not after: every stored find `Range`
   // points into the DOM about to be replaced.
   invalidateFind();
+  // In flight *before* the render await, not after the paint: the two commands
+  // have no data dependency — both read the same on-disk bytes, and only
+  // `applyHighlights` below needs ordering. Fired here, the Rust side of a
+  // re-anchor (`d:rust_reanchor`, the SourceIndex rebuild) overlaps the render
+  // IPC and the layout that rides its await, instead of adding to them after
+  // both are done. The catch keeps a render failure from leaving an unhandled
+  // rejection behind — the error path below returns without awaiting this.
+  const highlightsP = invoke(reanchor ? "reanchor" : "get_highlights", {
+    path: currentFile,
+  }).catch(() => []);
   let html;
   try {
     html = await invoke("render_markdown", { path: currentFile });
@@ -930,10 +940,11 @@ async function renderCurrent({ preserveScroll, reanchor }) {
   // too — an empty array — and null only for a full write, which has no marks.
   if (changed) clearHighlights();
 
+  // The span now measures the *residual* wait — what the save path still pays
+  // after the overlap above — not the command's cost; `d:rust_reanchor` is
+  // still the body's own number.
   t = perf.now();
-  const highlights = reanchor
-    ? await invoke("reanchor", { path: currentFile })
-    : await invoke("get_highlights", { path: currentFile });
+  const highlights = await highlightsP;
   perf.span(reanchor ? "ipc_reanchor" : "ipc_get_highlights", t);
 
   t = perf.now();
