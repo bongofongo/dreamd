@@ -575,7 +575,8 @@ the upgrade procedure.
   "terminal"` and removed when nobody reports needing it. The embedded Claude
   Code pane's pseudo-terminal, one per window,
   created on **first open** and never at boot. Output crosses to the frontend
-  **base64-encoded**: a 4 KiB read splits multi-byte characters, and only
+  **base64-encoded**: a fixed-size read (64 KiB, one Tauri event each) splits
+  multi-byte characters, and only
   `Terminal.write`'s stateful decoder is in a position to reassemble them.
   Input is base64 for the mirror-image reason — a paste is arbitrary bytes. The
   child is a **login *and* interactive** shell (`-l -i -c`) running a fixed
@@ -601,7 +602,10 @@ the upgrade procedure.
 - `watcher` — `notify` thread emitting `file-changed` / `file-added` / `file-removed` /
   `theme-reloaded`; the frontend responds by re-rendering and calling `reanchor`. It
   watches the repo, the user themes directory, and an explicit `theme_css` path — changing
-  `theme_css` needs a restart to re-arm that watch. `Recursive` is one FSEvents
+  `theme_css` needs a restart to re-arm that watch. Its 60ms window coalesces
+  per *path*, so a checkout adding N files is still N events — the frontend's
+  `scheduleTreeRebuild` gathers those into one `rebuild_index` per burst,
+  which is what keeps a branch switch from being N full walks. `Recursive` is one FSEvents
   stream on macOS but one inotify watch **per directory** on Linux, against a
   machine-wide `fs.inotify.max_user_watches` budget — the one place the same call
   has a materially different cost per platform.
@@ -850,10 +854,15 @@ frontend marks route through the `perf_mark` command, `d:`-prefixed phases are d
 first `await` after `innerHTML` also carries the webview laying out the whole
 document, which is close to a second on the 2MB corpus doc and lands on whichever
 call came first. `perf::span` times the command body in Rust as `d:rust_*` so the two
-are separable: `d:ipc_get_highlights` measured 1254ms against a body of 0.0015ms.
+are separable: `d:ipc_get_highlights` once measured 1254ms against a body of 0.0015ms.
 Forcing the layout earlier to make the span honest is not the fix — it costs first
 paint, because the layout then stops overlapping the IPC round trip.
-`--bench-startup` runs the pre-window sequence and exits; `DREAMD_PERF_SEED` preloads
+`d:ipc_reanchor`/`d:ipc_get_highlights` are further from a command cost than the
+rest: `renderCurrent` puts that invoke in flight *before* awaiting
+`render_markdown`, so `d:rust_reanchor` overlaps the render round trip and the
+span measures only the residual wait after the paint.
+`--bench-startup` runs the pre-window sequence — resolve, config, marks; the
+walk is deferred on every launch — and exits; `DREAMD_PERF_SEED` preloads
 highlights from a corpus fixture.
 
 ## Working practices
