@@ -15,7 +15,7 @@
 //! shape). Don't add an entitlements file for this.
 //!
 //! **Output is base64.** The reader thread reads *bytes* and never looks at
-//! them: a 4 KiB read can and will split a multi-byte character, and decoding
+//! them: a fixed-size read can and will split a multi-byte character, and decoding
 //! per chunk would corrupt it. Base64 makes each chunk opaque and
 //! transport-safe, and the frontend hands the decoded bytes straight to
 //! `Terminal.write`, which is a stateful UTF-8 decoder and reassembles the
@@ -328,7 +328,12 @@ impl Drop for Pty {
 /// the child exiting, the master being closed by `Drop` — is already described
 /// to the frontend by the `Exit` event the other thread sends.
 fn pump(mut reader: Box<dyn Read + Send>, sink: Sink) {
-    let mut buf = [0u8; 4096];
+    // 64 KiB, because each read becomes one Tauri event: a busy TUI repaint or
+    // a large paste-back at 4 KiB was hundreds of serialize+emit round trips
+    // the kernel had already coalesced for us. The size changes nothing about
+    // correctness — a read at any size can split a multi-byte character, which
+    // is the module-doc reason the wire is base64 and the decoder is stateful.
+    let mut buf = vec![0u8; 64 * 1024];
     loop {
         match reader.read(&mut buf) {
             Ok(0) | Err(_) => return,

@@ -4580,10 +4580,22 @@ function appendDelta(index, text) {
   if (!el) {
     el = document.createElement("div");
     el.className = "agent-said streaming";
+    el.appendChild(document.createTextNode(""));
     turnEl().appendChild(el);
     agent.blocks.set(index, el);
   }
-  el.textContent += text;
+  // `appendData` on the block's own text node, not `textContent +=`: the
+  // deltas arrive a few tokens at a time for the whole of a streamed answer,
+  // and `textContent +=` re-serializes and replaces the block's accumulated
+  // text every time — O(block²) churn by the end of a long paragraph. The
+  // guard re-finds the node after `settleBlock`'s failure path, which swaps
+  // the children out from under us.
+  let tn = el.firstChild;
+  if (!tn || tn.nodeType !== Node.TEXT_NODE) {
+    tn = document.createTextNode("");
+    el.appendChild(tn);
+  }
+  tn.appendData(text);
   scrollLog();
 }
 
@@ -4818,11 +4830,35 @@ function setPaneDot(busy) {
 /// Follow the tail only when the reader is already at it. Someone scrolled up
 /// reading an earlier answer is *reading*, and yanking them down mid-sentence
 /// is the rudest thing a log can do.
+///
+/// Whether the reader is at the tail is a fact the log's own scroll events
+/// keep current, not something measured here: reading `scrollHeight` after
+/// every mutation forced a synchronous layout of the whole log per streamed
+/// delta, and the log only ever moves through this function or through the
+/// reader's hand — both of which fire a scroll event. The write is coalesced
+/// to one per frame for the same reason; our own write lands within the 60px
+/// slack, so it re-arms `logFollows` rather than fighting it.
+let logFollows = true;
+let logFlushQueued = false;
 function scrollLog() {
   const log = $("agent-log");
   if (!log) return;
-  const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 60;
-  if (atBottom) log.scrollTop = log.scrollHeight;
+  if (!log.dataset.followWired) {
+    log.dataset.followWired = "1";
+    log.addEventListener(
+      "scroll",
+      () => {
+        logFollows = log.scrollHeight - log.scrollTop - log.clientHeight < 60;
+      },
+      { passive: true },
+    );
+  }
+  if (!logFollows || logFlushQueued) return;
+  logFlushQueued = true;
+  requestAnimationFrame(() => {
+    logFlushQueued = false;
+    if (logFollows) log.scrollTop = log.scrollHeight;
+  });
 }
 
 function autoGrowComposer() {
