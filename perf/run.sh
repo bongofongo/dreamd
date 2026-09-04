@@ -4,7 +4,7 @@
 #
 #   ./perf/run.sh quick              ~60-90s   after a meaningful edit
 #   ./perf/run.sh pass               ~5min     after a full thread pass
-#   ./perf/run.sh deep               ~15min    before a commit / investigating
+#   ./perf/run.sh deep               ~20min    before a commit / investigating
 #   ./perf/run.sh deep --update-baseline
 #
 # Writes perf/results/<tier>-<sha>-<stamp>.json and prints a table diffing
@@ -296,18 +296,20 @@ collect_criterion() {
     | jq -s 'from_entries'
 }
 
+# ONE setting for every tier, defined once so it cannot drift into three.
+#
+# Cutting samples in the quick tier to save time made its numbers systematically
+# slower than the deep baseline's for identical code (fewer warmup iterations,
+# colder caches), so every quick run reported half a dozen phantom regressions.
+# Speed comes from running fewer benchmarks, never from measuring the same
+# benchmark more cheaply — otherwise the result is not comparable to the
+# baseline it is checked against. The tiers differ in their filter and nothing
+# else.
+BENCH_ARGS=(--warm-up-time 1 --measurement-time 3)
+
 say "rust benches ($TIER)"
 case "$TIER" in
   quick)
-    # SAME criterion settings as the slower tiers — only the filter differs.
-    #
-    # Cutting samples here to save time made quick's numbers systematically
-    # slower than the deep baseline's for identical code (fewer warmup
-    # iterations, colder caches), so every quick run reported half a dozen
-    # phantom regressions. Speed comes from running fewer benchmarks, never from
-    # measuring the same benchmark more cheaply — otherwise the result is not
-    # comparable to the baseline it is checked against.
-    BENCH_ARGS=(--warm-up-time 1 --measurement-time 3)
     run_bench locate "${BENCH_ARGS[@]}" 'reanchor/today/(1|10)$|locate_single' || true
     run_bench render "${BENCH_ARGS[@]}" 'render/(mixed|code)/(128k|512k)$' || true
     run_bench search "${BENCH_ARGS[@]}" 'keystrokes/500' || true
@@ -317,14 +319,12 @@ case "$TIER" in
     # (~4s per iteration) and 2MB renders. Both are in the deep tier, and both
     # show up in the "not measured this run" list here — that is expected, not a
     # failure.
-    BENCH_ARGS=(--warm-up-time 1 --measurement-time 3)
     run_bench locate "${BENCH_ARGS[@]}" 'reanchor/[a-z_]+/(1|10|100)$|locate_single' || true
     run_bench render "${BENCH_ARGS[@]}" 'render/[a-z]+/(8k|128k|512k)$|syntect_cold' || true
     run_bench search "${BENCH_ARGS[@]}" || true
     run_bench walk   "${BENCH_ARGS[@]}" || true
     ;;
   deep)
-    BENCH_ARGS=(--warm-up-time 1 --measurement-time 3)
     run_bench locate "${BENCH_ARGS[@]}" || true
     run_bench render "${BENCH_ARGS[@]}" || true
     run_bench search "${BENCH_ARGS[@]}" || true
@@ -457,7 +457,8 @@ if (( UPDATE_BASELINE )); then
   if [[ "$TIER" != "deep" ]]; then
     echo "" >&2
     echo "refusing to update the baseline from a '$TIER' run — use: ./perf/run.sh deep --update-baseline" >&2
-    echo "the quick and pass tiers use reduced sample counts, so their numbers are not a reference point." >&2
+    echo "quick and pass run a subset of the benchmarks and skip the real app, so they" >&2
+    echo "would write a baseline with holes in it — deep is the only complete sweep." >&2
     exit 2
   fi
   mkdir -p "$(dirname "$BASELINE_WRITE")"

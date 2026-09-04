@@ -43,16 +43,16 @@ use std::hint::black_box;
 const FILE: &str = "/corpus/mixed-2m.md";
 const COUNTS: &[usize] = &[1, 10, 100, 500];
 
+/// How a seeded highlight's quote is built. Only the two modes `bench_reanchor`
+/// sweeps; the context-carrying case is measured by `locate_single/with_context`
+/// below, for the reason given there.
 #[derive(Clone, Copy)]
-#[allow(dead_code)] // WithContext is only used by locate_single
 enum Mode {
     /// Rendered (whitespace-collapsed) quote, empty context — what the app sent
     /// before highlights carried context.
     Today,
     /// Byte-exact source quote — the tier-2 floor.
     ExactSource,
-    /// Rendered quote plus *rendered* context — what the frontend sends.
-    WithContext,
 }
 
 /// Collapse runs of whitespace, the way the rendered DOM does.
@@ -66,7 +66,6 @@ fn store_with(n: usize, mode: Mode) -> Store {
         let (quote, prefix, suffix) = match mode {
             Mode::Today => (h.rendered.clone(), String::new(), String::new()),
             Mode::ExactSource => (h.quote.clone(), String::new(), String::new()),
-            Mode::WithContext => (h.rendered.clone(), collapse(&h.prefix), collapse(&h.suffix)),
         };
         store.add_highlight(FILE.to_string(), 0, 0, quote, prefix, suffix);
     }

@@ -1,7 +1,11 @@
 # dreamd performance harness
 
-Local performance measurement. No CI, no GitHub Actions — this exists to be run by
-hand and by Claude, on this machine, during a session.
+Local performance measurement — this exists to be run by hand and by Claude, on
+this machine, during a session. Nothing here gates a build. The one automated
+caller is `release.yml`'s `perf-history` job, which runs the deep tier on a
+published release to capture four public numbers for the website chart (see
+`scripts/publish-history.sh`); it is `continue-on-error` and compares against no
+baseline, since a hosted runner is nobody's machine.
 
 ```sh
 ./perf/run.sh quick     # ~60s    
@@ -75,6 +79,7 @@ perf/
 ├── corpus/gen.mjs          deterministic fixture generator
 ├── corpus/manifest.json    committed sizes + sha256
 ├── lib/report.mjs          flatten + diff + render the table
+├── lib/compare.mjs         the CLI wrapper run.sh calls; exit 1 on a regression
 ├── scripts/startup.sh      hyperfine + phase marks, cold start
 ├── scripts/loop.sh         save -> repaint, the core product loop
 ├── scripts/profile.sh      Instruments / samply / cargo-bloat
@@ -235,8 +240,10 @@ this machine's id is in the filename.
 
 The baseline is only ever written by `./perf/run.sh deep --update-baseline`, and
 always to a keyed path (the notes clone when it is there, `perf/baselines/`
-otherwise). Never by `quick` or `pass` — their reduced sample counts are not a
-reference point, and the runner refuses. **Every machine can update its own**,
+otherwise). Never by `quick` or `pass` — they run a subset of the benchmarks and
+skip the real app, so a baseline written from one would have holes in it rather
+than numbers, and the runner refuses. (Not because they sample more cheaply:
+every tier uses identical criterion settings, as above.) **Every machine can update its own**,
 which is safe precisely because the filename carries the id: no run can name
 another machine's file, so the guarantee the old Darwin-only rule was making —
 that a Linux run cannot re-zero a macOS reference — now holds without confining
@@ -274,7 +281,7 @@ a baseline you can edit by hand is not evidence of anything.
 
 ## Gotchas worth knowing
 
-Four things bit this harness during construction, all of which would silently
+Five things bit this harness during construction, all of which would silently
 produce plausible-looking but wrong numbers:
 
 - **A frontend `d:ipc_*` span is not the cost of that IPC call.** It is the wall
