@@ -1530,6 +1530,13 @@ const COPY_ICON_SVG =
   ' stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
   '<path d="M20 6 9 17l-5-5"></path></svg>';
 
+// Parsed once, cloned per block: `btn.innerHTML = COPY_ICON_SVG` was one
+// HTML-parser invocation per <pre> — 640 on the code-heavy corpus doc, per
+// full render. (Module-level DOM is safe here: classic script, `defer`, the
+// document exists.)
+const copyIconTpl = document.createElement("template");
+copyIconTpl.innerHTML = COPY_ICON_SVG;
+
 /// Give every rendered code block a copy button, top right.
 ///
 /// Post-render DOM decoration rather than markup from `markdown::render`: the
@@ -1561,7 +1568,7 @@ function decorateCodeBlocks(roots = [contentEl]) {
     btn.className = "icon code-copy";
     btn.setAttribute("aria-label", "Copy code");
     btn.dataset.tip = "Copy code";
-    btn.innerHTML = COPY_ICON_SVG;
+    btn.appendChild(copyIconTpl.content.cloneNode(true));
     btn.addEventListener("click", (e) => {
       e.preventDefault();
       e.stopPropagation();
@@ -2477,7 +2484,13 @@ function exitPair(el, animate) {
 // is a pure style flip and the tree survives being hidden.
 function toggleTree() { document.body.classList.toggle("nav-collapsed"); }
 
-function toggleStack() { $("stack-panel").classList.toggle("open"); refreshStack(); }
+// Refresh only on open: every mutation path refreshes on its own (saveAnnot,
+// the pop handler, releaseSend, cancelSend, marks-changed), so the badge stays
+// live while the panel is closed and closing it needs no get_stack round trip.
+function toggleStack() {
+  const open = $("stack-panel").classList.toggle("open");
+  if (open) refreshStack().catch((e) => console.error(e));
+}
 function closeStack() { $("stack-panel").classList.remove("open"); }
 
 // ---- pane navigation -----------------------------------------------------
@@ -3648,14 +3661,14 @@ function pendingSendIds() {
   return set;
 }
 
+// What the bar last painted, so `flowTick`'s 350ms cadence — which calls this
+// in its `finally` for the whole of a cold start — stops rebuilding identical
+// rows and tearing the buttons out from under the pointer. Everything that
+// changes the bar changes this string: the row set, each row's count, the why.
+let sendBarSig = null;
 function paintSendBar() {
   const bar = $("send-bar");
-  bar.textContent = "";
   const rows = [...flow.pending.entries()];
-  bar.classList.toggle("open", rows.length > 0);
-  // Lifts the toast clear of the bar rather than letting the two overlap.
-  document.body.classList.toggle("sending", rows.length > 0);
-  if (!rows.length) return;
 
   // With the undo window gone, a row on screen at all means the pane could not
   // take the line — it is starting, or its child has exited. So the bar says
@@ -3666,6 +3679,18 @@ function paintSendBar() {
     : !pty.running
       ? "the pane is not running"
       : "waiting for Claude Code to finish starting";
+
+  const sig = rows.length
+    ? `${why}|${rows.map(([t, p]) => `${t}:${p.ids.length}`).join(",")}`
+    : "";
+  if (sig === sendBarSig) return;
+  sendBarSig = sig;
+
+  bar.textContent = "";
+  bar.classList.toggle("open", rows.length > 0);
+  // Lifts the toast clear of the bar rather than letting the two overlap.
+  document.body.classList.toggle("sending", rows.length > 0);
+  if (!rows.length) return;
   for (const [token, p] of rows) {
     const row = document.createElement("div");
     row.className = "send-row";
@@ -3775,14 +3800,19 @@ let paletteRows = [];
 function renderPalette() {
   const box = $("palette-results");
   box.innerHTML = "";
+  // Built into a fragment and appended once — one DOM mutation instead of up
+  // to 200 live-container inserts per keystroke, same pattern and reason as
+  // `paintTree` and `buildOutline`.
+  const frag = document.createDocumentFragment();
   paletteRows = paletteResults.map((n, i) => {
     const el = document.createElement("div");
     el.className = "pr" + (i === paletteSel ? " sel" : "");
     el.innerHTML = `<div>${escapeHtml(n.name)}</div><div class="rel">${escapeHtml(n.rel)}</div>`;
     el.onclick = () => { closePalette(); openFile(n.path); };
-    box.appendChild(el);
+    frag.appendChild(el);
     return el;
   });
+  box.appendChild(frag);
 }
 function movePalette(d) {
   if (!paletteResults.length) return;
