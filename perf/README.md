@@ -206,6 +206,17 @@ statistically the way a microbenchmark can:
   a property of the code rather than of the moment it was taken. `spread_ms` is
   reported alongside; a large spread means distrust even the minimum.
 
+**`first_paint` is "boot work done", not "pixels on glass" — and its meaning
+narrowed on 2026-09-04.** The mark fires when the frontend's init sequence
+(IPC, DOM write, decoration, highlights) completes. It used to *also* carry the
+webview's full layout of the document, because a scroll restore forced that
+layout synchronously inside the sequence; the restore is now guarded off the
+boot path, so layout happens at frame time after the mark. Numbers straddling
+that commit are not comparable (release fell 1266ms → ~330ms with pixels
+arriving well after), and the perf-history chart the release job feeds crossed
+the same step. What the mark still measures — everything on the critical path
+that dreamd's own code controls — it measures more purely than before.
+
 ## Baselines
 
 **Baselines are per machine, and none of them is in this repo.** A timing is a
