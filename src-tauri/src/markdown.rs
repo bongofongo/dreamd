@@ -7,13 +7,13 @@
 //!
 //! Fenced code blocks are syntax-highlighted server-side via syntect.
 
-use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{CodeBlockKind, CowStr, Event, Options, Parser, Tag, TagEnd};
 use serde::Serialize;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use syntect::highlighting::{Theme, ThemeSet};
 use syntect::html::highlighted_html_for_string;
 use syntect::parsing::SyntaxSet;
@@ -147,7 +147,13 @@ struct CodeEntry {
     theme: String,
     lang: String,
     code: String,
-    html: String,
+    /// `Arc` so a hit is a refcount bump rather than a clone of the rendered
+    /// HTML — on the warm save path every block is a hit, and copying several
+    /// MB under the cache mutex was most of what the lock protected. An
+    /// evicted entry a render still holds stays alive until that render is
+    /// done with it; the cap bounds what the cache *retains*, not what is
+    /// momentarily in flight.
+    html: Arc<str>,
 }
 
 impl CodeEntry {
@@ -170,12 +176,12 @@ struct CodeCache {
 }
 
 impl CodeCache {
-    fn get(&self, hash: u64, theme: &str, lang: &str, code: &str) -> Option<&str> {
+    fn get(&self, hash: u64, theme: &str, lang: &str, code: &str) -> Option<Arc<str>> {
         self.buckets
             .get(&hash)?
             .iter()
             .find(|e| e.matches(theme, lang, code))
-            .map(|e| e.html.as_str())
+            .map(|e| Arc::clone(&e.html))
     }
 
     fn insert(&mut self, hash: u64, entry: CodeEntry) {
@@ -341,11 +347,18 @@ pub fn render_with(source: &str, code_theme: &str) -> String {
         }
     }
 
-    for (at, html) in highlight_blocks(&blocks, code_theme) {
-        events[at] = Event::Html(html.into());
+    // Borrowed into the events rather than moved: the rendered blocks are
+    // `Arc<str>`s shared with the cache, and `push_html` only needs to read
+    // them. `rendered` outlives the `into_iter` below, which is what makes the
+    // borrow sound.
+    let rendered = highlight_blocks(&blocks, code_theme);
+    for (at, html) in &rendered {
+        events[*at] = Event::Html(CowStr::Borrowed(html));
     }
 
-    let mut html = String::new();
+    // Rendered HTML reliably outgrows its source (tags, spans, escapes);
+    // starting at double skips most of the doubling reallocs on a large doc.
+    let mut html = String::with_capacity(source.len() * 2);
     pulldown_cmark::html::push_html(&mut html, events.into_iter());
     html
 }
@@ -427,18 +440,39 @@ struct Block {
 /// the blocks into hits and misses, once to store what the workers produced.
 /// The workers never touch it — 640 blocks contending on one mutex would cost
 /// more than the highlighting it saves.
-fn highlight_blocks(blocks: &[Block], theme_name: &str) -> Vec<(usize, String)> {
-    let mut out: Vec<(usize, String)> = Vec::with_capacity(blocks.len());
-    // `(block, key hash)` for everything the memo could not answer.
-    let mut misses: Vec<(&Block, u64)> = Vec::new();
+fn highlight_blocks(blocks: &[Block], theme_name: &str) -> Vec<(usize, Arc<str>)> {
+    let mut out: Vec<(usize, Arc<str>)> = Vec::with_capacity(blocks.len());
 
+    // Hashes first, outside the lock: SipHash over every fence byte is real
+    // work at 640 blocks, and none of it needs the cache.
+    let hashes: Vec<u64> = blocks
+        .iter()
+        .map(|b| code_key_hash(theme_name, &b.lang, &b.text))
+        .collect();
+
+    // One entry per *unique* missed fence: `(index of its first block, key
+    // hash, every event slot wanting its html)`. A document that repeats a
+    // fence must be highlighted once and fanned out, not once per occurrence —
+    // on the cold path (first render of a session, a theme switch) the memo
+    // has answered nothing yet and cannot dedup for us, and the perf corpus is
+    // 32 unique fences in 640. Keyed on the full `(lang, text)` pair, not the
+    // hash — the hash only narrows, per the cache's own collision rule.
+    let mut misses: Vec<(usize, u64, Vec<usize>)> = Vec::new();
     {
+        let mut seen: HashMap<(&str, &str), usize> = HashMap::new();
         let cache = code_cache().lock().unwrap();
-        for b in blocks {
-            let hash = code_key_hash(theme_name, &b.lang, &b.text);
-            match cache.get(hash, theme_name, &b.lang, &b.text) {
-                Some(html) => out.push((b.at, html.to_string())),
-                None => misses.push((b, hash)),
+        for (i, b) in blocks.iter().enumerate() {
+            match cache.get(hashes[i], theme_name, &b.lang, &b.text) {
+                Some(html) => out.push((b.at, html)),
+                None => match seen.entry((b.lang.as_str(), b.text.as_str())) {
+                    std::collections::hash_map::Entry::Occupied(e) => {
+                        misses[*e.get()].2.push(b.at)
+                    }
+                    std::collections::hash_map::Entry::Vacant(v) => {
+                        v.insert(misses.len());
+                        misses.push((i, hashes[i], vec![b.at]));
+                    }
+                },
             }
         }
     }
@@ -452,7 +486,10 @@ fn highlight_blocks(blocks: &[Block], theme_name: &str) -> Vec<(usize, String)> 
         misses
             .iter()
             .enumerate()
-            .map(|(i, (b, _))| (i, highlight_code(&b.lang, &b.text, theme)))
+            .map(|(i, (b, _, _))| {
+                let b = &blocks[*b];
+                (i, highlight_code(&b.lang, &b.text, theme))
+            })
             .collect()
     } else {
         // Force the lazy syntect statics here rather than letting the workers
@@ -473,9 +510,10 @@ fn highlight_blocks(blocks: &[Block], theme_name: &str) -> Vec<(usize, String)> 
             for _ in 0..workers {
                 scope.spawn(|| loop {
                     let i = next.fetch_add(1, Ordering::Relaxed);
-                    let Some((b, _)) = misses.get(i) else {
+                    let Some((b, _, _)) = misses.get(i) else {
                         break;
                     };
+                    let b = &blocks[*b];
                     let html = highlight_code(&b.lang, &b.text, theme);
                     fresh.lock().unwrap().push((i, html));
                 });
@@ -488,17 +526,21 @@ fn highlight_blocks(blocks: &[Block], theme_name: &str) -> Vec<(usize, String)> 
     {
         let mut cache = code_cache().lock().unwrap();
         for (i, html) in done {
-            let (b, hash) = misses[i];
+            let (block_idx, hash, ref slots) = misses[i];
+            let b = &blocks[block_idx];
+            let html: Arc<str> = html.into();
             cache.insert(
                 hash,
                 CodeEntry {
                     theme: theme_name.to_string(),
                     lang: b.lang.clone(),
                     code: b.text.clone(),
-                    html: html.clone(),
+                    html: Arc::clone(&html),
                 },
             );
-            out.push((b.at, html));
+            for &at in slots {
+                out.push((at, Arc::clone(&html)));
+            }
         }
     }
 
@@ -972,7 +1014,7 @@ mod tests {
 
         // Each entry is ~100 KiB of html; comfortably more than
         // `CODE_CACHE_MAX_BYTES` worth get inserted, so eviction must run.
-        let big = "x".repeat(100 * 1024);
+        let big: Arc<str> = "x".repeat(100 * 1024).into();
         for i in 0..400 {
             let lang = format!("lang{i}");
             let code = format!("code{i}");
