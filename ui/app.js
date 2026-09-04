@@ -953,9 +953,15 @@ async function renderCurrent({ preserveScroll, reanchor }) {
   // ran, a visible jump-to-top-and-back on a `:w` whose block count changed.
   // Nothing between here and the old site reads scroll-dependent geometry
   // (`applyHighlights` walks text nodes; `findRecompute`, which does, runs
-  // after). On the patch path this writes the value it already has — a no-op
-  // that fires no scroll event.
-  scrollEl.scrollTop = prevScroll;
+  // after).
+  //
+  // Guarded, not unconditional: the write forces style+layout of the fresh
+  // document *now*, and the decoration passes below then mutate a laid-out
+  // tree — measured at d:decorate_code 18ms -> 45ms on the 2MB doc when this
+  // ran on first paint. Zero needs no restoring (a fresh write is already at
+  // the top, a clamp can only land there), so first paint and saves at the
+  // top of the document skip the forced layout entirely.
+  if (prevScroll) scrollEl.scrollTop = prevScroll;
 
   // Decoration is scoped to what was actually inserted. `prepareImages` in
   // particular *must* be: it adds a click listener per image and is not
@@ -1529,11 +1535,13 @@ const COPY_ICON_SVG =
   '<svg class="ic-check" viewBox="0 0 24 24" fill="none" stroke="currentColor"' +
   ' stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
   '<path d="M20 6 9 17l-5-5"></path></svg>';
-// ^ Assigned per button with `innerHTML`, deliberately. Parsing it once into a
-// <template> and cloning per block reads like the obvious economy and was
-// measured slower: d:decorate_code went 18ms -> 45ms at 640 blocks in the real
-// app (both launch scenarios, same run) — cloning + adopting the SVG subtree
-// costs more here than the parser does.
+// ^ Assigned per button with `innerHTML`. A parse-once/clone-per-block
+// template was tried and backed out unproven: the d:decorate_code jump it was
+// blamed for (18ms -> 45ms) turned out to be renderCurrent's scroll restore
+// forcing layout before decoration — present with and without the template —
+// so the template's own effect was never isolated. innerHTML stays as the
+// simpler original; anyone re-trying the template should measure it against
+// the guarded-restore code below, where the confounder is gone.
 
 /// Give every rendered code block a copy button, top right.
 ///
