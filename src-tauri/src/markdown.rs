@@ -29,6 +29,22 @@ pub fn syntax_theme_names() -> Vec<String> {
     themes().themes.keys().cloned().collect()
 }
 
+/// Pay the syntect dump load on a background thread instead of the first paint.
+///
+/// `syntaxes()`/`themes()` are lazy, so without this the *first document
+/// render* pays the flate2+bincode load of the bundled dumps — serial with
+/// first paint, which is the one place it is visible (`syntect_cold` in
+/// `benches/render.rs` is what it costs). Called from `.setup()`, after the
+/// window exists, beside `agent::claude::warm` and for the same reason. A
+/// render that arrives before the thread finishes blocks on the `OnceLock`
+/// exactly as it always did — never slower, usually fully overlapped.
+pub fn warm() {
+    std::thread::spawn(|| {
+        syntaxes();
+        themes();
+    });
+}
+
 fn syntaxes() -> &'static SyntaxSet {
     static S: OnceLock<SyntaxSet> = OnceLock::new();
     S.get_or_init(SyntaxSet::load_defaults_newlines)

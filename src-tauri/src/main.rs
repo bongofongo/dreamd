@@ -2155,6 +2155,10 @@ fn main() {
             // window is up so it competes with nothing on the way to first
             // paint, and it holds nothing afterwards — see `claude::warm`.
             agent::claude::warm();
+            // And syntect's dumps, loaded now rather than on the first
+            // `render_markdown` — the same shape, and the other lazy cost the
+            // first paint used to carry. See `markdown::warm`.
+            markdown::warm();
 
             // Not armed when there is no repo: `watch` is recursive, and the
             // root would be `/`.
