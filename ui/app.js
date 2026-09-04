@@ -1529,13 +1529,11 @@ const COPY_ICON_SVG =
   '<svg class="ic-check" viewBox="0 0 24 24" fill="none" stroke="currentColor"' +
   ' stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
   '<path d="M20 6 9 17l-5-5"></path></svg>';
-
-// Parsed once, cloned per block: `btn.innerHTML = COPY_ICON_SVG` was one
-// HTML-parser invocation per <pre> — 640 on the code-heavy corpus doc, per
-// full render. (Module-level DOM is safe here: classic script, `defer`, the
-// document exists.)
-const copyIconTpl = document.createElement("template");
-copyIconTpl.innerHTML = COPY_ICON_SVG;
+// ^ Assigned per button with `innerHTML`, deliberately. Parsing it once into a
+// <template> and cloning per block reads like the obvious economy and was
+// measured slower: d:decorate_code went 18ms -> 45ms at 640 blocks in the real
+// app (both launch scenarios, same run) — cloning + adopting the SVG subtree
+// costs more here than the parser does.
 
 /// Give every rendered code block a copy button, top right.
 ///
@@ -1568,7 +1566,7 @@ function decorateCodeBlocks(roots = [contentEl]) {
     btn.className = "icon code-copy";
     btn.setAttribute("aria-label", "Copy code");
     btn.dataset.tip = "Copy code";
-    btn.appendChild(copyIconTpl.content.cloneNode(true));
+    btn.innerHTML = COPY_ICON_SVG;
     btn.addEventListener("click", (e) => {
       e.preventDefault();
       e.stopPropagation();
