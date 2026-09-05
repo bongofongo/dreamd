@@ -336,6 +336,21 @@ pub fn render_blocks(source: &str, code_theme: &str) -> Vec<String> {
     })
 }
 
+/// `s.encode_utf16().count()`, in one byte scan: every non-continuation byte
+/// starts a scalar (one unit), and every 4-byte lead adds the surrogate
+/// pair's second unit. The wire framing (`frame_blocks` in main.rs) sends
+/// block lengths in these units so the frontend can decode the payload once
+/// and `slice` per block — JS string offsets *are* UTF-16 units.
+pub fn utf16_units(s: &str) -> usize {
+    s.bytes()
+        .map(|b| match b {
+            0x80..=0xBF => 0,
+            0xF0..=0xFF => 2,
+            _ => 1,
+        })
+        .sum()
+}
+
 /// Build the event stream — headings slugged, fences highlighted and spliced
 /// back in — and hand it to `f`. A closure rather than a returned value
 /// because the events borrow `rendered` (the fences' `Arc<str>`s), and the
@@ -1367,6 +1382,13 @@ mod properties {
     use proptest::prelude::*;
 
     proptest! {
+        /// The byte-scan shortcut agrees with the real thing on every
+        /// string — the wire's block offsets are only as good as this.
+        #[test]
+        fn utf16_units_matches_encode_utf16(s in "\\PC{0,64}") {
+            prop_assert_eq!(utf16_units(&s), s.encode_utf16().count());
+        }
+
         /// The contract `render_blocks` stands on: block-wise rendering and
         /// whole-document rendering are the same function. Sweeps markdown-ish
         /// text — headings, fences, lists, emphasis, links, tables, rules —

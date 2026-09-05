@@ -43,15 +43,22 @@ struct Prerendered {
     blocks: Vec<String>,
 }
 
-/// The wire shape of a rendered document: a JSON array of block byte-lengths,
-/// a newline, then the blocks' bytes back to back. Framed rather than sent as
-/// a JSON array of strings because that would re-escape all 4MB — the exact
-/// cost the raw `ipc::Response` exists to avoid — and framed rather than sent
-/// as one string because per-block strings are what the frontend's save diff
-/// compares (`writeContent`); block boundaries are load-bearing there.
+/// The wire shape of a rendered document: a JSON array of block lengths in
+/// **UTF-16 code units**, a newline, then the blocks' bytes back to back.
+/// Framed rather than sent as a JSON array of strings because that would
+/// re-escape all 4MB — the exact cost the raw `ipc::Response` exists to avoid
+/// — and framed rather than as one string because per-block strings are what
+/// the frontend's save diff compares (`writeContent`); block boundaries are
+/// load-bearing there.
+///
+/// Code units, not bytes, because of what the frontend does with the header:
+/// one `TextDecoder.decode` of the whole payload and a `slice` per block.
+/// Byte lengths forced a decode *per block* — ~1300 ICU round trips at boot,
+/// measured at ~80ms of the render await — where JS string slicing wants
+/// exactly the units `String.prototype.length` counts.
 fn frame_blocks(blocks: &[String]) -> Vec<u8> {
-    let lens: Vec<usize> = blocks.iter().map(|b| b.len()).collect();
-    let total: usize = lens.iter().sum();
+    let lens: Vec<usize> = blocks.iter().map(|b| markdown::utf16_units(b)).collect();
+    let total: usize = blocks.iter().map(|b| b.len()).sum();
     let mut out = serde_json::to_vec(&lens).unwrap_or_default();
     out.reserve(total + 1);
     out.push(b'\n');

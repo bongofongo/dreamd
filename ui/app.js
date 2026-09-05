@@ -200,7 +200,17 @@ async function init() {
   // until the background walk lands, so this simply resolves late and
   // `paintTree` marks the open file active whenever it does. `.catch` is
   // load-bearing — left unawaited, a rejection here is an unhandled one.
-  const tree = loadTree().catch((e) => console.error(e));
+  // "Off the critical path" made literal: when a document is opening, only
+  // the *fetch* runs alongside it — the paint waits for the document. Left to
+  // its own timing, the tree's continuation (a 5,000-row sidebar build and
+  // its layout) queued as a task, and tasks run ahead of the staged write's
+  // rAF — measured at +200ms of head_paint on the big corpus repo, the
+  // sidebar literally painting in front of the prose. On a directory launch
+  // there is no document and the tree *is* the paint, as before.
+  const treeData = initial
+    ? invoke("list_markdown_files").catch((e) => (console.error(e), null))
+    : null;
+  const tree = initial ? null : loadTree().catch((e) => console.error(e));
 
   // Same treatment, and for the same reason: the badge is chrome, not the
   // document. Unawaited so `first_paint` below measures the document arriving
@@ -214,6 +224,13 @@ async function init() {
   if (initial) await openFile(initial).catch((e) => console.error(e));
   else await tree;
   perf.at("first_paint");
+  if (treeData) {
+    const nodes = await treeData;
+    if (nodes) {
+      paintTree(nodes);
+      perf.at("ipc_tree");
+    }
+  }
 }
 
 // The syntect theme baked into the last render. Code-block colours are inline
@@ -1027,8 +1044,10 @@ function stagedFullWrite(doc) {
         lastBlocksFile = currentFile;
         lastHtml = doc;
       };
+  const tHP = perf.now();
   const tpl = document.createElement("template");
   tpl.innerHTML = backend ? doc.slice(0, STAGE_HEAD).join("") : doc;
+  perf.span("stage_head_parse", tHP);
   const count = backend ? doc.length : tpl.content.childElementCount;
   if (count < STAGE_MIN) {
     // Small document: one write, as ever. The template is already parsed
@@ -1058,6 +1077,7 @@ function stagedFullWrite(doc) {
   // `prepareImages`, which is not, still runs exactly once, after the await.
   interceptLinks([head]);
   contentEl.appendChild(head);
+  perf.at("stage_head_inserted");
 
   return new Promise((resolve) => {
     let done = false;
@@ -1072,13 +1092,17 @@ function stagedFullWrite(doc) {
       // The tail: still in the template on the legacy shape, one parse away
       // on the backend one — deferred to here on purpose, after the head's
       // frame committed.
+      const tT = perf.now();
       if (backend) tpl.innerHTML = doc.slice(STAGE_HEAD).join("");
+      perf.span("stage_tail_parse", tT);
       // Same treatment as the head, same reason: the caller's decoration pass
       // resumes a microtask *after* this resolve, and an adopted image's
       // queued load runs first — the src must already be rewritten by then.
+      const tA = perf.now();
       interceptLinks([tpl.content]);
       contentEl.appendChild(tpl.content);
       record();
+      perf.span("stage_tail_append", tA);
       resolve(null);
     };
     // The timeout is the insurance: rAF can starve in an occluded window, and
@@ -1154,20 +1178,24 @@ async function renderCurrent({ preserveScroll, reanchor }) {
   try {
     html = await invoke("render_markdown", { path: currentFile });
     // The command answers raw bytes (an ArrayBuffer): a JSON array of block
-    // byte-lengths, a newline, then the blocks back to back — framed rather
-    // than JSON-encoded because escaping 4MB was ~90ms of the old await, and
-    // framed rather than one string because the block boundaries are what
-    // `writeContent`'s diff compares. Decoded per block so byte lengths never
-    // have to be reconciled with UTF-16 offsets. The typeof guard keeps the
-    // harness stubs (plain strings) on the legacy single-string path.
+    // lengths in UTF-16 code units, a newline, then the blocks back to back —
+    // framed rather than JSON-encoded because escaping 4MB was ~90ms of the
+    // old await, and framed rather than one string because the block
+    // boundaries are what `writeContent`'s diff compares. One decode and a
+    // slice per block: decoding per block instead was ~1300 ICU round trips,
+    // ~80ms at boot. The typeof guard keeps the harness stubs (plain strings)
+    // on the legacy single-string path.
     if (typeof html !== "string") {
       const buf = new Uint8Array(html);
       const nl = buf.indexOf(10);
       const dec = new TextDecoder();
       const lens = JSON.parse(dec.decode(buf.subarray(0, nl)));
-      let at = nl + 1;
+      const tD = perf.now();
+      const text = dec.decode(buf.subarray(nl + 1));
+      perf.span("decode_payload", tD);
+      let at = 0;
       html = lens.map((len) => {
-        const s = dec.decode(buf.subarray(at, at + len));
+        const s = text.slice(at, at + len);
         at += len;
         return s;
       });

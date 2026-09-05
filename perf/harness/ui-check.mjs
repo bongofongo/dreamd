@@ -3678,11 +3678,12 @@ await patch.addInitScript((css) => {
           };
           case "initial_file": return "/repo/doc.md";
           case "render_markdown": {
-            // Frame the blocks the way main.rs's frame_blocks does.
+            // Frame the blocks the way main.rs's frame_blocks does: lengths
+            // in UTF-16 code units (JS string .length), then the bytes.
             const blocks = await window.__body();
             const enc = new TextEncoder();
             const parts = blocks.map((b) => enc.encode(b));
-            const header = enc.encode(JSON.stringify(parts.map((x) => x.length)) + "\n");
+            const header = enc.encode(JSON.stringify(blocks.map((b) => b.length)) + "\n");
             const buf = new Uint8Array(header.length + parts.reduce((n, x) => n + x.length, 0));
             buf.set(header, 0);
             let o = header.length;
