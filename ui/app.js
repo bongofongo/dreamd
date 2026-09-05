@@ -1976,7 +1976,10 @@ function applyHighlights(list) {
   // 105k-node document is where `apply_highlights` spent its ~350ms at 100
   // highlights. Below the threshold the per-highlight walk wins because it stops
   // at the first hit, where the flatten always reads the whole document.
+  const tF = perf.now();
   const doc = active > SCAN_THRESHOLD ? scanTextNodes(contentEl) : null;
+  perf.span("hl_flatten", tF);
+  const tL = perf.now();
   const placements = [];
   // Quotes the cheap walk could not hold in one text node. They are not failures
   // — see `placeAcrossNodes` — but they need the flattened view, and building it
@@ -2005,6 +2008,8 @@ function applyHighlights(list) {
     else crossNode.push({ ...h, at: p ? p.at : -1 });
   }
 
+  perf.span("hl_locate", tL);
+  const tW = perf.now();
   // Wrapping splits a text node, which invalidates every offset computed after
   // it — so apply back to front and nothing needs recomputing.
   placements.sort((a, b) => b.at - a.at);
@@ -2015,9 +2020,16 @@ function applyHighlights(list) {
     wrapRange(range, p.id, false, p.prior);
   }
 
-  // The rest, against a view of the DOM as it now stands. `doc` is deliberately
-  // not reused: every wrap above split a text node it was built from.
-  if (crossNode.length) placeAcrossNodes(scanTextNodes(contentEl), crossNode);
+  perf.span("hl_wrap", tW);
+  const tC = perf.now();
+  // The rest, against a view of the DOM as it now stands. The *nodes* are
+  // rebuilt — every wrap above split a text node the first walk recorded —
+  // but the flattened *text* is reused: wrapping splits nodes and moves not
+  // one character, and the join was roughly half the flatten's cost.
+  if (crossNode.length) {
+    placeAcrossNodes(scanTextNodes(contentEl, doc ? doc.text : null), crossNode);
+  }
+  perf.span("hl_cross", tC);
 }
 
 /// Paint the quotes that do not fit inside one text node.
@@ -2129,19 +2141,32 @@ function wrapByWalk(container, quote, id, prior) {
 
 // Flatten the rendered document into one string plus the text nodes behind it,
 // so quotes can be found with a native string search instead of a DOM walk.
-function scanTextNodes(container) {
+//
+// `knownText` is the reuse path: a caller that already flattened this
+// container and has only *split* text nodes since (wrapping does exactly
+// that) passes the previous text, and the join is skipped. The length check
+// is the guard — a mismatch means the caller was wrong about nothing having
+// changed, and the honest join wins.
+function scanTextNodes(container, knownText = null) {
   const nodes = [];
   const starts = [];
-  const parts = [];
+  const parts = knownText === null ? [] : null;
   let total = 0;
   const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
   for (let n; (n = walker.nextNode()); ) {
     nodes.push(n);
     starts.push(total);
-    parts.push(n.nodeValue);
+    if (parts) parts.push(n.nodeValue);
     total += n.nodeValue.length;
   }
-  return { nodes, starts, text: parts.join("") };
+  if (knownText !== null && knownText.length === total) {
+    return { nodes, starts, text: knownText };
+  }
+  return {
+    nodes,
+    starts,
+    text: parts ? parts.join("") : nodes.map((n) => n.nodeValue).join(""),
+  };
 }
 
 // First occurrence of `needle` that lies wholly within a single text node,
