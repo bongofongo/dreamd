@@ -355,9 +355,18 @@ fn tools_call(
     // taking the two in the other order here would be the one place they could
     // interleave.
     let open = open_doc();
+    // `mark_passage`'s file read and locate, also before the lock and with the
+    // same precedent: on a large document they are the expensive half of the
+    // call, and they need the root, not the store. The store half runs under
+    // the lock below, through the same envelope `tools::call` uses.
+    let prepared = (call.name == "mark_passage")
+        .then(|| tools::prepare_mark_passage(root, &call.arguments));
     let (result, change) = {
         let mut store = store.lock().unwrap();
-        let result = tools::call(&mut store, root, open.as_deref(), &call);
+        let result = match prepared {
+            Some(p) => tools::envelope(p.and_then(|p| tools::apply_mark_passage(&mut store, p))),
+            None => tools::call(&mut store, root, open.as_deref(), &call),
+        };
         let change = change_after(&store, &call, &result);
         (result, change)
     };

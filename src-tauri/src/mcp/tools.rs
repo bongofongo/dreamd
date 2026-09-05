@@ -138,7 +138,13 @@ pub fn dispatch(
 /// what makes "the quote is not in that file" a usable instruction rather than
 /// a dead end.
 pub fn call(store: &mut Store, root: &Path, open_doc: Option<&Path>, call: &ToolCall) -> Value {
-    match dispatch(store, root, open_doc, call) {
+    envelope(dispatch(store, root, open_doc, call))
+}
+
+/// The MCP result envelope around a tool's outcome — one copy, shared by
+/// [`call`] and by the server's split `mark_passage` path.
+pub fn envelope(result: ToolResult) -> Value {
+    match result {
         Ok(value) => {
             let text = serde_json::to_string_pretty(&value)
                 .unwrap_or_else(|e| format!("could not render the result: {e}"));
@@ -299,6 +305,23 @@ fn list_highlights(store: &Store, root: &Path, args: &Value) -> ToolResult {
 /// `guard::inside_root` before anything happens — canonicalisation first, so
 /// `../` is resolved away before containment is tested rather than after.
 fn mark_passage(store: &mut Store, root: &Path, args: &Value) -> ToolResult {
+    prepare_mark_passage(root, args).and_then(|p| apply_mark_passage(store, p))
+}
+
+/// The store-free half of `mark_passage`: path containment, the file read and
+/// the verbatim-quote refusal. Split out so the server can run it **before**
+/// taking the store lock — the read plus a tier-capable `locate` on a large
+/// document held that lock against every GUI command exactly when the human
+/// was watching the window react to the agent. Same TOCTOU as before: the
+/// file can change the instant after the read, split or no split.
+pub struct PreparedMark {
+    path_str: String,
+    source: String,
+    quote: String,
+    note: String,
+}
+
+pub fn prepare_mark_passage(root: &Path, args: &Value) -> Result<PreparedMark, ToolError> {
     let file = string_arg(args, "file")?;
     let quote = string_arg(args, "quote")?;
     let note = string_arg(args, "note")?;
@@ -318,10 +341,20 @@ fn mark_passage(store: &mut Store, root: &Path, args: &Value) -> ToolResult {
         )));
     }
 
-    let id = store.add_anchored(
+    Ok(PreparedMark {
         path_str,
-        &source,
+        source,
         quote,
+        note,
+    })
+}
+
+/// The store half: anchor, annotate, take it back off the human's queue.
+pub fn apply_mark_passage(store: &mut Store, p: PreparedMark) -> ToolResult {
+    let id = store.add_anchored(
+        p.path_str,
+        &p.source,
+        p.quote,
         String::new(),
         String::new(),
         Origin::Agent,
@@ -332,7 +365,7 @@ fn mark_passage(store: &mut Store, root: &Path, args: &Value) -> ToolResult {
     // inflate the human's badge and hand the agent its own notes back as
     // questions on the next `get_stack`. The frozen `Store` API offers no way
     // to annotate without enqueueing, so it is undone immediately.
-    store.set_annotation(&id, note);
+    store.set_annotation(&id, p.note);
     store.remove_from_stack(&id);
 
     to_value(&Marked { id })
