@@ -19,6 +19,16 @@
 #     One line of NDJSON standing in for the entire startup path. Strictly the
 #     stronger check — use it wherever the binary can carry the feature.
 #
+#     Paint mode launches on a *file*, not the directory, and then performs one
+#     Neovim-style atomic save (temp sibling + rename, `loop.sh`'s pattern) and
+#     waits for the `d:save_to_paint` mark. That mark only exists if the watcher
+#     saw the rename, coalesced it, the event crossed to the page, the frontend
+#     matched it to the open document, and the full re-render — the staged
+#     write, both IPC round trips, highlight re-application — completed. It is
+#     the core product loop, asserted end to end in the real app, and it is the
+#     one place the staged paint's frame-timing code runs under WebKitGTK in CI
+#     rather than under Chromium.
+#
 #   SMOKE_EXPECT=window  For a release artifact, which carries no instrumentation
 #     and must be smoked exactly as shipped. Three signals together: the MCP
 #     socket appears under the (sandboxed) config dir, which `main`'s `.setup`
@@ -85,6 +95,13 @@ trap cleanup EXIT
 # render without exercising any of it.
 FIXTURE="$WORK/repo"
 mkdir -p "$FIXTURE"
+# A fake .git, the way loop.sh makes one: a *file* launch resolves the repo by
+# walking up from the cwd, and without a repo there is no watcher — the save
+# assertion below would wait on a directory nobody is watching. (A directory
+# launch takes the argument as root regardless, so window mode never needed
+# this.)
+mkdir -p "$FIXTURE/.git"
+printf 'ref: refs/heads/main\n' > "$FIXTURE/.git/HEAD"
 cat > "$FIXTURE/README.md" <<'MD'
 # smoke
 
@@ -124,10 +141,28 @@ fi
 
 LOG="$WORK/dreamd.log"
 
-echo "smoke: expect=$EXPECT timeout=${TIMEOUT}s"
-echo "smoke: $* $FIXTURE"
+# Paint mode opens the document so the whole render pipeline is on the boot
+# path and the save-loop assertion below has an open file to save; window mode
+# keeps the directory launch a release artifact has always been smoked with.
+if [ "$EXPECT" = "paint" ]; then
+  TARGET="$FIXTURE/README.md"
+else
+  TARGET="$FIXTURE"
+fi
 
-"$@" "$FIXTURE" > "$LOG" 2>&1 &
+echo "smoke: expect=$EXPECT timeout=${TIMEOUT}s"
+echo "smoke: $* $TARGET"
+
+# Launched from inside the fixture, because a *file* argument roots the tree —
+# and arms the watcher — at the repo of the current directory; launched from
+# the checkout, the save below would land in a directory nobody is watching.
+# The command is absolutized first so `./target/debug/dreamd` survives the cd,
+# and `exec` keeps $! the app's pid rather than the subshell's.
+CMD0="$1"; shift
+case "$CMD0" in
+  */*) [ -e "$CMD0" ] && CMD0="$(cd "$(dirname "$CMD0")" && pwd)/$(basename "$CMD0")" ;;
+esac
+( cd "$FIXTURE" && exec "$CMD0" "$@" "$TARGET" ) > "$LOG" 2>&1 &
 PID=$!
 
 # --- assertions -----------------------------------------------------------
@@ -221,6 +256,33 @@ echo "smoke: up after ~$((waited / 4))s"
 # below instead, where a human reading a red build can still see them.
 if grep -Eq 'Gdk-Message: Error|panicked at|Protocol error|Segmentation fault' "$LOG"; then
   fail "a fatal message appeared in the output"
+fi
+
+# --- the core loop, once -------------------------------------------------
+#
+# Paint mode only: `d:save_to_paint` is a perf mark, and window mode has none.
+# One atomic save of the open document, the way Neovim's `backupcopy=auto`
+# writes one, then wait for the mark that only a completed re-render emits.
+# This is the integration test the launch alone is not: watcher -> event ->
+# frontend match -> render + reanchor round trips -> staged write -> highlight
+# pass, all in the real app. Thirty seconds is generous — the loop measures in
+# the hundreds of ms — so a timeout here is a wedge, not a slow machine.
+if [ "$EXPECT" = "paint" ]; then
+  sed 's/^More text.*/More text, edited once by the smoke test./' \
+    "$FIXTURE/README.md" > "$FIXTURE/README.md.tmp"
+  mv "$FIXTURE/README.md.tmp" "$FIXTURE/README.md"
+  waited=0
+  until grep -q '"phase":"d:save_to_paint"' "$LOG"; do
+    if ! kill -0 "$PID" 2>/dev/null; then
+      fail "the process died during the save"
+    fi
+    if [ "$waited" -ge 120 ]; then
+      fail "the save never repainted (no d:save_to_paint after 30s)"
+    fi
+    sleep 0.25
+    waited=$((waited + 1))
+  done
+  echo "smoke: one save repainted after ~$((waited / 4))s"
 fi
 
 # --- shutdown -------------------------------------------------------------

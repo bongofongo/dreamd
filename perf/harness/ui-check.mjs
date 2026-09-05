@@ -3776,6 +3776,67 @@ check(
   (await kept(["t", "a", "b", "c"])).join(),
 );
 
+// ---- the staged full write -----------------------------------------------
+//
+// The initial paint of a large document lands in two phases: the head now, the
+// tail after the frame commits (`stagedFullWrite`). Three contracts hold it
+// together, and each is asserted directly against `writeContent` rather than
+// through `openFile` — racing two file opens would test the scheduler, not the
+// contract. A small document must take one write; a big one must end complete;
+// and a write that supersedes a pending stage must not have the stale tail
+// land on top of it.
+
+const staged = await patch.evaluate(async () => {
+  const big = Array.from({ length: 150 }, (_, i) => `<p id="g${i}">block ${i}</p>`).join("");
+  currentFile = "/repo/doc.md";
+  const r = writeContent(big, { stage: true });
+  const wasPromise = r instanceof Promise;
+  const headCount = document.getElementById("content").children.length;
+  await r;
+  const el = document.getElementById("content");
+  return {
+    wasPromise,
+    headCount,
+    total: el.children.length,
+    lastLanded: !!document.getElementById("g149"),
+  };
+});
+check("a staged write paints the head first", staged.wasPromise && staged.headCount === 40,
+  JSON.stringify(staged));
+check("and the tail lands when the frame commits", staged.total === 150 && staged.lastLanded,
+  JSON.stringify(staged));
+
+const small = await patch.evaluate(() => {
+  currentFile = "/repo/other.md";
+  const r = writeContent('<p id="lone">small</p>', { stage: true });
+  return {
+    sync: !(r instanceof Promise),
+    whole: document.getElementById("content").children.length === 1,
+  };
+});
+check("a small document takes one write, synchronously", small.sync && small.whole,
+  JSON.stringify(small));
+
+const superseded = await patch.evaluate(async () => {
+  const big = Array.from({ length: 150 }, (_, i) => `<p id="s${i}">block ${i}</p>`).join("");
+  currentFile = "/repo/doc.md";
+  const pending = writeContent(big, { stage: true });
+  // Before the frame: another write claims the element. The staged tail must
+  // stand down — a landing would splice 110 stale blocks after the winner.
+  currentFile = "/repo/other.md";
+  writeContent('<p id="w">winner</p>', { stage: false });
+  await pending;
+  // Two frames, so a tail that *would* land wrongly has had every chance to.
+  await new Promise((res) => requestAnimationFrame(() => requestAnimationFrame(res)));
+  const el = document.getElementById("content");
+  return { html: el.innerHTML, count: el.children.length };
+});
+check(
+  "a superseded staged write stands down instead of appending its tail",
+  superseded.count === 1 && superseded.html === '<p id="w">winner</p>',
+  JSON.stringify(superseded),
+);
+
 await browser.close();
 console.log(results.join("\n"));
 const failed = results.filter((r) => r.startsWith("FAIL")).length;

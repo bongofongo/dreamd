@@ -172,11 +172,14 @@ jobs:
   # shape of the NVIDIA/Wayland failure src/webkit.rs works around, and precisely
   # the shape that macOS-side development cannot notice.
   #
-  # packaging/smoke.sh launches the binary under Xvfb and waits for the
-  # `first_paint` mark, which ui/app.js emits only after GTK initialised, wry
+  # packaging/smoke.sh launches the binary under Xvfb, waits for the
+  # `first_paint` mark — which ui/app.js emits only after GTK initialised, wry
   # built a real WebKitGTK webview, frontendDist loaded, the CSP admitted both
-  # classic scripts and an IPC round trip completed in both directions. That is
-  # why this job builds `--features perf`: the instrumentation is the assertion.
+  # classic scripts and an IPC round trip completed in both directions — then
+  # performs one atomic save of the open document and waits for
+  # `d:save_to_paint`, which only a completed re-render emits. Launch *and* the
+  # core save loop, end to end, in the real app. That is why this job builds
+  # `--features perf`: the instrumentation is the assertion.
   #
   # ubuntu-22.04 rather than -latest, to match every other Linux runner here —
   # this is the webkit2gtk the release links against. canary.yml runs the same

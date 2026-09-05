@@ -72,11 +72,16 @@ check reads: open dreamd on this repo and work down it, at 100% and zoomed.
 
 `packaging/smoke.sh` is the one check that *launches* the program. Under Xvfb,
 in its own fixture repo with `XDG_CONFIG_HOME` pointed at a scratch directory,
-in one of two modes. `SMOKE_EXPECT=paint` waits for the `first_paint` mark,
-which `ui/app.js` cannot emit unless GTK initialised, wry built a real
-WebKitGTK webview, `frontendDist` loaded, the CSP admitted both classic scripts
-and IPC completed in both directions — so it needs `--features perf`, and it is
-the stronger check. `SMOKE_EXPECT=window` is for a release artifact, which
+in one of two modes. `SMOKE_EXPECT=paint` launches on a *file* and asserts the
+whole core loop: first the `first_paint` mark, which `ui/app.js` cannot emit
+unless GTK initialised, wry built a real WebKitGTK webview, `frontendDist`
+loaded, the CSP admitted both classic scripts and IPC completed in both
+directions — then one Neovim-style atomic save of the open document, waiting
+for `d:save_to_paint`, which only a completed re-render emits (watcher →
+event → staged write → both IPC round trips → highlight pass). It needs
+`--features perf`, and it is the stronger check — and the one place the staged
+paint runs under WebKitGTK in CI rather than under Chromium.
+`SMOKE_EXPECT=window` is for a release artifact, which
 carries no instrumentation and must be smoked as shipped: the MCP socket
 appearing (bound in `.setup`, i.e. after the window exists), a `WebKit*`
 descendant process, and survival. It proves a window, not a page. Both are
