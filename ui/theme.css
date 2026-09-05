@@ -17,16 +17,21 @@
  * Code-block *token* colours come from syntect on the Rust side; the palette
  * picks the syntect theme per mode with `--syntax-theme`.
  *
- * Variables below fall into two groups. The palette must declare the ones with
- * no fallback here. The ones written `var(--x, <default>)` are optional: they
- * let a theme change shape rather than only colour, and a palette that ignores
- * them looks exactly as it did.
+ * A fallback here does not mean a variable is optional. The optional ones are
+ * the *shape* variables — `--font-heading`, `--heading-weight`,
+ * `--heading-rule`, `--para-spacing`, `--text-align`, `--hyphens`,
+ * `--letter-spacing`, `--code-bg`: no palette need declare them, they let a
+ * theme change shape rather than only colour, and a palette that ignores them
+ * looks exactly as it did. Everything else written `var(--x, <default>)` below
+ * is required all the same — `theme_check` insists on twenty-one variables from
+ * each of the ten bundled families — and the fallback is only a floor for a user
+ * file written before that variable existed.
  *
- * `--hl-prior` is in both groups and is the only one that is: it has a fallback,
- * because a user palette that predates it must still fade, and `theme_check`
- * nonetheless requires it of all ten bundled families (twenty-one variables
- * each), because a shipped palette leaning on a generic default is a palette
- * whose fade nobody looked at. */
+ * `--hl-prior` is the one whose floor is pinned as well as its presence:
+ * `theme_check` asserts that a palette which never heard of it still resolves to
+ * `PRIOR_FADE_FALLBACK`, and separately that all ten families declare it,
+ * because a shipped palette leaning on a generic default is a palette whose fade
+ * nobody looked at. */
 
 /* Native scrollbars, form controls and the webview's own canvas, so they don't
  * stay dark under a light palette. Chrome business, not the palette's — a user
@@ -136,7 +141,15 @@ body { background: var(--bg); color: var(--text); }
  * `.stale` keeps its own hue — stale is a state, not an age, and the two are
  * read separately. Without this rule the tie on specificity would go to the
  * later stylesheet, which is this one, and a stale mark would quietly stop
- * looking stale the moment it was a session old. */
+ * looking stale the moment it was a session old.
+ *
+ * That second rule is unreachable today, and kept deliberately: all four
+ * `wrapRange` call sites pass `stale = false`, because `applyHighlights` diverts
+ * a stale mark to the rail chip before anything is wrapped, so no
+ * `mark.hl.stale` ever reaches the document. It pairs with index.html's
+ * `mark.hl.stale`, which is where the unfaded appearance lives; the two describe
+ * one thing and are only worth removing together with the app.js path that would
+ * produce the class. */
 mark.hl[data-prior] {
   background: color-mix(in srgb, var(--hl, #f2d16b) var(--hl-prior, 16%), transparent);
   color: inherit;

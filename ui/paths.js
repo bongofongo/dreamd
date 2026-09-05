@@ -8,8 +8,10 @@
 // `app.js`, and both share the global scope. The CSP (`script-src 'self'`)
 // permits it — only *inline* script is blocked.
 //
-// The Rust side has the same guard in `src-tauri/src/guard.rs::inside_root`,
-// for `delete_file`. Change one, look at the other.
+// The Rust side has the same guard in `src-tauri/src/guard.rs::inside_root` —
+// `delete_file`, the MCP tools' `resolve_in_root`, and the filter `marks_file`
+// applies to every mark it loads all go through it. Change one, look at the
+// other.
 
 /// Collapse `.` and `..` segments, returning an absolute path.
 ///
