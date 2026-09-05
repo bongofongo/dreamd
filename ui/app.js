@@ -796,19 +796,24 @@ let lastHtml = null;
 /// block HTML, so the blocks that differ are exactly the blocks to replace.
 ///
 /// Returns the elements it inserted — empty when nothing changed — or null when
-/// it wrote the whole document and every node is new.
-function writeContent(html) {
+/// it wrote the whole document and every node is new. The full-write case may
+/// return a *promise* of null instead (see `stagedFullWrite`); the one caller
+/// awaits, and `await` of a plain value costs a microtask.
+function writeContent(html, { stage = false } = {}) {
   const live = contentEl.children;
 
   // Patch only from a known-good starting point: the same file, and a live
   // child count still matching what was recorded. Anything else — the first
   // render, a file switch, one of `showContentMessage`'s writes — starts over.
   //
-  // Decided before anything is parsed, so the full-write path stays the single
-  // `innerHTML` assignment it has always been. Parsing into a template and
-  // moving the nodes across instead cost 16ms of `d:innerhtml` at 2MB, for a
-  // document that was going to be written whole regardless.
+  // Decided before anything is parsed, so the unstaged full-write path stays
+  // the single `innerHTML` assignment it has always been. Parsing into a
+  // template and moving the nodes across instead cost 16ms of `d:innerhtml`
+  // at 2MB, for a document that was going to be written whole regardless —
+  // the staged path pays exactly that 16ms, for a first frame ~900ms sooner.
   if (lastBlocks === null || lastBlocksFile !== currentFile || lastBlocks.length !== live.length) {
+    if (stage) return stagedFullWrite(html);
+    writeGen++;
     contentEl.innerHTML = html;
     // Recorded straight off the live DOM, before the caller decorates it, so
     // this costs one serialization and no second parse.
@@ -853,6 +858,7 @@ function writeContent(html) {
     tail++;
   }
 
+  writeGen++;
   const stop = live.length - tail; // exclusive end of the span being replaced
   // Captured before anything is removed. `live` is a live HTMLCollection, so
   // its indices shift as siblings go, but this node reference does not.
@@ -871,11 +877,96 @@ function writeContent(html) {
   return added;
 }
 
+// How many leading blocks the staged write paints first, and the size below
+// which staging is skipped (two layouts of a small document cost more than
+// they hide). 40 blocks comfortably overfills any viewport at any zoom.
+const STAGE_HEAD = 40;
+const STAGE_MIN = 120;
+
+// Bumped by every writer of `#content`, so a staged write's deferred tail can
+// tell the document it belongs to is still the one on screen. A stale tail
+// resolves without touching the DOM — the write that superseded it owns the
+// element now.
+let writeGen = 0;
+
+/// The full write in two phases: the first `STAGE_HEAD` blocks now, the rest
+/// after the next frame. WebKit lays the whole 2MB document out before the
+/// first pixel — ~900ms the reader spends staring at an empty pane for
+/// content the viewport can only show the top of. Phase one is a document the
+/// engine can lay out in tens of ms; the tail lands right after that frame
+/// commits and the full layout happens for the second frame, invisible under
+/// the painted head. Unlike `content-visibility: auto` (measured, rejected —
+/// see index.html's #content block) this costs nothing at scroll time: the
+/// steady-state document is exactly the one the plain write produces.
+///
+/// Only the caller with nothing to restore stages (a pending scroll restore
+/// would clamp against the head's extent), and everything downstream of the
+/// await — decoration, highlights, the outline, the find bar — sees the
+/// complete document, because the promise resolves after the tail lands.
+function stagedFullWrite(html) {
+  const tpl = document.createElement("template");
+  tpl.innerHTML = html;
+  if (tpl.content.childElementCount < STAGE_MIN) {
+    // Small document: one write, as ever. The template is already parsed, so
+    // moving its nodes is cheaper than a second parse via innerHTML.
+    writeGen++;
+    contentEl.textContent = "";
+    contentEl.appendChild(tpl.content);
+    lastBlocks = [...contentEl.children].map((el) => el.outerHTML);
+    lastBlocksFile = currentFile;
+    lastHtml = html;
+    return null;
+  }
+
+  const gen = ++writeGen;
+  contentEl.textContent = "";
+  const head = document.createDocumentFragment();
+  while (head.childElementCount < STAGE_HEAD && tpl.content.firstChild) {
+    head.appendChild(tpl.content.firstChild);
+  }
+  // The head is on screen for a frame before the caller's decoration pass
+  // runs, and a raw relative `<img src>` fires a (failing) load the moment it
+  // is adopted — so the link/image interception runs on the head now, before
+  // insertion. `interceptLinks` is idempotent (assignments and attribute
+  // rewrites), so the caller's own pass over the whole document is harmless;
+  // `prepareImages`, which is not, still runs exactly once, after the await.
+  interceptLinks([head]);
+  contentEl.appendChild(head);
+
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      // Superseded while the frame was pending — another write owns
+      // `#content` now, and its record with it. Resolve without touching
+      // either.
+      if (gen !== writeGen) return resolve(null);
+      perf.at("head_paint");
+      // Same treatment as the head, same reason: the caller's decoration pass
+      // resumes a microtask *after* this resolve, and an adopted image's
+      // queued load runs first — the src must already be rewritten by then.
+      interceptLinks([tpl.content]);
+      contentEl.appendChild(tpl.content);
+      lastBlocks = [...contentEl.children].map((el) => el.outerHTML);
+      lastBlocksFile = currentFile;
+      lastHtml = html;
+      resolve(null);
+    };
+    // The timeout is the insurance: rAF can starve in an occluded window, and
+    // a boot whose tail never lands would hang `first_paint` and the smoke
+    // test with it.
+    requestAnimationFrame(finish);
+    setTimeout(finish, 80);
+  });
+}
+
 /// The other way content is written: a short message standing in for a
 /// document. It goes through here so the block record is dropped with it — a
 /// stale record would let the next render patch against a document that is no
 /// longer on screen.
 function showContentMessage(html) {
+  writeGen++;
   contentEl.innerHTML = html;
   lastBlocks = null;
   lastBlocksFile = null;
@@ -948,7 +1039,14 @@ async function renderCurrent({ preserveScroll, reanchor }) {
   perf.span("ipc_render_markdown", t0);
 
   let t = perf.now();
-  const changed = writeContent(html);
+  // Staged (head first, tail after the frame) only when there is no scroll
+  // position to restore — a pending restore would clamp against the head's
+  // extent. Awaited only when it *is* a promise: an unconditional await parks
+  // this task at a microtask checkpoint, and an adopted `<img>`'s queued load
+  // runs at exactly that checkpoint — the decoration pass below must beat it
+  // to the src, which it can only do by running in the same task.
+  let changed = writeContent(html, { stage: prevScroll === 0 });
+  if (changed instanceof Promise) changed = await changed;
   perf.span("innerhtml", t);
 
   // Restored here — before the await below yields — not after the highlights
