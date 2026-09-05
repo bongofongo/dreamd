@@ -144,6 +144,10 @@ grep '"dreamd_perf"' "$STREAM" | jq -s --argjson saves "$SAVES" --argjson highli
   # second of layout to Rust that Rust never spent.
   | ($marks | map(select(.phase == "d:rust_reanchor") | .ms) | sort) as $rust_reanchor
   | ($marks | map(select(.phase == "d:ipc_render_markdown") | .ms) | sort) as $render
+  # Same split as reanchor: the await vs the command body. The gap is
+  # serialization + transfer + whatever layout rides the yield — the number
+  # that prices a raw-bytes IPC response.
+  | ($marks | map(select(.phase == "d:rust_render_markdown") | .ms) | sort) as $rust_render
   | ($marks | map(select(.phase == "d:apply_highlights") | .ms) | sort) as $apply
   | def pct(a; p): if (a | length) == 0 then null
                    else a[ (((a|length) - 1) * p) | floor ] end;
@@ -160,6 +164,7 @@ grep '"dreamd_perf"' "$STREAM" | jq -s --argjson saves "$SAVES" --argjson highli
     ipc_reanchor_ms:       { p50: pct($reanchor; 0.5), p95: pct($reanchor; 0.95) },
     rust_reanchor_ms:      { p50: pct($rust_reanchor; 0.5), p95: pct($rust_reanchor; 0.95) },
     ipc_render_markdown_ms:{ p50: pct($render;   0.5), p95: pct($render;   0.95) },
+    rust_render_markdown_ms:{ p50: pct($rust_render; 0.5), p95: pct($rust_render; 0.95) },
     apply_highlights_ms:   { p50: pct($apply;    0.5), p95: pct($apply;    0.95) }
   }
 '

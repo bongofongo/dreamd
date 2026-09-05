@@ -475,9 +475,35 @@ fn initial_file(state: State<AppState>) -> Option<String> {
     state.initial_file.clone()
 }
 
+/// `async`, like `reanchor` below and for the same reason: a sync command runs
+/// on the **main thread**, so the two commands the save path deliberately puts
+/// in flight together (`renderCurrent` fires both before awaiting either) were
+/// executing back to back — the render's await measurably contained the whole
+/// reanchor body. Async commands land on the runtime's worker pool and the
+/// overlap becomes real. The bodies stay synchronous; ~8-60ms on a worker is
+/// fine, and `spawn_blocking` here would be ceremony.
 #[tauri::command]
-fn render_markdown(state: State<AppState>, path: String) -> Result<String, String> {
-    let source = read_source(&path)?;
+async fn render_markdown(
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<tauri::ipc::Response, String> {
+    // Spanned for the reason `rust_get_highlights` is: `d:ipc_render_markdown`
+    // is an await, and the gap between the two numbers is what the round trip
+    // costs beyond the render itself.
+    //
+    // A raw `Response`, not a `String`: a String return is JSON-encoded — 4.1MB
+    // of HTML escaped on this side and `JSON.parse`d in the webview, measured
+    // at ~90ms of a 98ms await against an 8ms body on the release loop. Raw
+    // bytes cross as an ArrayBuffer and one `TextDecoder` pass (~4ms at 4MB).
+    // The error arm stays a plain String, so a failed read still rejects the
+    // invoke with a message `showContentMessage` can print.
+    perf::span("rust_render_markdown", || {
+        render_markdown_body(&state, &path).map(|html| tauri::ipc::Response::new(html.into_bytes()))
+    })
+}
+
+fn render_markdown_body(state: &State<AppState>, path: &str) -> Result<String, String> {
+    let source = read_source(path)?;
     // Recorded here because this is the one call that means "this document is
     // now what the human is looking at" — see `AppState::open_doc`. Before the
     // render rather than after, and regardless of what the render does next: a
@@ -628,31 +654,39 @@ fn remove_pair(state: State<AppState>, id: String) {
 /// two; one where you open two hundred pays for two hundred, which is the
 /// right way round.
 #[tauri::command]
-fn get_highlights(state: State<AppState>, path: String) -> Vec<Highlight> {
+/// `async` like `reanchor`, and infallible in practice — the `Result` is only
+/// the shape Tauri requires of an async command borrowing `State`.
+#[allow(clippy::unnecessary_wraps)]
+async fn get_highlights(
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<Vec<Highlight>, String> {
     // Timed, because the frontend's `d:ipc_get_highlights` is not this. That
     // span is the first `await` after `innerHTML`, so it also collects the
     // webview's deferred layout of the whole document — measured at 1248ms on
     // the 2MB corpus doc for a body criterion puts in the single digits, and
     // landing on a different IPC call from run to run. See `perf::span`.
     perf::span("rust_get_highlights", || {
-        // Read the file *before* taking the store lock, and only when this path
-        // is still owed a re-anchor. The guard is a `contains`, not a `remove`:
-        // a read that fails — Neovim's atomic-rename save has the file unlinked
-        // for an instant, and a `git checkout` for longer — must leave the debt
-        // standing, or the marks render at the previous session's line numbers,
-        // `Active`, for the rest of the run.
-        let owed = state.pending_reanchor.lock().unwrap().contains(&path);
-        let source = owed.then(|| read_source(&path).ok()).flatten();
-        let mut store = state.store.lock().unwrap();
-        if let Some(source) = source {
-            store.ensure_reanchored(&path, &source);
-            // Under the store lock, so the order is store -> pending_reanchor
-            // here and in `adopt_root`. The `contains` above is the only place
-            // that takes `pending_reanchor` alone, and it releases before the
-            // store lock is taken; keep it that way.
-            state.pending_reanchor.lock().unwrap().remove(&path);
-        }
-        store.for_file(&path)
+        Ok({
+            // Read the file *before* taking the store lock, and only when this path
+            // is still owed a re-anchor. The guard is a `contains`, not a `remove`:
+            // a read that fails — Neovim's atomic-rename save has the file unlinked
+            // for an instant, and a `git checkout` for longer — must leave the debt
+            // standing, or the marks render at the previous session's line numbers,
+            // `Active`, for the rest of the run.
+            let owed = state.pending_reanchor.lock().unwrap().contains(&path);
+            let source = owed.then(|| read_source(&path).ok()).flatten();
+            let mut store = state.store.lock().unwrap();
+            if let Some(source) = source {
+                store.ensure_reanchored(&path, &source);
+                // Under the store lock, so the order is store -> pending_reanchor
+                // here and in `adopt_root`. The `contains` above is the only place
+                // that takes `pending_reanchor` alone, and it releases before the
+                // store lock is taken; keep it that way.
+                state.pending_reanchor.lock().unwrap().remove(&path);
+            }
+            store.for_file(&path)
+        })
     })
 }
 
@@ -671,7 +705,7 @@ fn get_highlight(state: State<AppState>, id: String) -> Option<Highlight> {
 /// marks write on every `:w` in Neovim, in the middle of the `save_to_paint`
 /// loop, to persist an answer that is recomputed anyway.
 #[tauri::command]
-fn reanchor(state: State<AppState>, path: String) -> Result<Vec<Highlight>, String> {
+async fn reanchor(state: State<'_, AppState>, path: String) -> Result<Vec<Highlight>, String> {
     // Timed for the same reason `get_highlights` is: this is the await the save
     // loop yields on, so `d:ipc_reanchor` carries the re-layout of the document
     // that was just replaced. It read 1020ms at 100 highlights against a

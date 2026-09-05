@@ -934,6 +934,11 @@ async function renderCurrent({ preserveScroll, reanchor }) {
   let html;
   try {
     html = await invoke("render_markdown", { path: currentFile });
+    // The command answers raw bytes (an ArrayBuffer), because a String return
+    // is JSON-encoded — ~90ms of escape+parse at 4MB where this decode is ~4.
+    // The typeof guard keeps the harness stub (and any error-shaped string)
+    // working unchanged.
+    if (typeof html !== "string") html = new TextDecoder().decode(html);
   } catch (e) {
     showContentMessage(`<div class="empty">${escapeHtml(String(e))}</div>`);
     refreshOutline();
