@@ -359,8 +359,8 @@ fn tools_call(
     // same precedent: on a large document they are the expensive half of the
     // call, and they need the root, not the store. The store half runs under
     // the lock below, through the same envelope `tools::call` uses.
-    let prepared = (call.name == "mark_passage")
-        .then(|| tools::prepare_mark_passage(root, &call.arguments));
+    let prepared =
+        (call.name == "mark_passage").then(|| tools::prepare_mark_passage(root, &call.arguments));
     let (result, change) = {
         let mut store = store.lock().unwrap();
         let result = match prepared {
