@@ -40,7 +40,25 @@ struct Prerendered {
     path: String,
     theme: String,
     source: String,
-    html: String,
+    blocks: Vec<String>,
+}
+
+/// The wire shape of a rendered document: a JSON array of block byte-lengths,
+/// a newline, then the blocks' bytes back to back. Framed rather than sent as
+/// a JSON array of strings because that would re-escape all 4MB — the exact
+/// cost the raw `ipc::Response` exists to avoid — and framed rather than sent
+/// as one string because per-block strings are what the frontend's save diff
+/// compares (`writeContent`); block boundaries are load-bearing there.
+fn frame_blocks(blocks: &[String]) -> Vec<u8> {
+    let lens: Vec<usize> = blocks.iter().map(|b| b.len()).collect();
+    let total: usize = lens.iter().sum();
+    let mut out = serde_json::to_vec(&lens).unwrap_or_default();
+    out.reserve(total + 1);
+    out.push(b'\n');
+    for b in blocks {
+        out.extend_from_slice(b.as_bytes());
+    }
+    out
 }
 
 struct AppState {
@@ -494,15 +512,17 @@ async fn render_markdown(
     // A raw `Response`, not a `String`: a String return is JSON-encoded — 4.1MB
     // of HTML escaped on this side and `JSON.parse`d in the webview, measured
     // at ~90ms of a 98ms await against an 8ms body on the release loop. Raw
-    // bytes cross as an ArrayBuffer and one `TextDecoder` pass (~4ms at 4MB).
-    // The error arm stays a plain String, so a failed read still rejects the
-    // invoke with a message `showContentMessage` can print.
+    // bytes cross as an ArrayBuffer, framed per block (`frame_blocks`) so the
+    // frontend's save diff compares backend strings instead of re-serializing
+    // the DOM. The error arm stays a plain String, so a failed read still
+    // rejects the invoke with a message `showContentMessage` can print.
     perf::span("rust_render_markdown", || {
-        render_markdown_body(&state, &path).map(|html| tauri::ipc::Response::new(html.into_bytes()))
+        render_markdown_body(&state, &path)
+            .map(|blocks| tauri::ipc::Response::new(frame_blocks(&blocks)))
     })
 }
 
-fn render_markdown_body(state: &State<AppState>, path: &str) -> Result<String, String> {
+fn render_markdown_body(state: &State<AppState>, path: &str) -> Result<Vec<String>, String> {
     let source = read_source(path)?;
     // Recorded here because this is the one call that means "this document is
     // now what the human is looking at" — see `AppState::open_doc`. Before the
@@ -518,10 +538,10 @@ fn render_markdown_body(state: &State<AppState>, path: &str) -> Result<String, S
     // path; a miss (file or theme moved since launch) costs three compares.
     if let Some(pre) = state.prerender.lock().unwrap().take() {
         if pre.path == path && pre.theme == code_theme && pre.source == source {
-            return Ok(pre.html);
+            return Ok(pre.blocks);
         }
     }
-    Ok(markdown::render_with(&source, &code_theme))
+    Ok(markdown::render_blocks(&source, &code_theme))
 }
 
 /// The agent's prose, through the document pipeline.
@@ -2257,12 +2277,12 @@ fn main() {
                     let slot = state.prerender.clone();
                     std::thread::spawn(move || {
                         if let Ok(source) = read_source(&path) {
-                            let html = markdown::render_with(&source, &theme);
+                            let blocks = markdown::render_blocks(&source, &theme);
                             *slot.lock().unwrap() = Some(Prerendered {
                                 path,
                                 theme,
                                 source,
-                                html,
+                                blocks,
                             });
                         }
                     });

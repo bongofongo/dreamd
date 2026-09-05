@@ -252,6 +252,95 @@ pub fn render(source: &str) -> String {
 /// As [`render`], but with the syntect theme named by the active dreamd
 /// palette's `--syntax-theme`. An unknown name falls back to [`CODE_THEME`].
 pub fn render_with(source: &str, code_theme: &str) -> String {
+    with_events(source, code_theme, |events| {
+        // Rendered HTML reliably outgrows its source (tags, spans, escapes);
+        // starting at double skips most of the doubling reallocs on a large doc.
+        let mut html = String::with_capacity(source.len() * 2);
+        pulldown_cmark::html::push_html(&mut html, events.into_iter());
+        html
+    })
+}
+
+/// [`render_with`], delivered as one string per top-level block.
+///
+/// This is the shape the frontend's save-path diff wants: comparing backend
+/// strings block by block is a memcmp, where diffing one concatenated document
+/// cost a full template parse plus an `outerHTML` re-serialization per save —
+/// measured at 130ms of a 209ms save loop before this existed. The guarantee
+/// that makes it safe is byte-identity: `concat(render_blocks(s)) ==
+/// render_with(s)`, pinned by a property test below, so the two entry points
+/// can never disagree about what a document renders to.
+///
+/// One caveat is structural: pulldown's `push_html` numbers footnotes
+/// statefully *across* a single call, so a document that uses them cannot be
+/// rendered per-block without renumbering — those fall back to a single
+/// segment, which the frontend treats as one big block (a full write per
+/// save, exactly the pre-blocks behaviour).
+pub fn render_blocks(source: &str, code_theme: &str) -> Vec<String> {
+    with_events(source, code_theme, |events| {
+        let footnotes = events.iter().any(|e| {
+            matches!(
+                e,
+                Event::FootnoteReference(_) | Event::Start(Tag::FootnoteDefinition(_))
+            )
+        });
+        if footnotes {
+            let mut html = String::new();
+            pulldown_cmark::html::push_html(&mut html, events.into_iter());
+            return vec![html];
+        }
+        // A top-level block is the events from a depth-0 `Start` through its
+        // matching `End` — or a single standalone depth-0 event (a `Rule`, or
+        // the `Html` a highlighted fence became; `Start(CodeBlock)` never
+        // reaches the stream, see the builder above).
+        let mut out = Vec::new();
+        let mut seg: Vec<Event> = Vec::new();
+        let mut depth = 0usize;
+        for ev in events {
+            match &ev {
+                Event::Start(_) => depth += 1,
+                Event::End(_) => depth = depth.saturating_sub(1),
+                _ => {}
+            }
+            seg.push(ev);
+            if depth == 0 {
+                let mut html = String::new();
+                pulldown_cmark::html::push_html(&mut html, seg.drain(..));
+                out.push(html);
+            }
+        }
+        if !seg.is_empty() {
+            // An unbalanced stream cannot happen out of pulldown, but a
+            // truncated segment silently dropped would be a missing block.
+            let mut html = String::new();
+            pulldown_cmark::html::push_html(&mut html, seg.drain(..));
+            out.push(html);
+        }
+        // Fold any segment that renders no element of its own into the block
+        // before it. Escaped raw HTML (tenet 4 re-emits it as text) is the
+        // case that exists: it renders as bare text starting with `&lt;`,
+        // never `<`. The frontend's splice indexes blocks by element, so one
+        // block must be one top-level element plus whatever trailing text
+        // belongs to it — a pure regrouping, so the concat identity above is
+        // untouched. A document that *opens* with such text keeps it as block
+        // zero; the frontend sees a block that does not start with `<` and
+        // declines to patch that document at all.
+        let mut folded: Vec<String> = Vec::with_capacity(out.len());
+        for seg in out {
+            match folded.last_mut() {
+                Some(prev) if !seg.starts_with('<') => prev.push_str(&seg),
+                _ => folded.push(seg),
+            }
+        }
+        folded
+    })
+}
+
+/// Build the event stream — headings slugged, fences highlighted and spliced
+/// back in — and hand it to `f`. A closure rather than a returned value
+/// because the events borrow `rendered` (the fences' `Arc<str>`s), and the
+/// two cannot leave the frame together.
+fn with_events<R>(source: &str, code_theme: &str, f: impl FnOnce(Vec<Event>) -> R) -> R {
     let parser = Parser::new_ext(source, options());
 
     let mut events: Vec<Event> = Vec::new();
@@ -356,11 +445,7 @@ pub fn render_with(source: &str, code_theme: &str) -> String {
         events[*at] = Event::Html(CowStr::Borrowed(html));
     }
 
-    // Rendered HTML reliably outgrows its source (tags, spans, escapes);
-    // starting at double skips most of the doubling reallocs on a large doc.
-    let mut html = String::with_capacity(source.len() * 2);
-    pulldown_cmark::html::push_html(&mut html, events.into_iter());
-    html
+    f(events)
 }
 
 /// Fallback id for a heading whose text slugs to nothing — `## ***`, or a
@@ -983,6 +1068,45 @@ mod tests {
     }
 
     #[test]
+    fn footnotes_fall_back_to_one_block_and_still_concat_identically() {
+        // Footnote numbering is stateful across one push_html call, so a
+        // per-block render would renumber; the fallback is one segment, and
+        // the byte-identity contract still holds through it.
+        let src = "first[^1] paragraph\n\nsecond paragraph\n\n[^1]: the note\n";
+        let blocks = render_blocks(src, CODE_THEME);
+        assert_eq!(blocks.len(), 1, "a footnote document must not be split");
+        assert_eq!(blocks.concat(), render_with(src, CODE_THEME));
+    }
+
+    #[test]
+    fn a_mixed_document_splits_into_its_top_level_blocks() {
+        let src = "# h\n\npara\n\n```rust\nfn x() {}\n```\n\n---\n\n- a\n- b\n";
+        let blocks = render_blocks(src, CODE_THEME);
+        assert_eq!(blocks.concat(), render_with(src, CODE_THEME));
+        // heading, paragraph, fence, rule, list.
+        assert_eq!(blocks.len(), 5, "{blocks:?}");
+        assert!(blocks[2].contains("<pre"), "the fence is its own block");
+    }
+
+    #[test]
+    fn an_element_less_segment_folds_into_the_block_before_it() {
+        // An HTML comment is re-emitted as escaped text (tenet 4) — visible
+        // bare text with no element of its own. It must ride with the block
+        // before it, so the frontend's one-element-per-block splice holds,
+        // and the concat identity must survive the regrouping.
+        let src = "para one\n\n<!-- a comment -->\n\npara two\n";
+        let blocks = render_blocks(src, CODE_THEME);
+        assert_eq!(blocks.concat(), render_with(src, CODE_THEME));
+        assert_eq!(blocks.len(), 2, "{blocks:?}");
+        assert!(blocks[0].starts_with("<p>"), "{blocks:?}");
+        assert!(
+            blocks[0].contains("&lt;!--"),
+            "the comment rides with block one: {blocks:?}"
+        );
+        assert!(blocks[1].starts_with("<p>"), "{blocks:?}");
+    }
+
+    #[test]
     fn a_warm_cache_renders_byte_identically_to_a_cold_one() {
         // Two blocks so the parallel path is taken, one of them repeated so the
         // partition has to keep hits and misses in the same document straight.
@@ -1243,6 +1367,19 @@ mod properties {
     use proptest::prelude::*;
 
     proptest! {
+        /// The contract `render_blocks` stands on: block-wise rendering and
+        /// whole-document rendering are the same function. Sweeps markdown-ish
+        /// text — headings, fences, lists, emphasis, links, tables, rules —
+        /// because the failure mode is a pulldown construct whose HTML depends
+        /// on its neighbours.
+        #[test]
+        fn blocks_concat_to_the_whole_document(
+            source in "([a-z #>*`|:\\[\\]()\\n-]{0,24}\\n){0,20}",
+        ) {
+            let blocks = render_blocks(&source, CODE_THEME);
+            prop_assert_eq!(blocks.concat(), render_with(&source, CODE_THEME));
+        }
+
         /// "Uniqueness is a guarantee here rather than a near-certainty" —
         /// including the adversarial shape the doc names (`## A` twice beside
         /// a literal `## A 1`), and every shape nobody thought to name.

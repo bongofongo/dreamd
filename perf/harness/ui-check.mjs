@@ -3636,7 +3636,11 @@ check(
 // attribute would serialize into `innerHTML` and corrupt the comparison it is
 // there to support.
 
-const DOC1 = '<h1 id="t">Title</h1><p id="a">alpha</p><p id="b">bravo</p><p id="c">charlie</p>';
+// Block arrays, because that is the wire shape: the stub below frames them
+// exactly as `frame_blocks` does (lengths header, newline, bytes), so this
+// section drives the same decode and the same backend-blocks diff the real
+// app runs — not the legacy single-string path.
+const DOC1 = ['<h1 id="t">Title</h1>', '<p id="a">alpha</p>', '<p id="b">bravo</p>', '<p id="c">charlie</p>'];
 let patchBody = DOC1;
 let patchMarks = [];
 
@@ -3673,7 +3677,18 @@ await patch.addInitScript((css) => {
             menubar: false, titlebar: false, titlebar_fade: false, zoom: 100,
           };
           case "initial_file": return "/repo/doc.md";
-          case "render_markdown": return await window.__body();
+          case "render_markdown": {
+            // Frame the blocks the way main.rs's frame_blocks does.
+            const blocks = await window.__body();
+            const enc = new TextEncoder();
+            const parts = blocks.map((b) => enc.encode(b));
+            const header = enc.encode(JSON.stringify(parts.map((x) => x.length)) + "\n");
+            const buf = new Uint8Array(header.length + parts.reduce((n, x) => n + x.length, 0));
+            buf.set(header, 0);
+            let o = header.length;
+            for (const x of parts) { buf.set(x, o); o += x.length; }
+            return buf.buffer;
+          }
           case "list_markdown_files": return tree;
           case "get_highlights": case "reanchor": return await window.__marks();
           case "get_stack": return [];
@@ -3710,7 +3725,7 @@ const save = async (next) => {
 };
 
 await stamp();
-const DOC2 = DOC1.replace(">bravo<", ">bravo edited<");
+const DOC2 = DOC1.map((b) => b.replace(">bravo<", ">bravo edited<"));
 await save(DOC2);
 check(
   "a repaint keeps every block whose html did not change",
@@ -3720,28 +3735,28 @@ check(
 check("and the edited block is a new element", (await kept(["b"])).length === 0);
 check(
   "and the result is exactly what a full write would have produced",
-  (await body()) === DOC2,
+  (await body()) === DOC2.join(""),
   await body(),
 );
 
 await stamp();
-const DOC3 = DOC2.replace('<p id="c">', '<p id="n">new</p><p id="c">');
+const DOC3 = DOC2.toSpliced(3, 0, '<p id="n">new</p>');
 await save(DOC3);
 check(
   "an inserted block leaves all four neighbours in place",
   (await kept(["t", "a", "b", "c"])).join() === "t,a,b,c",
   (await kept(["t", "a", "b", "c"])).join(),
 );
-check("and lands in the right position", (await body()) === DOC3, await body());
+check("and lands in the right position", (await body()) === DOC3.join(""), await body());
 
 await stamp();
-const DOC4 = DOC3.replace('<p id="n">new</p>', "");
+const DOC4 = DOC3.toSpliced(3, 1);
 await save(DOC4);
 check(
   "a deleted block leaves its neighbours in place",
   (await kept(["t", "a", "b", "c"])).join() === "t,a,b,c",
 );
-check("and is gone from the document", (await body()) === DOC4, await body());
+check("and is gone from the document", (await body()) === DOC4.join(""), await body());
 
 await stamp();
 await save(DOC4);

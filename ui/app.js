@@ -786,6 +786,10 @@ let lastBlocksFile = null;
 // The raw html of the previous render, for the byte-identical short-circuit
 // below. Lives and dies with `lastBlocks`.
 let lastHtml = null;
+// Which comparison space `lastBlocks` belongs to: backend block strings
+// (true) or DOM-serialized outerHTML (false). The two must never be compared
+// against each other, so a mode flip forces a full write.
+let lastBlocksBackend = false;
 /// Put `html` on screen, replacing as little of the document as possible.
 ///
 /// A `:w` in Neovim re-renders the whole file, and writing `innerHTML` makes the
@@ -798,8 +802,113 @@ let lastHtml = null;
 /// Returns the elements it inserted — empty when nothing changed — or null when
 /// it wrote the whole document and every node is new. The full-write case may
 /// return a *promise* of null instead (see `stagedFullWrite`); the one caller
-/// awaits, and `await` of a plain value costs a microtask.
-function writeContent(html, { stage = false } = {}) {
+/// awaits a promise result, and only a promise.
+///
+/// Two input shapes, two comparison spaces, never crossed. An *array* is the
+/// real app's: backend block strings (`markdown::render_blocks`, byte-stable
+/// across renders), compared string-to-string — no template parse, no
+/// `outerHTML` serialization, which together were 130ms of a 209ms save loop.
+/// A *string* is the legacy shape (harness stubs, `showContentMessage`'s
+/// sibling below) and keeps the original DOM-serialized comparison. The
+/// `lastBlocksBackend` flag is what keeps a record from one space from ever
+/// being compared against the other.
+function writeContent(doc, { stage = false } = {}) {
+  if (Array.isArray(doc)) return writeBackendBlocks(doc, stage);
+  return writeLegacyHtml(doc, stage);
+}
+
+/// Backend blocks: the diff is memcmp over strings that were never near the
+/// DOM, and only the changed slice is ever parsed.
+function writeBackendBlocks(blocks, stage) {
+  const live = contentEl.children;
+
+  // Patchable only from a known-good start: same file, a *backend* record,
+  // one live element per recorded block, and a first block that begins with
+  // an element. The backend folds element-less segments (escaped raw HTML —
+  // bare text on screen) into the block before them, so each block is one
+  // top-level element plus its trailing text nodes; only a document that
+  // *opens* with bare text has no element to hang block zero on, and that
+  // one takes full writes.
+  const patchable =
+    lastBlocks !== null &&
+    lastBlocksBackend &&
+    lastBlocksFile === currentFile &&
+    lastBlocks.length === live.length &&
+    lastBlocks.length > 0 &&
+    lastBlocks[0].charCodeAt(0) === 60; // '<'
+
+  if (!patchable) {
+    if (stage) return stagedFullWrite(blocks);
+    writeGen++;
+    contentEl.innerHTML = blocks.join("");
+    recordBackend(blocks);
+    return null;
+  }
+
+  // Byte-identical render: nothing to discover, nothing to parse. `[]`, not
+  // null — see the legacy path's comment on the clearHighlights contract.
+  if (
+    blocks.length === lastBlocks.length &&
+    blocks.every((b, i) => b === lastBlocks[i])
+  ) {
+    return [];
+  }
+
+  const limit = Math.min(lastBlocks.length, blocks.length);
+  let head = 0;
+  while (head < limit && lastBlocks[head] === blocks[head]) head++;
+  let tail = 0;
+  while (
+    tail < limit - head &&
+    lastBlocks[lastBlocks.length - 1 - tail] === blocks[blocks.length - 1 - tail]
+  ) {
+    tail++;
+  }
+
+  // Only the changed span is parsed. If it parses to a different element
+  // count than it has blocks (a bare-text block inside the span), the splice
+  // indices below would drift — fall back to the full write instead.
+  const tpl = document.createElement("template");
+  tpl.innerHTML = blocks.slice(head, blocks.length - tail).join("");
+  if (tpl.content.childElementCount !== blocks.length - tail - head) {
+    writeGen++;
+    contentEl.innerHTML = blocks.join("");
+    recordBackend(blocks);
+    return null;
+  }
+
+  writeGen++;
+  const stop = live.length - tail; // exclusive end of the span being replaced
+  // Node-ranged, not element-indexed: block i owns element i *and* the
+  // non-element siblings after it (a folded block's escaped-HTML text, the
+  // newline between blocks), all of which its block string carries and the
+  // template re-provides. Removing only the elements would leave the old
+  // text nodes stranded beside the new ones.
+  const endNode = stop < live.length ? live[stop] : null;
+  let n = live[head];
+  while (n && n !== endNode) {
+    const next = n.nextSibling;
+    n.remove();
+    n = next;
+  }
+
+  const added = [...tpl.content.children];
+  contentEl.insertBefore(tpl.content, endNode);
+
+  recordBackend(blocks);
+  return added;
+}
+
+function recordBackend(blocks) {
+  lastBlocks = blocks;
+  lastBlocksBackend = true;
+  lastBlocksFile = currentFile;
+  lastHtml = null;
+}
+
+/// The original single-string path, kept verbatim for callers that have no
+/// block boundaries to offer.
+function writeLegacyHtml(html, stage) {
   const live = contentEl.children;
 
   // Patch only from a known-good starting point: the same file, and a live
@@ -811,7 +920,7 @@ function writeContent(html, { stage = false } = {}) {
   // template and moving the nodes across instead cost 16ms of `d:innerhtml`
   // at 2MB, for a document that was going to be written whole regardless —
   // the staged path pays exactly that 16ms, for a first frame ~900ms sooner.
-  if (lastBlocks === null || lastBlocksFile !== currentFile || lastBlocks.length !== live.length) {
+  if (lastBlocks === null || lastBlocksBackend || lastBlocksFile !== currentFile || lastBlocks.length !== live.length) {
     if (stage) return stagedFullWrite(html);
     writeGen++;
     contentEl.innerHTML = html;
@@ -824,6 +933,7 @@ function writeContent(html, { stage = false } = {}) {
     // 2431ms on a small repo. It saved 16ms of `d:innerhtml` and cost two and a
     // half seconds of the window looking half-drawn.
     lastBlocks = [...live].map((el) => el.outerHTML);
+    lastBlocksBackend = false;
     lastBlocksFile = currentFile;
     lastHtml = html;
     return null;
@@ -873,6 +983,7 @@ function writeContent(html, { stage = false } = {}) {
   }
 
   lastBlocks = next;
+  lastBlocksBackend = false;
   lastHtml = html;
   return added;
 }
@@ -903,25 +1014,40 @@ let writeGen = 0;
 /// would clamp against the head's extent), and everything downstream of the
 /// await — decoration, highlights, the outline, the find bar — sees the
 /// complete document, because the promise resolves after the tail lands.
-function stagedFullWrite(html) {
+function stagedFullWrite(doc) {
+  // Either shape stages; what differs is the record left behind. For backend
+  // blocks the head/tail split needs no parse at all — it is a slice and two
+  // joins — and the record is the block array itself.
+  const backend = Array.isArray(doc);
+  const record = backend
+    ? () => recordBackend(doc)
+    : () => {
+        lastBlocks = [...contentEl.children].map((el) => el.outerHTML);
+        lastBlocksBackend = false;
+        lastBlocksFile = currentFile;
+        lastHtml = doc;
+      };
   const tpl = document.createElement("template");
-  tpl.innerHTML = html;
-  if (tpl.content.childElementCount < STAGE_MIN) {
-    // Small document: one write, as ever. The template is already parsed, so
-    // moving its nodes is cheaper than a second parse via innerHTML.
+  tpl.innerHTML = backend ? doc.slice(0, STAGE_HEAD).join("") : doc;
+  const count = backend ? doc.length : tpl.content.childElementCount;
+  if (count < STAGE_MIN) {
+    // Small document: one write, as ever. The template is already parsed
+    // (whole in the legacy shape, head-only in the backend one, where the
+    // tail is a join away), so moving nodes beats a second innerHTML parse.
     writeGen++;
+    if (backend && count > STAGE_HEAD) tpl.innerHTML = doc.join("");
     contentEl.textContent = "";
     contentEl.appendChild(tpl.content);
-    lastBlocks = [...contentEl.children].map((el) => el.outerHTML);
-    lastBlocksFile = currentFile;
-    lastHtml = html;
+    record();
     return null;
   }
 
   const gen = ++writeGen;
   contentEl.textContent = "";
   const head = document.createDocumentFragment();
-  while (head.childElementCount < STAGE_HEAD && tpl.content.firstChild) {
+  // In the backend shape `tpl` already holds exactly the head; in the legacy
+  // shape it holds the whole document and the head is carved off the front.
+  while ((backend || head.childElementCount < STAGE_HEAD) && tpl.content.firstChild) {
     head.appendChild(tpl.content.firstChild);
   }
   // The head is on screen for a frame before the caller's decoration pass
@@ -943,14 +1069,16 @@ function stagedFullWrite(html) {
       // either.
       if (gen !== writeGen) return resolve(null);
       perf.at("head_paint");
+      // The tail: still in the template on the legacy shape, one parse away
+      // on the backend one — deferred to here on purpose, after the head's
+      // frame committed.
+      if (backend) tpl.innerHTML = doc.slice(STAGE_HEAD).join("");
       // Same treatment as the head, same reason: the caller's decoration pass
       // resumes a microtask *after* this resolve, and an adopted image's
       // queued load runs first — the src must already be rewritten by then.
       interceptLinks([tpl.content]);
       contentEl.appendChild(tpl.content);
-      lastBlocks = [...contentEl.children].map((el) => el.outerHTML);
-      lastBlocksFile = currentFile;
-      lastHtml = html;
+      record();
       resolve(null);
     };
     // The timeout is the insurance: rAF can starve in an occluded window, and
@@ -1025,11 +1153,25 @@ async function renderCurrent({ preserveScroll, reanchor }) {
   let html;
   try {
     html = await invoke("render_markdown", { path: currentFile });
-    // The command answers raw bytes (an ArrayBuffer), because a String return
-    // is JSON-encoded — ~90ms of escape+parse at 4MB where this decode is ~4.
-    // The typeof guard keeps the harness stub (and any error-shaped string)
-    // working unchanged.
-    if (typeof html !== "string") html = new TextDecoder().decode(html);
+    // The command answers raw bytes (an ArrayBuffer): a JSON array of block
+    // byte-lengths, a newline, then the blocks back to back — framed rather
+    // than JSON-encoded because escaping 4MB was ~90ms of the old await, and
+    // framed rather than one string because the block boundaries are what
+    // `writeContent`'s diff compares. Decoded per block so byte lengths never
+    // have to be reconciled with UTF-16 offsets. The typeof guard keeps the
+    // harness stubs (plain strings) on the legacy single-string path.
+    if (typeof html !== "string") {
+      const buf = new Uint8Array(html);
+      const nl = buf.indexOf(10);
+      const dec = new TextDecoder();
+      const lens = JSON.parse(dec.decode(buf.subarray(0, nl)));
+      let at = nl + 1;
+      html = lens.map((len) => {
+        const s = dec.decode(buf.subarray(at, at + len));
+        at += len;
+        return s;
+      });
+    }
   } catch (e) {
     showContentMessage(`<div class="empty">${escapeHtml(String(e))}</div>`);
     refreshOutline();
