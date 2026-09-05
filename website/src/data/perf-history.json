@@ -7,10 +7,22 @@
       "date": "2026-09-03",
       "runner": "linux-x86_64 (manual)",
       "metrics": {
-        "first_paint_ms": 1669.0,
-        "save_to_paint_p50_ms": 321.0,
+        "first_paint_ms": 1669,
+        "save_to_paint_p50_ms": 321,
         "peak_rss_mb": 156.35,
         "appimage_mb": 100.06
+      }
+    },
+    {
+      "version": "0.4.0",
+      "sha": "57ac2d4",
+      "date": "2026-09-05",
+      "runner": "ubuntu-22.04 (CI)",
+      "metrics": {
+        "first_paint_ms": 805,
+        "save_to_paint_p50_ms": 274,
+        "peak_rss_mb": 39.98,
+        "appimage_mb": 81.13
       }
     }
   ]
