@@ -60,6 +60,15 @@ delimiter cannot break out, and that nothing a reader wrote reaches the typed
 line), `rootfield` (the absolute-path rule, names-not-paths, the cap),
 and `pty` (the base64 round trip, and a real pty driven with `/bin/sh` — never
 with `PANE_COMMAND`, so `cargo test` cannot start a Claude Code session).
+Five modules also carry **proptest sweeps** (`mod properties`, next to the
+example tests): arbitrary op sequences must leave the `Store` structurally
+sound (stack names only live, bright, annotated marks, exactly once), `admit`
+must hold its contract against arbitrary hostile documents and its own save
+round trip, an envelope carries exactly two sentinels whatever the body
+smuggles, any bytes survive the base64 wire, slugs stay unique, and an exact
+substring always locates at its trimmed text's first occurrence. Failing seeds
+persist in `src-tauri/proptest-regressions/` and are re-run first — check new
+ones in.
 Nothing there touches `config_dir()` — that reads the real `~/.config/dreamd`,
 and sandboxing it is `config_check`'s job — and `mcp_check`'s and
 `marks_check`'s, whose socket and marks file live there too. The example

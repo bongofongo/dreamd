@@ -1482,3 +1482,177 @@ mod tests {
         assert_eq!(h.suffix, "");
     }
 }
+
+/// Property sweeps over arbitrary operation sequences.
+///
+/// The example tests above pin each decision; these pin the *invariants* that
+/// every reachable store must satisfy no matter which path reached it — the
+/// structural facts the frontend and the MCP tools lean on without checking:
+/// the stack names only live highlights, names none of them twice, and a pair
+/// on it is always bright (`!prior`) and always annotated, because
+/// `set_annotation` is the only way on and `mark_sent`/`remove_from_stack`/
+/// `resolve` are the ways off. A violation here is a badge counting ghosts or
+/// a queue handing an agent a question nobody asked.
+#[cfg(test)]
+mod properties {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// One store mutation, with ids picked by index so a sequence stays
+    /// meaningful however many highlights currently exist. `pick` is reduced
+    /// modulo the live count at apply time; on an empty store the op is a
+    /// no-op against a bogus id, which is itself worth sweeping.
+    #[derive(Debug, Clone)]
+    enum Op {
+        Add { quote: String },
+        Annotate { pick: usize, text: String },
+        AnnotateBogus,
+        Send { picks: Vec<usize> },
+        Remove { pick: usize },
+        Pop { pick: usize },
+        Resolve { pick: usize },
+        Retarget { pick: usize, quote: String },
+    }
+
+    fn op() -> impl Strategy<Value = Op> {
+        prop_oneof![
+            3 => "[a-z ]{1,12}".prop_map(|quote| Op::Add { quote }),
+            3 => (any::<usize>(), "[a-z ]{0,8}")
+                .prop_map(|(pick, text)| Op::Annotate { pick, text }),
+            1 => Just(Op::AnnotateBogus),
+            2 => prop::collection::vec(any::<usize>(), 0..4)
+                .prop_map(|picks| Op::Send { picks }),
+            1 => any::<usize>().prop_map(|pick| Op::Remove { pick }),
+            2 => any::<usize>().prop_map(|pick| Op::Pop { pick }),
+            2 => any::<usize>().prop_map(|pick| Op::Resolve { pick }),
+            1 => (any::<usize>(), "[a-z ]{1,12}")
+                .prop_map(|(pick, quote)| Op::Retarget { pick, quote }),
+        ]
+    }
+
+    /// The id currently at `pick % len`, or a bogus id on an empty store.
+    fn id_at(store: &Store, pick: usize) -> Id {
+        let (highlights, _) = store.parts();
+        if highlights.is_empty() {
+            "h-nothing".to_string()
+        } else {
+            highlights[pick % highlights.len()].id.clone()
+        }
+    }
+
+    fn apply(store: &mut Store, op: &Op) {
+        match op {
+            Op::Add { quote } => {
+                store.add_highlight(
+                    "/repo/a.md".into(),
+                    1,
+                    1,
+                    quote.clone(),
+                    String::new(),
+                    String::new(),
+                );
+            }
+            Op::Annotate { pick, text } => {
+                let id = id_at(store, *pick);
+                store.set_annotation(&id, text.clone());
+            }
+            Op::AnnotateBogus => {
+                assert!(!store.set_annotation("h-bogus", "note".into()));
+            }
+            Op::Send { picks } => {
+                let ids: Vec<Id> = picks.iter().map(|p| id_at(store, *p)).collect();
+                store.mark_sent(&ids);
+            }
+            Op::Remove { pick } => {
+                let id = id_at(store, *pick);
+                store.remove(&id);
+            }
+            Op::Pop { pick } => {
+                let id = id_at(store, *pick);
+                store.remove_from_stack(&id);
+            }
+            Op::Resolve { pick } => {
+                let id = id_at(store, *pick);
+                store.resolve(&id, Some("done".into()));
+            }
+            Op::Retarget { pick, quote } => {
+                let id = id_at(store, *pick);
+                store.retarget(
+                    &id,
+                    "alpha beta gamma\n",
+                    quote.clone(),
+                    String::new(),
+                    String::new(),
+                );
+            }
+        }
+    }
+
+    fn assert_invariants(store: &Store, after: &Op) {
+        let (highlights, stack) = store.parts();
+        let ids: std::collections::HashSet<&str> =
+            highlights.iter().map(|h| h.id.as_str()).collect();
+        assert_eq!(
+            ids.len(),
+            highlights.len(),
+            "duplicate highlight id after {after:?}"
+        );
+        let mut seen = std::collections::HashSet::new();
+        for id in stack {
+            assert!(
+                ids.contains(id.as_str()),
+                "stack names a ghost after {after:?}"
+            );
+            assert!(seen.insert(id), "stack names {id} twice after {after:?}");
+            let h = highlights.iter().find(|h| &h.id == id).unwrap();
+            assert!(!h.prior, "an enqueued pair is faded after {after:?}");
+            assert!(
+                h.annotation.is_some(),
+                "an enqueued pair has no question after {after:?}"
+            );
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn every_reachable_store_is_structurally_sound(
+            ops in prop::collection::vec(op(), 0..48),
+        ) {
+            let mut store = Store::default();
+            for op in &ops {
+                apply(&mut store, op);
+                assert_invariants(&store, op);
+            }
+        }
+
+        /// A resize is a retarget: same id, and nothing moves on or off the
+        /// stack — the annotation, the fade, the send stamp and the answer all
+        /// survive. CLAUDE.md states this; here it holds against arbitrary
+        /// history, not just the paths the example tests walk.
+        #[test]
+        fn retarget_changes_extent_and_nothing_else(
+            ops in prop::collection::vec(op(), 1..32),
+            pick in any::<usize>(),
+            quote in "[a-z ]{1,12}",
+        ) {
+            let mut store = Store::default();
+            for op in &ops {
+                apply(&mut store, op);
+            }
+            let id = id_at(&store, pick);
+            let Some(before) = store.get(&id) else { return Ok(()) };
+            let stack_before = store.parts().1.to_vec();
+
+            prop_assert!(store.retarget(&id, "alpha beta\n", quote, String::new(), String::new()));
+
+            let after = store.get(&id).expect("retarget must not lose the mark");
+            prop_assert_eq!(after.annotation, before.annotation);
+            prop_assert_eq!(after.prior, before.prior);
+            prop_assert_eq!(after.sent_at, before.sent_at);
+            prop_assert_eq!(after.resolved.is_some(), before.resolved.is_some());
+            prop_assert_eq!(after.origin, before.origin);
+            prop_assert_eq!(after.state, HighlightState::Active);
+            prop_assert_eq!(store.parts().1, stack_before.as_slice());
+        }
+    }
+}

@@ -101,6 +101,12 @@ arboard = { version = "3", default-features = false, features = [
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
+# Property tests: op-sequence invariants on `annotations::Store`, `admit`'s
+# contract against adversarial marks files, the untrusted envelope's
+# two-sentinels guarantee, base64 round trips, slug uniqueness and locate's
+# tier-1 totality. Example-based tests pin decisions; these sweep the input
+# space between them.
+proptest = "1"
 
 [[bench]]
 name = "render"

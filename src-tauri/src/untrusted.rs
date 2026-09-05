@@ -293,3 +293,48 @@ mod tests {
         assert!(out.ends_with(&close_tag("quote")), "{out}");
     }
 }
+
+/// Property sweep: tenet 6's guarantee over arbitrary bodies.
+///
+/// The example tests above forge the sentinel deliberately; this sweeps
+/// everything else — including bodies that embed the live sentinel whole, or
+/// split across a seam the replacement must not let reassemble. Exactly two
+/// copies of the sentinel may ever appear in an envelope: dreamd's opening
+/// tag and its closing tag. A third is a breakout.
+#[cfg(test)]
+mod properties {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn count(haystack: &str, needle: &str) -> usize {
+        haystack.matches(needle).count()
+    }
+
+    proptest! {
+        #[test]
+        fn an_envelope_carries_exactly_two_sentinels(
+            body in "[ -~\\n]{0,64}",
+            inject in prop::collection::vec((any::<prop::sample::Index>(), 0..3usize), 0..3),
+        ) {
+            // Splice the live sentinel — whole, or split so the neutraliser's
+            // replacement sits where the halves would rejoin — into arbitrary
+            // positions of an arbitrary body.
+            let mut body = body;
+            for (at, mode) in inject {
+                let s = sentinel();
+                let insert = match mode {
+                    0 => s.to_string(),
+                    1 => format!("{}{}{}", &s[..s.len() / 2], "", &s[s.len() / 2..]),
+                    _ => format!("{s}{s}"),
+                };
+                let mut pos = at.index(body.len() + 1);
+                while !body.is_char_boundary(pos) {
+                    pos -= 1;
+                }
+                body.insert_str(pos, &insert);
+            }
+            let out = delimit("quote", &body);
+            prop_assert_eq!(count(&out, sentinel()), 2, "a sentinel escaped the neutraliser");
+        }
+    }
+}

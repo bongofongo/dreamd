@@ -1007,3 +1007,128 @@ mod tests {
         assert_eq!(store.parts().1, ["h0"], "the stack followed");
     }
 }
+
+/// Property sweeps over adversarial documents.
+///
+/// `admit` is the trust boundary for a file the user can hand-edit and an
+/// attacker can plant, so its contract is asserted against *arbitrary*
+/// documents, not just the shapes the example tests above construct: whatever
+/// the file said, the store that comes out is structurally sound, every mark
+/// is inside the root and faded, no quote is blank, and the round trip
+/// through `doc_from` -> JSON -> `admit` never invents a mark that was not
+/// saved.
+#[cfg(test)]
+mod properties {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// An arbitrary highlight as a hostile file could spell one: any path
+    /// (escapes included), any field contents, any flags. Built by mutating a
+    /// legitimately-created mark so this keeps compiling when `Highlight`
+    /// grows fields.
+    fn wild_highlight() -> impl Strategy<Value = Highlight> {
+        (
+            prop_oneof![
+                Just("/repo/doc.md".to_string()),
+                Just("/repo/sub/notes.md".to_string()),
+                Just("/elsewhere/doc.md".to_string()),
+                Just("/repo/../etc/passwd".to_string()),
+                Just("relative.md".to_string()),
+                "[a-z/.]{0,24}",
+            ],
+            "[a-z \\n]{0,32}",
+            "[a-z ]{0,8}",
+            prop::option::of("[a-z ]{0,12}"),
+            any::<bool>(),
+        )
+            .prop_map(|(file_path, quote, ctx, annotation, sent)| {
+                let mut store = Store::default();
+                let id = store.add_highlight(file_path.clone(), 1, 1, quote, ctx.clone(), ctx);
+                if let Some(a) = &annotation {
+                    store.set_annotation(&id, a.clone());
+                }
+                if sent {
+                    store.mark_sent(&[id]);
+                }
+                let (mut hs, _) = store.into_parts();
+                let mut h = hs.pop().unwrap();
+                h.file_path = file_path;
+                h
+            })
+    }
+
+    fn wild_doc() -> impl Strategy<Value = MarksDoc> {
+        (
+            prop::collection::vec(wild_highlight(), 0..12),
+            prop::collection::vec("[a-z0-9-]{1,18}", 0..6),
+            any::<bool>(),
+        )
+            .prop_map(|(highlights, mut stack, reuse_real_ids)| {
+                if reuse_real_ids {
+                    // Stacks that name real marks — including twice, which a
+                    // hand edit can and rule 6 must flatten.
+                    stack.extend(highlights.iter().map(|h| h.id.clone()));
+                    stack.extend(highlights.iter().map(|h| h.id.clone()));
+                }
+                MarksDoc {
+                    version: 1,
+                    root: "/repo".into(),
+                    saved_at: 0,
+                    highlights,
+                    stack,
+                }
+            })
+    }
+
+    proptest! {
+        #[test]
+        fn whatever_the_file_said_the_admitted_store_is_sound(doc in wild_doc()) {
+            let saved_ids: std::collections::HashSet<Id> =
+                doc.highlights.iter().map(|h| h.id.clone()).collect();
+            let store = admit(Path::new("/repo"), doc);
+            let (highlights, stack) = store.parts();
+
+            let mut seen = std::collections::HashSet::new();
+            for id in stack {
+                prop_assert!(
+                    highlights.iter().any(|h| &h.id == id),
+                    "admitted stack names a ghost"
+                );
+                prop_assert!(seen.insert(id.clone()), "admitted stack names {} twice", id);
+            }
+            for h in highlights {
+                prop_assert!(h.prior, "a mark off disk must arrive faded");
+                prop_assert!(!h.quote.trim().is_empty(), "a blank quote survived");
+                prop_assert!(
+                    crate::guard::inside_root(Path::new("/repo"), Path::new(&h.file_path)),
+                    "{} escaped the root", h.file_path
+                );
+                prop_assert!(saved_ids.contains(&h.id), "admit invented a mark");
+            }
+        }
+
+        /// The full persistence loop a session actually performs: project the
+        /// store to a document, through JSON bytes, back through `admit`. What
+        /// comes back is exactly the in-root, non-blank subset — same ids,
+        /// same quotes, same annotations, same stack order — with the fade
+        /// re-derived rather than trusted.
+        #[test]
+        fn a_saved_store_survives_its_own_round_trip(doc in wild_doc()) {
+            let store = admit(Path::new("/repo"), doc);
+            let json = serde_json::to_string(&doc_from(Path::new("/repo"), &store)).unwrap();
+            let back = admit(Path::new("/repo"), serde_json::from_str(&json).unwrap());
+
+            let (h1, s1) = store.parts();
+            let (h2, s2) = back.parts();
+            prop_assert_eq!(s1, s2, "the stack changed in transit");
+            prop_assert_eq!(h1.len(), h2.len(), "a mark appeared or vanished in transit");
+            for (a, b) in h1.iter().zip(h2) {
+                prop_assert_eq!(&a.id, &b.id);
+                prop_assert_eq!(&a.quote, &b.quote);
+                prop_assert_eq!(&a.annotation, &b.annotation);
+                prop_assert_eq!(a.sent_at, b.sent_at);
+                prop_assert!(b.prior, "the second load must re-derive the fade");
+            }
+        }
+    }
+}

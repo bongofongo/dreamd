@@ -1235,3 +1235,51 @@ mod tests {
         }
     }
 }
+
+/// Property sweeps for the two guarantees prose in this file states outright.
+#[cfg(test)]
+mod properties {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        /// "Uniqueness is a guarantee here rather than a near-certainty" —
+        /// including the adversarial shape the doc names (`## A` twice beside
+        /// a literal `## A 1`), and every shape nobody thought to name.
+        #[test]
+        fn slugs_are_unique_whatever_the_headings(
+            headings in prop::collection::vec("[a-zA-Z0-9 _#*-]{0,16}", 0..24),
+        ) {
+            let mut slugger = Slugger::default();
+            let mut seen = std::collections::HashSet::new();
+            for h in &headings {
+                prop_assert!(seen.insert(slugger.slug(h)), "two headings got one id");
+            }
+        }
+
+        /// The exact tier is total on the happy path: any non-blank exact
+        /// substring of the source locates, at the first occurrence of its
+        /// *trimmed* text — `locate_near` trims the quote before anything
+        /// else, which the first draft of this property did not know and
+        /// proptest immediately taught it.
+        #[test]
+        fn an_exact_substring_always_locates(
+            source in "[a-z \\n]{1,400}",
+            start in any::<prop::sample::Index>(),
+            len in 1..40usize,
+        ) {
+            let start = start.index(source.len());
+            let end = (start + len).min(source.len());
+            let quote = &source[start..end];
+            prop_assume!(!quote.trim().is_empty());
+
+            let loc = locate(&source, "", quote, "");
+            prop_assert!(loc.is_some(), "an exact substring failed to locate");
+            let loc = loc.unwrap();
+            let first = source.find(quote.trim()).unwrap();
+            let expect = source[..first].matches('\n').count() + 1;
+            prop_assert_eq!(loc.line_start, expect, "not the first occurrence's line");
+            prop_assert!(loc.line_end >= loc.line_start);
+        }
+    }
+}

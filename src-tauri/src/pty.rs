@@ -722,3 +722,22 @@ mod tests {
         assert!(from_b64("Zm9v").is_ok());
     }
 }
+
+/// Property sweep: the wire codec over arbitrary bytes.
+///
+/// The RFC vectors above pin the alphabet; this pins totality — every byte
+/// sequence a pty can produce round-trips, which is the whole claim the
+/// base64 framing makes (a paste is arbitrary bytes, a read boundary splits
+/// characters, and nothing on the wire may care).
+#[cfg(test)]
+mod properties {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn any_bytes_round_trip(bytes in prop::collection::vec(any::<u8>(), 0..512)) {
+            prop_assert_eq!(from_b64(&b64(&bytes)).unwrap(), bytes);
+        }
+    }
+}
