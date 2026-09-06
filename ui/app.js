@@ -1991,6 +1991,9 @@ function drawnText(marks) {
 ///
 /// Null means "assume nothing": every mark is placed from scratch against the
 /// whole document, which is what a full write and every other caller needs.
+/// Nothing is reused *or* removed on that path, so a null caller with marks
+/// still on screen must have cleared them itself — `repaintHighlights` does,
+/// and a full write has none left to clear.
 ///
 /// This is what keeps a `:w` off the flatten. `scanTextNodes` walks every text
 /// node in the document and joins them into one string — 112k nodes and 1.9MB
@@ -2062,7 +2065,7 @@ function applyHighlights(list, replaced = null) {
   // Where to look. The replaced blocks are where a mark that lost its drawing
   // must now be, since that is the only text that moved; `roots` widens to the
   // whole document for every caller that made no such claim.
-  let roots = replaced && replaced.length ? replaced : [contentEl];
+  const roots = replaced && replaced.length ? replaced : [contentEl];
 
   const active = pending.length;
   // Building a fresh TreeWalker per highlight and re-walking from the top of a

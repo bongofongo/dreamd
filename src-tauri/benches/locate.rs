@@ -43,9 +43,7 @@ use std::hint::black_box;
 const FILE: &str = "/corpus/mixed-2m.md";
 const COUNTS: &[usize] = &[1, 10, 100, 500];
 
-/// How a seeded highlight's quote is built. Only the two modes `bench_reanchor`
-/// sweeps; the context-carrying case is measured by `locate_single/with_context`
-/// below, for the reason given there.
+/// How a seeded highlight's anchor is built.
 #[derive(Clone, Copy)]
 enum Mode {
     /// Rendered (whitespace-collapsed) quote, empty context — what the app sent
@@ -53,6 +51,9 @@ enum Mode {
     Today,
     /// Byte-exact source quote — the tier-2 floor.
     ExactSource,
+    /// Rendered quote *and* rendered context: what the app sends now, and the
+    /// only mode here that exercises the path a real save takes.
+    WithContext,
 }
 
 /// Collapse runs of whitespace, the way the rendered DOM does.
@@ -66,6 +67,7 @@ fn store_with(n: usize, mode: Mode) -> Store {
         let (quote, prefix, suffix) = match mode {
             Mode::Today => (h.rendered.clone(), String::new(), String::new()),
             Mode::ExactSource => (h.quote.clone(), String::new(), String::new()),
+            Mode::WithContext => (h.rendered.clone(), collapse(&h.prefix), collapse(&h.suffix)),
         };
         store.add_highlight(FILE.to_string(), 0, 0, quote, prefix, suffix);
     }
@@ -75,13 +77,21 @@ fn store_with(n: usize, mode: Mode) -> Store {
 fn bench_reanchor(c: &mut Criterion) {
     let source = common::doc("mixed", "2m");
 
-    // `with_context` is deliberately absent from this sweep. At 500 highlights it
-    // costs the same 4s/iteration as `today` — because it *is* the same path — so
-    // running it here would double the group's wall time to re-measure the same
-    // number. The cheap `locate_single/with_context` case below tracks it for a
-    // few milliseconds instead, and the seeded save→repaint loop in `perf-pass`
-    // covers it end to end.
-    for (label, mode) in [("today", Mode::Today), ("exact_source", Mode::ExactSource)] {
+    // `with_context` used to be absent from this sweep, on the grounds that it
+    // *is* `today`'s path and would re-measure the same number. That stopped
+    // being true when tier 1 stopped scanning for itself: an anchor carrying
+    // context now settles tier 1 inside tier 3's pass, and one without it still
+    // pays a full scan of the source at tier 2. They are different paths with
+    // different costs, and `with_context` is the only one of the three the app
+    // actually takes — leaving it out left the sweep blind exactly where the
+    // product lives, and a 3x saving on every save showed up nowhere but the
+    // seeded loop. `today` and `exact_source` stay as the references the
+    // baseline was set against.
+    for (label, mode) in [
+        ("today", Mode::Today),
+        ("exact_source", Mode::ExactSource),
+        ("with_context", Mode::WithContext),
+    ] {
         let mut g = c.benchmark_group(format!("reanchor/{label}"));
         // `reanchor/today/500` is ~4 SECONDS per iteration — that is the finding,
         // not a mistake. At criterion's default 100 samples this one group would
@@ -123,6 +133,8 @@ fn bench_locate_single(c: &mut Criterion) {
         b.iter(|| black_box(markdown::locate(black_box(&source), "", &fixture.quote, "")))
     });
     let (rp, rs) = (collapse(&fixture.prefix), collapse(&fixture.suffix));
+    // Note this one no longer costs what `today` does: with context, tier 1 is
+    // decided inside tier 3's pass and no scan of the source happens at all.
     g.bench_function("with_context", |b| {
         b.iter(|| {
             black_box(markdown::locate(
