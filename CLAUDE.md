@@ -783,12 +783,34 @@ Three things that keeps true. The comparison is against recorded HTML and
 wrappers, `<mark>` overlays) and would differ everywhere either landed. The
 post-render passes are scoped to the inserted nodes, because `prepareImages`
 adds a listener per image and is not idempotent — its own comment used to rely on
-`innerHTML` having thrown the old elements away. And `clearHighlights` runs on
-the patch path, since marks inside surviving blocks would otherwise be wrapped a
-second time; `ui-check.mjs` asserts exactly that, and the assertion fails with
-two marks if the call is removed. Every other writer of `contentEl.innerHTML`
-goes through `showContentMessage`, which drops the record — a stale one would
-patch against a document no longer on screen.
+`innerHTML` having thrown the old elements away. And the overlay is scoped the
+same way: `applyHighlights` is handed `changed` and re-places only the marks
+that went out with the blocks it names. Every other writer of
+`contentEl.innerHTML` goes through `showContentMessage`, which drops the record
+— a stale one would patch against a document no longer on screen.
+
+**A repaint keeps the marks whose blocks survived.** The patch path used to
+`clearHighlights()` and draw the whole overlay again, because marks inside
+surviving blocks would otherwise be wrapped a second time. But a kept block is
+byte-identical to the html its marks were placed against, so those marks were
+never wrong — and re-placing them meant `scanTextNodes` flattening every text
+node in the document into one string (112k nodes and 1.9MB at 2MB) so that each
+quote could be `indexOf`'d against the whole of it. That flatten *was*
+`apply_highlights`, and a save that edited one paragraph has no business paying
+it for the other three hundred. So `applyHighlights` now takes the replaced
+elements, keeps what still stands, and searches only inside them; 39ms to 12ms
+at 100 marks. Four things hold it together, and `ui-check.mjs` asserts each: a
+mark in a kept block is the *same element* afterwards, a mark whose own block
+changed is re-placed exactly once, a highlight that leaves the list is
+unwrapped, and one that goes stale comes off the document and onto the rail.
+Reuse is verified rather than assumed — the `<mark>`s sharing an id must still
+spell the quote between them, or the highlight is dropped and placed again,
+which is what keeps a quote whose slices straddled the patch boundary from
+standing half-drawn. `unwrap` still leaves adjacent text nodes, so the parents
+it touched are still normalized: a quote split across two of them is silently
+skipped by `locateInNodes`, and the mark would stop finding itself next time.
+`clearHighlights` is unchanged and still the right call for every repaint that
+makes no claim about what it replaced (`repaintHighlights`, a file open).
 
 The record is taken **inline, off the live DOM, before the caller decorates it**,
 which costs one serialization and no second parse (~27ms of `d:innerhtml` at
@@ -852,7 +874,8 @@ gesture a modal cannot be open for — so the annotation modal's Resize button
 closes it, `armResize` marks the `<mark>`s and the hint bar takes the modal's
 place until Enter (or the highlight key) commits or Escape cancels. Escape ranks
 below every overlay and above view mode; `clearHighlights` ends the mode, because
-a repaint pulls the marks out from under it. The commit re-checks overlap
+a repaint pulls the marks out from under it — and the render path, which no
+longer calls it, ends the mode itself for the same reason. The commit re-checks overlap
 excluding the mark itself — a resize that swallowed a neighbour would recreate
 the unreachable stacking the refusal exists to prevent. The stack panel's `⤢`
 opens the pair's file, scrolls the mark into view and arms the same mode, which

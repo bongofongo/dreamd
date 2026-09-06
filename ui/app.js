@@ -1254,11 +1254,17 @@ async function renderCurrent({ preserveScroll, reanchor }) {
   prepareImages(freshNodes);
 
   // Marks inside blocks the patch left alone are still in the DOM, where the
-  // `innerHTML` write used to guarantee a clean slate. `applyHighlights` places
-  // the whole set again, so they have to come off first or every surviving
-  // passage would end up wrapped twice. `changed` is truthy for the no-op patch
-  // too — an empty array — and null only for a full write, which has no marks.
-  if (changed) clearHighlights();
+  // `innerHTML` write used to guarantee a clean slate. They are also still
+  // *right* — a kept block is byte-identical to the html they were placed
+  // against — so rather than unwrapping the whole overlay and drawing it again,
+  // `changed` is handed to `applyHighlights` below as the list of blocks whose
+  // marks went out with them. `changed` is truthy for the no-op patch too — an
+  // empty array — and null only for a full write, which has no marks to keep.
+  //
+  // What the blanket `clearHighlights()` here also did was end an armed resize,
+  // and that still has to happen: the reader asked to resize a mark and the
+  // document has moved under them.
+  if (changed) endResize();
 
   // The span now measures the *residual* wait — what the save path still pays
   // after the overlap above — not the command's cost; `d:rust_reanchor` is
@@ -1268,7 +1274,7 @@ async function renderCurrent({ preserveScroll, reanchor }) {
   perf.span(reanchor ? "ipc_reanchor" : "ipc_get_highlights", t);
 
   t = perf.now();
-  applyHighlights(highlights);
+  applyHighlights(highlights, changed);
   perf.span("apply_highlights", t);
 
   refreshOutline();
@@ -1967,17 +1973,104 @@ async function repaintHighlights() {
   if (findQuery) findRecompute(false);
 }
 
-function applyHighlights(list) {
-  staleRail.innerHTML = "";
-  if (!list.length) return;
+/// What a highlight's `<mark>`s spell between them, in document order.
+function drawnText(marks) {
+  let out = "";
+  for (const m of marks) out += m.textContent;
+  return out;
+}
 
-  const active = list.reduce((n, h) => n + (h.state === "stale" ? 0 : 1), 0);
+/// Draw the overlay for `list`.
+///
+/// `replaced` is the incremental contract, and the only caller that has one is
+/// the render path: it names the elements that render *just wrote*, everything
+/// outside them being the document from the previous paint — marks included.
+/// Those marks are still correct, because a block the patch kept is
+/// byte-identical to the html they were placed against, so the work is only
+/// the ones that went out with the blocks that actually changed.
+///
+/// Null means "assume nothing": every mark is placed from scratch against the
+/// whole document, which is what a full write and every other caller needs.
+///
+/// This is what keeps a `:w` off the flatten. `scanTextNodes` walks every text
+/// node in the document and joins them into one string — 112k nodes and 1.9MB
+/// on the 2MB corpus doc, and the single largest cost in the save loop — and a
+/// save that edited one paragraph has no business paying it for the other
+/// three hundred it did not touch.
+function applyHighlights(list, replaced = null) {
+  staleRail.innerHTML = "";
+
+  // Marks on screen from the previous paint, by id. Several per id is normal:
+  // a quote spanning inline markup is one `<mark>` per text-node slice.
+  const standing = new Map();
+  if (replaced) {
+    for (const m of contentEl.querySelectorAll("mark.hl")) {
+      const at = standing.get(m.dataset.id);
+      if (at) at.push(m);
+      else standing.set(m.dataset.id, [m]);
+    }
+  }
+  // Unwrapping is the only thing here that leaves adjacent text nodes, so only
+  // the parents it touches need merging — the same bargain `clearHighlights`
+  // strikes, and mandatory for the same reason: a quote split across two of
+  // them is silently skipped by `locateInNodes`.
+  const touched = new Set();
+  const drop = (marks) => {
+    for (const m of marks) {
+      if (m.parentNode) touched.add(m.parentNode);
+      unwrap(m);
+    }
+  };
+
+  // Split the list into what still needs placing and what is already right.
+  const pending = [];
+  for (const h of list) {
+    const live = standing.get(h.id);
+    standing.delete(h.id);
+    if (h.state === "stale") {
+      // A mark that has *just* gone stale is still drawn, in a block nobody
+      // replaced. It has to come off, and the chip goes up instead.
+      if (live) drop(live);
+      addStaleChip(h);
+      continue;
+    }
+    // Reuse is *verified*, not assumed. A quote spanning inline markup is
+    // several `<mark>`s sharing an id, and if a patch replaced the block only
+    // some of them sat in, what stands is half a highlight — so the text they
+    // carry between them has to still spell the quote. A disagreement (there
+    // should be none: a replaced block takes all of its own slices with it)
+    // costs a re-placement, which is what every repaint used to do anyway.
+    if (live && live.length && drawnText(live) === h.quote.trim()) {
+      // Still drawn and still in the right place. The fade is the one thing
+      // about a mark that can change without the mark moving.
+      for (const m of live) {
+        if (h.prior === true) m.dataset.prior = "";
+        else delete m.dataset.prior;
+      }
+      continue;
+    }
+    if (live) drop(live);
+    pending.push(h);
+  }
+  // Anything left standing names a highlight this list no longer carries —
+  // deleted, or resolved onto another file.
+  for (const marks of standing.values()) drop(marks);
+  for (const parent of touched) parent.normalize();
+
+  if (!pending.length) return;
+
+  // Where to look. The replaced blocks are where a mark that lost its drawing
+  // must now be, since that is the only text that moved; `roots` widens to the
+  // whole document for every caller that made no such claim.
+  let roots = replaced && replaced.length ? replaced : [contentEl];
+
+  const active = pending.length;
   // Building a fresh TreeWalker per highlight and re-walking from the top of a
   // 105k-node document is where `apply_highlights` spent its ~350ms at 100
   // highlights. Below the threshold the per-highlight walk wins because it stops
   // at the first hit, where the flatten always reads the whole document.
   const tF = perf.now();
-  const doc = active > SCAN_THRESHOLD ? scanTextNodes(contentEl) : null;
+  const doc = active > SCAN_THRESHOLD ? scanTextNodes(roots) : null;
   perf.span("hl_flatten", tF);
   const tL = perf.now();
   const placements = [];
@@ -1987,15 +2080,12 @@ function applyHighlights(list) {
   // So they wait.
   const crossNode = [];
 
-  for (const h of list) {
-    // The rail's one remaining tenant. `sent_at` is not read here and no longer
-    // paints anything — see `addStaleChip` for what the rail is now for.
-    if (h.state === "stale") { addStaleChip(h); continue; }
+  for (const h of pending) {
     const quote = h.quote.trim();
     if (!doc) {
       // Few enough to place as we go; wrapping can only disturb text nodes we
       // have already passed.
-      if (!wrapByWalk(contentEl, quote, h.id, h.prior)) crossNode.push(h);
+      if (!wrapByWalk(roots, quote, h.id, h.prior)) crossNode.push(h);
       continue;
     }
     const p = locateInNodes(doc, quote);
@@ -2026,8 +2116,20 @@ function applyHighlights(list) {
   // rebuilt — every wrap above split a text node the first walk recorded —
   // but the flattened *text* is reused: wrapping splits nodes and moves not
   // one character, and the join was roughly half the flatten's cost.
+  //
+  // A narrowed scope widens here, and only here. A mark can miss the blocks
+  // that changed — the backend folds a bare-text segment into the block before
+  // it, so a mark sitting in one is outside every element `replaced` names —
+  // and a scoped repaint that quietly drew fewer marks than a full one would
+  // be a worse bug than the flatten it saved. Nothing reaches this unless
+  // something actually failed to place, which is exactly when today's path
+  // pays the same scan.
   if (crossNode.length) {
-    placeAcrossNodes(scanTextNodes(contentEl, doc ? doc.text : null), crossNode);
+    const wide = roots.length === 1 && roots[0] === contentEl;
+    placeAcrossNodes(
+      wide ? scanTextNodes(roots, doc ? doc.text : null) : scanTextNodes([contentEl]),
+      crossNode,
+    );
   }
   perf.span("hl_cross", tC);
 }
@@ -2124,17 +2226,19 @@ function segmentsIn(doc, at, length) {
 // Wrap the first occurrence of `quote` that lies within a single text node,
 // stopping the walk as soon as it is found. Returns true if it was placed;
 // false hands the quote to `placeAcrossNodes`, which does not need it to fit.
-function wrapByWalk(container, quote, id, prior) {
+function wrapByWalk(roots, quote, id, prior) {
   if (!quote) return false;
-  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
-  for (let node; (node = walker.nextNode()); ) {
-    const idx = node.nodeValue.indexOf(quote);
-    if (idx < 0) continue;
-    const range = document.createRange();
-    range.setStart(node, idx);
-    range.setEnd(node, idx + quote.length);
-    wrapRange(range, id, false, prior);
-    return true;
+  for (const root of roots) {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    for (let node; (node = walker.nextNode()); ) {
+      const idx = node.nodeValue.indexOf(quote);
+      if (idx < 0) continue;
+      const range = document.createRange();
+      range.setStart(node, idx);
+      range.setEnd(node, idx + quote.length);
+      wrapRange(range, id, false, prior);
+      return true;
+    }
   }
   return false;
 }
@@ -2142,22 +2246,28 @@ function wrapByWalk(container, quote, id, prior) {
 // Flatten the rendered document into one string plus the text nodes behind it,
 // so quotes can be found with a native string search instead of a DOM walk.
 //
-// `knownText` is the reuse path: a caller that already flattened this
-// container and has only *split* text nodes since (wrapping does exactly
+// `roots` is a *list* of containers, because a repaint that replaced three
+// blocks has no reason to flatten the other three hundred — see
+// `applyHighlights`. Offsets run continuously across the list, in its order.
+//
+// `knownText` is the reuse path: a caller that already flattened these
+// containers and has only *split* text nodes since (wrapping does exactly
 // that) passes the previous text, and the join is skipped. The length check
 // is the guard — a mismatch means the caller was wrong about nothing having
 // changed, and the honest join wins.
-function scanTextNodes(container, knownText = null) {
+function scanTextNodes(roots, knownText = null) {
   const nodes = [];
   const starts = [];
   const parts = knownText === null ? [] : null;
   let total = 0;
-  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
-  for (let n; (n = walker.nextNode()); ) {
-    nodes.push(n);
-    starts.push(total);
-    if (parts) parts.push(n.nodeValue);
-    total += n.nodeValue.length;
+  for (const root of roots) {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    for (let n; (n = walker.nextNode()); ) {
+      nodes.push(n);
+      starts.push(total);
+      if (parts) parts.push(n.nodeValue);
+      total += n.nodeValue.length;
+    }
   }
   if (knownText !== null && knownText.length === total) {
     return { nodes, starts, text: knownText };
@@ -3575,7 +3685,7 @@ function findRecompute(move) {
   if (!findQuery) { findCountEl.textContent = ""; return; }
 
   // Lazily, so a session that never presses `/` pays nothing for the flatten.
-  if (!findIndex) findIndex = scanTextNodes(contentEl);
+  if (!findIndex) findIndex = scanTextNodes([contentEl]);
   const { spans, mode } = findSpans(findQuery, findIndex.text);
   findCapped = spans.length >= FIND_MAX_HITS;
   findModeEl.textContent = mode;

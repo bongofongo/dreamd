@@ -3767,12 +3767,24 @@ check(
 );
 
 // Marks live inside blocks a patch may keep, where the old `innerHTML` write
-// used to guarantee a clean slate. Without `clearHighlights` on the patch path
-// the second repaint here wraps the same passage a second time.
-patchMarks = [{
-  id: "h000000000000001", file_path: "/repo/doc.md", quote: "charlie",
-  prefix: "", suffix: "", line_start: 1, line_end: 1, state: "active", annotation: null,
-}];
+// used to guarantee a clean slate. A repaint no longer unwraps the overlay and
+// draws it again — it is told which blocks it replaced and re-places only
+// those — so what used to be one assertion about double-wrapping is now a set
+// of them about the contract that replaced it.
+const mk = (id, quote, state = "active") => ({
+  id, file_path: "/repo/doc.md", quote, prefix: "", suffix: "",
+  line_start: 1, line_end: 1, state, annotation: null,
+});
+/// The `<mark>` element itself, stamped, so the next repaint can be asked
+/// whether it is the same one or a fresh placement.
+const stampMark = () => patch.evaluate(
+  () => { const m = document.querySelector("#content mark.hl"); if (m) m.__kept = true; });
+const markKept = () => patch.evaluate(
+  () => document.querySelector("#content mark.hl")?.__kept === true);
+const markText = () => patch.evaluate(
+  () => document.querySelector("#content mark.hl")?.textContent ?? null);
+
+patchMarks = [mk("h000000000000001", "charlie")];
 await save(DOC4);
 check("a highlight paints once", (await marks()) === 1, String(await marks()));
 await save(DOC4);
@@ -3781,6 +3793,49 @@ check(
   (await marks()) === 1,
   String(await marks()),
 );
+
+// The point of the incremental path: a mark whose block nobody touched is not
+// merely un-doubled, it is never taken down. Same element across the save.
+await stampMark();
+await save(DOC4);
+check("a mark in a block the patch kept is the same element after", await markKept());
+check("and still reads as the passage it was placed on", (await markText()) === "charlie");
+
+// And the other half: edit the block the mark is in and it must be re-placed,
+// because the element it was drawn in is gone.
+const DOC5 = DOC4.map((b) => b.replace(">charlie<", ">charlie again<"));
+await stampMark();
+await save(DOC5);
+check("a mark whose own block changed is re-placed", (await markKept()) === false);
+check("and paints exactly once", (await marks()) === 1, String(await marks()));
+
+// A highlight that leaves the list must leave the document with it — the
+// blanket unwrap used to do this for free.
+patchMarks = [];
+await save(DOC5);
+check("a highlight the list no longer carries is unwrapped", (await marks()) === 0,
+  String(await marks()));
+
+// So must one that has just gone stale, in a block nobody replaced: it stops
+// being painted and becomes a chip on the rail instead.
+patchMarks = [mk("h000000000000001", "charlie")];
+await save(DOC5);
+check("a stale-able mark paints first", (await marks()) === 1, String(await marks()));
+patchMarks = [mk("h000000000000001", "charlie", "stale")];
+await save(DOC5);
+check("and going stale takes it off the document", (await marks()) === 0, String(await marks()));
+check(
+  "and puts it on the rail",
+  (await patch.evaluate(() => document.querySelectorAll("#stale-rail .stale-chip").length)) === 1,
+);
+
+// Unwrapping leaves adjacent text nodes, and a quote split across two of them
+// is silently skipped by `locateInNodes` — so the parents it touched have to be
+// normalized or the mark stops being findable the *next* time round.
+patchMarks = [mk("h000000000000001", "charlie")];
+await save(DOC5);
+check("and a mark that went stale can be painted again after", (await marks()) === 1,
+  String(await marks()));
 
 patchMarks = [];
 await stamp();
