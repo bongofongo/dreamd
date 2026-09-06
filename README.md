@@ -152,17 +152,20 @@ in CI — see **Releasing** below.
 
 ## Performance
 
-Measurement lives in `perf/` and runs locally — no CI. There is a workflow that
-runs the quick tier on both platforms, but it is parked out of tree and enabled
-by hand, because a shared runner is not a quiet machine: its numbers gate
-nothing and move no baseline. The reference numbers are one machine's and live
-outside this repo, so a clone without them runs every tier with the comparison
-skipped rather than failing.
+Measurement lives in `perf/` and runs by hand. Nothing here gates a build: the
+one automated caller is `release.yml`'s `perf-history` job, which runs the deep
+tier on a published release to capture four public numbers for the website
+chart, compares against no baseline and is `continue-on-error`. The workflow
+that runs the quick tier on both platforms is parked out of tree and enabled by
+hand, because a shared runner is not a quiet machine: its numbers gate nothing
+and move no baseline. The reference numbers are one machine's and live outside
+this repo, so a clone without them runs every tier with the comparison skipped
+rather than failing.
 
 ```sh
 ./perf/run.sh quick     # ~60s    after an edit
 ./perf/run.sh pass      # ~5min   before a commit
-./perf/run.sh deep      # ~15min  profiling; the only tier that sets the baseline
+./perf/run.sh deep      # ~20min  profiling; the only tier that sets the baseline
 ```
 
 Optional tooling, each skipped with an install hint if absent:
@@ -193,9 +196,9 @@ See `perf/README.md` for what each tier measures and how much to trust it.
   dialog over the open document; pick **Save as PDF** as the destination to export it. What
   prints is the document alone — no sidebar, no panels, no copy buttons, black
   on white whatever theme you read in, and the whole file however far down it
-  you had scrolled. Highlights print as plain text: they are session state, and
-  the export is meant to be the document. dreamd chooses no filename and writes
-  nothing itself; the save is entirely your dialog's.
+  you had scrolled. Highlights print as plain text: the export is meant to be
+  the document, not a record of what you happened to mark up. dreamd chooses
+  no filename and writes nothing itself; the save is entirely your dialog's.
 - **Find in the document:** `/` opens a search bar at the foot of the reading
   pane. Type, then press `Enter` — nothing highlights until you do, so the page
   stays still while you type. `Enter` jumps to the first match from where you
@@ -302,7 +305,8 @@ the image viewer open — where, with the viewer up, it zooms the image instead.
 and where you are in it, `'` returns there — from anywhere, including a
 different file. There is no letter to type and no second mark; `m` again moves
 the mark to where you are now. Nothing is written to disk: the mark lives for as
-long as the app does and is gone when you quit, like highlights and the stack.
+long as the app does and is gone when you quit — unlike highlights and the
+stack, which persist per repo (see [Marks on disk](#marks-on-disk)).
 
 **Jump back** (`Ctrl+[`) returns to where you were before something moved you:
 a link, a section link, a click in the tree, the palette, the contents panel,
@@ -434,8 +438,7 @@ nowhere else, where the WM already draws one above it.
 
 Every `[agent]` key is read when the pane opens, so changing one takes effect
 on the next cold start rather than mid-session. `send_stack_tmux` is unbound and
-absent from the settings panel: the embedded pane is the send path, and this is
-the escape hatch back to `tmux send-keys` when you want to compare them.
+absent from the settings panel — see **Send behavior** above.
 
 The repo-local file overrides the global one key by key, so a `.dreamd.toml` that
 sets one thing leaves the rest of your setup alone. It may name a `theme` but
@@ -565,12 +568,11 @@ A corrupt or unreadable marks file costs you the marks, never the launch.
 
 - Fuzzy search covers file **paths** only; in-file/content (`live_grep`) search
   is a v2 item.
-- Highlight anchoring matches on the selected text (whitespace-normalized);
-  heavily formatted inline selections may not re-locate and will read as stale.
-  Inside fenced code blocks, a highlight spanning more than one syntax token
-  anchors correctly but does not *paint*: syntax highlighting splits the line
-  into per-token spans, and the painter skips matches straddling a span
-  boundary. The mark is real and reaches your agent; you just can't see it.
+- Highlight anchoring matches on the selected text (whitespace-normalized). A
+  selection spanning inline markdown (`**bold**`, a link) is rendered text that
+  is nowhere in the source, so it carries no line number. It still paints and
+  still reaches your agent, and it deliberately never reads as stale — only a
+  mark that once anchored can have come unanchored.
 - Marks persist per repo, but only for the dreamd holding that repo's claim; a
   second window on the same repo keeps its marks in memory only.
 
@@ -586,10 +588,11 @@ cargo build
 git commit -am "release: 0.2.0" && git tag v0.2.0 && git push && git push --tags
 ```
 
-The tag builds both architectures, signs and notarizes them, and opens a
-**draft** release. Verify the app on a clean machine, then publish it by hand —
-publishing is what bumps the Homebrew cask, so nothing reaches users until
-someone has actually double-clicked the thing.
+The tag builds all three targets — both macOS architectures and Linux
+`x86_64` — signs and notarizes the macOS pair, and opens a **draft** release.
+Verify the app on a clean machine, then publish it by hand — publishing is what
+bumps the Homebrew cask, so nothing reaches users until someone has actually
+double-clicked the thing.
 
 Secrets the workflow needs: `APPLE_CERTIFICATE` (base64 of the Developer ID
 **Application** `.p12`), `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`,
