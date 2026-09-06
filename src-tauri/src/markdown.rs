@@ -758,6 +758,7 @@ fn best_match(
     before: &str,
     after: &str,
     hint: Option<usize>,
+    mut exact: impl FnMut(usize) -> bool,
 ) -> Option<usize> {
     if before.is_empty() && after.is_empty() {
         return hay.find(needle);
@@ -767,20 +768,48 @@ fn best_match(
     let perfect = before.len() + after.len();
 
     let dist = |pos: usize| hint.map_or(0, |h| h.abs_diff(pos));
+    // The nearer of a candidate already seen below the hint and one at or
+    // after it. A dead heat goes to `pos`, which is what `pos - h == 0` on an
+    // occurrence sitting exactly on the hint makes automatic.
+    let nearer = |below: Option<usize>, pos: usize, h: usize| match below {
+        Some(b) if h - b < pos - h => b,
+        _ => pos,
+    };
     let mut best: Option<(usize, usize)> = None; // (score, position)
     let mut perfect_below: Option<usize> = None;
+    let mut exact_below: Option<usize> = None;
 
     for pos in occurrences(hay, needle) {
         let score = context_score(hay, pos, needle.len(), before, after);
         if score >= perfect {
-            match hint {
-                None => return Some(pos),
-                Some(h) if pos < h => perfect_below = Some(pos),
-                Some(h) => {
-                    return Some(match perfect_below {
-                        Some(b) if h - b < pos - h => b,
-                        _ => pos,
-                    })
+            // Tier 1 rides here: an occurrence where the *source* still holds
+            // `prefix + quote + suffix` byte for byte outranks one that merely
+            // scores perfectly on stripped text. It can only ever be one of
+            // these — stripping whitespace out of an exact match leaves the
+            // context flush against the quote on both sides — which is what
+            // lets that tier cost a few hundred byte comparisons here instead
+            // of its own scan of the whole document, once per highlight.
+            //
+            // Exactness is a rank above a perfect score rather than a
+            // first-past-the-post win: within either rank the hint picks, so
+            // two exact copies of a block are told apart by where the mark
+            // already was. The old tier-1 scan took whichever came first in
+            // the file and could not be told otherwise.
+            if exact(pos) {
+                match hint {
+                    None => return Some(pos),
+                    Some(h) if pos < h => exact_below = Some(pos),
+                    Some(h) => return Some(nearer(exact_below, pos, h)),
+                }
+            } else {
+                match hint {
+                    None => return Some(pos),
+                    Some(h) if pos < h => perfect_below = Some(pos),
+                    // An exact copy already passed outranks this one wherever
+                    // it sat.
+                    Some(h) => {
+                        return Some(exact_below.unwrap_or_else(|| nearer(perfect_below, pos, h)))
+                    }
                 }
             }
         }
@@ -792,7 +821,7 @@ fn best_match(
             best = Some((score, pos));
         }
     }
-    perfect_below.or(best.map(|(_, pos)| pos))
+    exact_below.or(perfect_below).or(best.map(|(_, pos)| pos))
 }
 
 fn context_score(hay: &str, pos: usize, needle_len: usize, before: &str, after: &str) -> usize {
@@ -877,10 +906,33 @@ impl<'a> SourceIndex<'a> {
 
         let has_context = !prefix.is_empty() || !suffix.is_empty();
 
-        // 1) Exact match with context. Only worth trying when there *is*
-        // context — otherwise the needle is just the quote and this repeats
-        // tier 2's scan verbatim.
-        if has_context {
+        // 1) Exact match with context — but **not from here**. Tier 1 is
+        // folded into tier 3's pass below, and this branch is only the
+        // fallback for a document too large to have the index that pass runs
+        // on.
+        //
+        // Every tier-1 hit is necessarily one of the perfect-scoring
+        // occurrences tier 3 already walks: if the source holds
+        // `prefix + quote + suffix` byte for byte, then stripping whitespace
+        // leaves `prefix_ns` immediately before the quote and `suffix_ns`
+        // immediately after it, so the context scores full marks there. So
+        // checking exactness at those occurrences finds every hit this scan
+        // would have — and a scan that has to run whether it hits or not, once
+        // per highlight, against the whole source, is what re-anchoring a file
+        // spent two thirds of its time on. It never hits for a quote the
+        // frontend sent: `getSelection().toString()` collapses the line breaks
+        // a wrapped source still carries (0 of 611 corpus fixtures reach it).
+        // It does hit on documents that are not hard-wrapped, which is why the
+        // tier is preserved rather than dropped.
+        //
+        // One consequence, and it is the intended one: where several
+        // occurrences all score perfectly and only a later one is byte-exact,
+        // the answer is now the copy nearest `hint` rather than the first in
+        // the file. Those copies are indistinguishable by the anchor's own
+        // evidence — `examples/locate_check.rs` calls that AMBIGUOUS — and
+        // "it was here a moment ago" is the tie-breaker the other tiers
+        // already use.
+        if has_context && exceeds_stripped_capacity(self.source.len()) {
             let needle = format!("{prefix}{quote}{suffix}");
             if let Some(pos) = self.source.find(&needle) {
                 return Some(self.span(pos + prefix.len(), quote.len()));
@@ -924,7 +976,17 @@ impl<'a> SourceIndex<'a> {
         }
         let stripped = self.stripped.as_ref()?;
         let hint = hint_src.map(|b| stripped.offset_of(b));
-        let (start, end) = stripped.find(&quote_ns, &prefix_ns, &suffix_ns, hint)?;
+        // Tier 1, in source coordinates: the quote starts at `at`, so the
+        // needle would start `prefix.len()` bytes earlier. Written as three
+        // byte comparisons rather than one slice-and-compare so that no index
+        // has to land on a char boundary.
+        let exact_src = |at: usize| {
+            has_context
+                && source.as_bytes()[at..].starts_with(quote.as_bytes())
+                && source.as_bytes()[..at].ends_with(prefix.as_bytes())
+                && source.as_bytes()[at + quote.len()..].starts_with(suffix.as_bytes())
+        };
+        let (start, end) = stripped.find(&quote_ns, &prefix_ns, &suffix_ns, hint, exact_src)?;
         Some(Location {
             line_start: self.line_at(start),
             line_end: self.line_at(end),
@@ -1000,8 +1062,16 @@ impl Stripped {
         prefix_ns: &str,
         suffix_ns: &str,
         hint: Option<usize>,
+        mut exact_src: impl FnMut(usize) -> bool,
     ) -> Option<(usize, usize)> {
-        let at = best_match(&self.text, quote_ns, prefix_ns, suffix_ns, hint)?;
+        // The predicate is stated in *source* coordinates — it is about bytes
+        // this index has thrown away — so the mapping happens here rather than
+        // in `best_match`, which knows only about stripped text.
+        let at = best_match(&self.text, quote_ns, prefix_ns, suffix_ns, hint, |p| {
+            self.source_offsets
+                .get(p)
+                .is_some_and(|&o| exact_src(o as usize))
+        })?;
         let last = at + quote_ns.len().saturating_sub(1);
         let start = *self.source_offsets.get(at)? as usize;
         let end = self
@@ -1343,6 +1413,55 @@ mod tests {
         // A hint is a hint: a stale one that lands nearer the second copy
         // still resolves there, and never produces a worse answer than none.
         assert_eq!(at(11), 12);
+    }
+
+    #[test]
+    fn an_unwrapped_source_still_resolves_through_tier_one() {
+        // Tier 1 — the byte-exact `prefix + quote + suffix` match — no longer
+        // runs a scan of its own; it is verified at the perfect-scoring
+        // occurrences of tier 3's pass. This is the case that reaches it, and
+        // the corpus cannot: a document with no hard wrapping, where the
+        // rendered text the frontend sends *is* a contiguous source slice.
+        //
+        // The second copy is the same passage wrapped, so tier 3 scores both
+        // perfectly and only exactness separates them.
+        let src =
+            "Intro. The quoted phrase here. Outro.\n\nIntro. The quoted\nphrase here. Outro.\n";
+        let loc = SourceIndex::new(src)
+            .locate("Intro. ", "The quoted phrase here.", " Outro.")
+            .expect("located");
+        assert_eq!((loc.line_start, loc.line_end), (1, 1));
+    }
+
+    #[test]
+    fn the_hint_separates_two_exact_copies() {
+        // What ranking exactness above a perfect score rather than returning
+        // the first exact hit buys. Tier 1 used to be `source.find(needle)`,
+        // which took copy one whatever the hint said — the same bug the hint
+        // was introduced to fix at tier 3.
+        let block = "Intro. The quoted phrase here. Outro.\n";
+        let src = format!("{block}\n---\n\n{block}");
+        let at = |hint| {
+            SourceIndex::new(&src)
+                .locate_near("Intro. ", "The quoted phrase here.", " Outro.", hint)
+                .expect("located")
+                .line_start
+        };
+        assert_eq!(at(1), 1);
+        assert_eq!(at(5), 5);
+    }
+
+    #[test]
+    fn tier_one_reports_the_same_span_from_either_route() {
+        // The folded tier 1 returns tier 3's mapping of the match rather than
+        // computing a span of its own. The two must agree, including on a
+        // quote whose last char is multi-byte and one that spans lines.
+        let src = "alpha bravo charlie — dash\n";
+        let loc = locate(src, "alpha ", "bravo charlie —", " dash").expect("located");
+        assert_eq!((loc.line_start, loc.line_end), (1, 1));
+        let src = "head\n\none two\nthree four\n\ntail\n";
+        let loc = locate(src, "head\n\n", "one two\nthree four", "\n\ntail").expect("located");
+        assert_eq!((loc.line_start, loc.line_end), (3, 4));
     }
 
     #[test]

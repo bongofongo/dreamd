@@ -804,6 +804,21 @@ whitespace-stripped match — an exact search would take the earliest occurrence
 ignoring the very context saying the quote came from a later copy. The frontend sends what
 `getSelection().toString()` returns — **rendered DOM text**, never raw source — so the
 whitespace-normalized path is the hot one and the only realistic thing to benchmark.
+**Tier 1 has no scan of its own.** It is decided at the perfect-scoring
+occurrences of tier 3's pass, because it can only ever be one of them: strip the
+whitespace out of an exact `prefix+quote+suffix` match and the context is still
+flush against the quote on both sides, which is a full score by construction. So
+what used to be a `find` over the whole source *per highlight* — running whether
+it hit or not, and it never hits for a quote the frontend sent, since
+`getSelection().toString()` collapses the line breaks a wrapped source still
+carries (0 of `locate_check`'s 611 fixtures reach it) — is now a few hundred byte
+comparisons at occurrences that pass is visiting anyway. Re-anchoring a 2MB
+document went 57ms to 19ms at 100 marks and 265ms to 72ms at 500, with every one
+of the 611 fixtures landing on the same lines. The tier is kept rather than
+dropped because a document that is *not* hard-wrapped does reach it. Exactness
+ranks above a perfect score rather than winning first-past-the-post: within
+either rank the hint picks, so two exact copies of a block are told apart by
+where the mark already was, which the old first-in-the-file scan could not do.
 `reanchor_file` re-runs this on save; failure
 marks the highlight `Stale` rather than dropping it — **but only if it ever
 anchored.** A quote spanning inline markdown (`**bold**`, a link) is DOM text
