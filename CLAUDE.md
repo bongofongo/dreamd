@@ -931,8 +931,12 @@ the whole of it, which keeps it small enough to stay in cache. Below the
 threshold each quote still scans for itself: one `str::find` stops at the answer
 and runs at memory speed (0.13ms on the 2MB corpus doc) where the shared pass
 reads everything whatever it is looking for (~5.7ms), so break-even is around
-sixty. `bench.reanchor_with_context/500` went 70.7ms to 16.2ms and `/100` 18.9ms
-to 14.5ms. What makes it safe is that the *decision* was split from the *scan*:
+sixty. The automaton is a **DFA up to `DFA_MAX` quotes and a contiguous
+NFA above it**: the DFA reads the haystack about a third faster but its
+transition table is rebuilt every save, measured at 1.2ms and 0.78MB for 100
+quotes against 5.9ms and 3.5MB for 500, where it stops paying for itself.
+`bench.reanchor_with_context/500` went 70.7ms to 16.1ms and `/100` 18.9ms to
+9.7ms. What makes it safe is that the *decision* was split from the *scan*:
 `best_match_over` is handed the occurrences instead of finding them, so it sees
 the same positions in the same order either way, and `locate_check` compares
 batched against one-shot on all 611 fixtures.

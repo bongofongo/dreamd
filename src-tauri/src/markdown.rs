@@ -1184,7 +1184,15 @@ const BATCH_MIN: usize = 64;
 /// How many bytes of a quote the shared automaton is built over. Long enough
 /// that a false candidate is rare in prose, short enough that hundreds of
 /// quotes still make a small automaton.
-const PROBE: usize = 32;
+const PROBE: usize = 16;
+
+/// Above this many quotes the shared pass uses a contiguous NFA rather than a
+/// DFA. The DFA reads the haystack about a third faster, but its transition
+/// table is built from scratch on every save: measured 1.2ms and 0.78MB at 100
+/// quotes, against 5.9ms and 3.5MB at 500, where the ~4.5ms it saves over the
+/// pass no longer covers what it costs to build. Break-even is around four
+/// hundred; this keeps a margin and holds the table under a megabyte.
+const DFA_MAX: usize = 256;
 
 enum Plan<'a> {
     /// Decided by a tier above the stripped one, or not at all.
@@ -1278,10 +1286,13 @@ impl Hits {
             // `Standard` is the only kind that supports overlapping search,
             // which is the semantics `occurrences` has.
             .match_kind(aho_corasick::MatchKind::Standard)
-            // A contiguous NFA rather than whatever the builder would pick:
-            // hundreds of quotes of a hundred bytes each is enough pattern for
-            // a DFA's transition table to cost more than the pass saves.
-            .kind(Some(aho_corasick::AhoCorasickKind::ContiguousNFA))
+            // Chosen rather than left to the builder, because the right
+            // answer depends on how many marks the file has — see `DFA_MAX`.
+            .kind(Some(if jobs.len() <= DFA_MAX {
+                aho_corasick::AhoCorasickKind::DFA
+            } else {
+                aho_corasick::AhoCorasickKind::ContiguousNFA
+            }))
             .build(&needles)
         else {
             // Nothing here is worth failing a re-anchor over — an automaton
