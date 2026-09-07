@@ -812,6 +812,21 @@ skipped by `locateInNodes`, and the mark would stop finding itself next time.
 `clearHighlights` is unchanged and still the right call for every repaint that
 makes no claim about what it replaced (`repaintHighlights`, a file open).
 
+**A passage no block holds is looked for once.** The narrowing above has one
+deliberate exception: a mark that failed to place inside the replaced blocks
+widens to the whole document, because it may simply live elsewhere. But a
+selection dragged across a paragraph break is in *no* scope — the flattened text
+has no separator between two blocks' text nodes, so `paragraph one` +
+`paragraph two` matches nothing — and the store keeps such a mark rather than
+losing it. Each one bought a full 112k-node flatten on every `:w`, forever, for
+an answer that could not have changed. `unplaceable` (in `ui/app.js`) remembers
+which quote was searched for across the whole document and not found; a patch
+repaint searches the blocks it replaced, which is the only text that moved, and
+widens only for marks that memo does not already answer. `d:apply_highlights`
+went 13ms to 3ms on the save loop, and `ui-check.mjs` asserts all three halves:
+the first save widens, the next does not, and a passage arriving *inside* a
+replaced block still paints even though the memo says the document lacked it.
+
 The record is taken **inline, off the live DOM, before the caller decorates it**,
 which costs one serialization and no second parse (~27ms of `d:innerhtml` at
 2MB). Deferring it to after the frame was tried and is much worse: re-parsing the

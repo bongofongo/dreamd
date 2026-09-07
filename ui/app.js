@@ -1926,6 +1926,31 @@ function scrollToFragment(frag) {
 // hundred. Measured crossover in the Chromium harness is around 5.
 const SCAN_THRESHOLD = 4;
 
+// Highlights whose quote was searched for across the whole rendered document
+// and not found, by id, valued by the quote that failed so a resize asks
+// again. A cross-*block* selection is the realistic way to get one: the
+// flattened text has no separator between two blocks' text nodes, so a
+// selection spanning a paragraph break is in no document, and the store keeps
+// it rather than losing it.
+//
+// Without this each of them cost a full 112k-node flatten on every `:w`,
+// forever — 10ms of a 53ms save loop on the 2MB corpus, for an answer that
+// could not have changed. Only a write this pass did not watch can change it,
+// and that is exactly the `replaced === null` call below.
+const unplaceable = new Map();
+
+/// What a search proved about the marks it looked for. Only a pass over the
+/// whole document proves absence, so only that one records a miss; any pass at
+/// all proves presence, and a mark just found is no longer a claim about the
+/// document.
+function settleUnplaceable(searched, missed, wide) {
+  const lost = new Set(missed);
+  for (const h of searched) {
+    if (!lost.has(h)) unplaceable.delete(h.id);
+    else if (wide) unplaceable.set(h.id, h.quote.trim());
+  }
+}
+
 // `applyHighlights` assumes a virgin DOM — it never removes what is already
 // there, which is true for its original caller because `renderCurrent` has just
 // written `contentEl.innerHTML`. Anything repainting the overlay *in place* has
@@ -2002,6 +2027,11 @@ function drawnText(marks) {
 /// three hundred it did not touch.
 function applyHighlights(list, replaced = null) {
   staleRail.innerHTML = "";
+  // Null is "assume nothing", and that has to include what `unplaceable`
+  // remembers: the document it is a claim about has just been replaced whole.
+  // An empty array is not the same statement — it says nothing changed — so
+  // the memo survives a byte-identical save.
+  if (!replaced) unplaceable.clear();
 
   // Marks on screen from the previous paint, by id. Several per id is normal:
   // a quote spanning inline markup is one `<mark>` per text-node slice.
@@ -2129,10 +2159,31 @@ function applyHighlights(list, replaced = null) {
   // pays the same scan.
   if (crossNode.length) {
     const wide = roots.length === 1 && roots[0] === contentEl;
-    placeAcrossNodes(
-      wide ? scanTextNodes(roots, doc ? doc.text : null) : scanTextNodes([contentEl]),
-      crossNode,
-    );
+    // The scope the walk above already covered, first — including when it is
+    // the whole document, in which case this is the only pass there is.
+    const missed = placeAcrossNodes(scanTextNodes(roots, doc ? doc.text : null), crossNode);
+    if (wide) {
+      settleUnplaceable(crossNode, missed, true);
+    } else if (missed.length) {
+      settleUnplaceable(crossNode, missed, false);
+      // A narrowed scope widens here, and only here. A mark can miss the blocks
+      // that changed — the backend folds a bare-text segment into the block
+      // before it, so a mark sitting in one is outside every element `replaced`
+      // names — and a scoped repaint that quietly drew fewer marks than a full
+      // one would be a worse bug than the flatten it saved.
+      //
+      // But not for a mark the whole document has already been searched for and
+      // does not hold. The text has changed only inside `replaced`, and the pass
+      // above searched exactly that, so a second sweep of 112k text nodes can
+      // only reach the same answer.
+      const rest = missed.filter((h) => unplaceable.get(h.id) !== h.quote.trim());
+      if (rest.length) {
+        // `at` is an offset into the flatten that produced it, and this is a
+        // different one — the wide pass has to find its own.
+        const fresh = rest.map((h) => ({ ...h, at: undefined }));
+        settleUnplaceable(fresh, placeAcrossNodes(scanTextNodes([contentEl]), fresh), true);
+      }
+    }
   }
   perf.span("hl_cross", tC);
 }
@@ -2166,9 +2217,15 @@ function applyHighlights(list, replaced = null) {
 /// `querySelectorAll`.
 function placeAcrossNodes(doc, highlights) {
   const segments = [];
+  // The ones this view of the document does not hold, handed back so the
+  // caller can decide whether a wider view would say anything different.
+  const missed = [];
   for (const h of highlights) {
     const quote = h.quote.trim();
-    if (!quote) continue;
+    if (!quote) {
+      missed.push(h);
+      continue;
+    }
     // The offset the first flatten already found, when there is one: wrapping
     // split nodes but changed no text, so it is valid here too, and re-finding
     // it was a second full-document scan per cross-node mark. `startsWith` is
@@ -2181,7 +2238,10 @@ function placeAcrossNodes(doc, highlights) {
         : h.at === -1
           ? -1
           : doc.text.indexOf(quote);
-    if (at < 0) continue; // genuinely not on screen; the store keeps it
+    if (at < 0) {
+      missed.push(h); // genuinely not on screen; the store keeps it
+      continue;
+    }
     const slices = segmentsIn(doc, at, quote.length);
     slices.forEach((s, i) => {
       // Which end of the run this slice is, so the seams between them can be
@@ -2203,6 +2263,7 @@ function placeAcrossNodes(doc, highlights) {
     const m = wrapRange(range, s.id, false, s.prior);
     if (s.run) m.dataset.run = s.run;
   }
+  return missed;
 }
 
 /// The text-node slices covered by `[at, at + length)` of the flattened text.

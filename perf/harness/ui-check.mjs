@@ -3837,6 +3837,50 @@ await save(DOC5);
 check("and a mark that went stale can be painted again after", (await marks()) === 1,
   String(await marks()));
 
+// A quote the rendered document does not hold *anywhere* — a selection dragged
+// across a paragraph break is the realistic way to get one, since the flattened
+// text has no separator between two blocks' text nodes. The store keeps it, and
+// every repaint used to re-read all 112k text nodes to reach the same answer.
+// It is searched for beyond the changed blocks once; after that only a write
+// can move it, and a write is confined to the blocks it names.
+await patch.evaluate(() => {
+  if (window.__origScan) return;
+  window.__origScan = window.scanTextNodes;
+  window.__scans = 0;
+  window.scanTextNodes = (...a) => { window.__scans++; return window.__origScan(...a); };
+});
+const scans = async (next) => {
+  await patch.evaluate(() => { window.__scans = 0; });
+  await save(next);
+  return patch.evaluate(() => window.__scans);
+};
+const GHOST = "charlie again with emphasis";
+patchMarks = [mk("h000000000000002", GHOST)];
+const DOC6 = DOC5.map((b) => b.replace(">alpha<", ">alpha edited<"));
+const wideOnce = await scans(DOC6);
+check(
+  "a quote no block holds is searched for past the blocks that changed",
+  wideOnce === 2,
+  String(wideOnce),
+);
+const DOC7 = DOC6.map((b) => b.replace(">bravo<", ">bravo edited<"));
+const wideAgain = await scans(DOC7);
+check("and the next save does not search the whole document again", wideAgain === 1,
+  String(wideAgain));
+
+// The other half, and what makes the memo safe: the answer *can* change, but
+// only inside a block the write replaced — which is the one scope that is
+// searched every time. Here the passage arrives split across three text nodes,
+// so it is `placeAcrossNodes` rather than the walk that has to find it.
+const DOC8 = DOC7.map((b) =>
+  b.replace(">charlie again<", ">charlie again <em>with</em> emphasis<"));
+await save(DOC8);
+check(
+  "and a remembered miss still paints when the passage arrives in a block that changed",
+  (await marks()) === 3,
+  String(await marks()),
+);
+
 patchMarks = [];
 await stamp();
 await patch.evaluate(() => openFile("/repo/other.md"));
