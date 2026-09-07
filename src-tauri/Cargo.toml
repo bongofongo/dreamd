@@ -67,6 +67,10 @@ syntect = { version = "5", default-features = false, features = [
   "regex-fancy",
 ] }
 ignore = "0.4"
+# Multi-pattern search, for re-anchoring a file's highlights in one pass over
+# the whitespace-stripped document instead of one pass per mark. Already in the
+# tree transitively (`ignore` -> `globset`); this only makes it addressable.
+aho-corasick = "1"
 notify = "6"
 nucleo = "0.5"
 toml = "0.8"

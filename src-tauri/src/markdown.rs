@@ -798,8 +798,8 @@ fn occurrences<'h>(hay: &'h str, needle: &'h str) -> impl Iterator<Item = usize>
 /// evidence an anchor carries: the context either side, and — on a re-anchor —
 /// where the quote was last found.
 ///
-/// Without context this is `hay.find(needle)`: the first occurrence, which is
-/// only right by luck when the quote is repeated. With context, occurrences are
+/// Without context this is the first occurrence, which is only right by luck
+/// when the quote is repeated. With context, occurrences are
 /// scored by how many bytes of `before` they share with the text immediately to
 /// their left plus how many bytes of `after` they share with the text to their
 /// right, and the best-scoring one wins.
@@ -816,16 +816,26 @@ fn occurrences<'h>(hay: &'h str, needle: &'h str) -> impl Iterator<Item = usize>
 /// copy comes first in the file. Occurrences are produced in order, so the
 /// nearest full context match is either the last one before the hint or the
 /// first one at or after it, and the scan can stop as soon as it has both.
-fn best_match(
+/// The decision itself, told where the occurrences are rather than finding
+/// them.
+///
+/// Separating the two is what lets re-anchoring a file find every quote's
+/// occurrences in **one** pass (see [`SourceIndex::locate_all`]) and still
+/// reach exactly the answer a per-quote scan would: this function sees the
+/// same positions in the same order either way, so the two cannot disagree —
+/// which `examples/locate_check.rs` asserts over all 611 fixtures.
+fn best_match_over(
     hay: &str,
-    needle: &str,
+    positions: impl IntoIterator<Item = usize>,
+    needle_len: usize,
     before: &str,
     after: &str,
     hint: Option<usize>,
     mut exact: impl FnMut(usize) -> bool,
 ) -> Option<usize> {
+    let mut positions = positions.into_iter();
     if before.is_empty() && after.is_empty() {
-        return hay.find(needle);
+        return positions.next();
     }
     let before = tail(before, CONTEXT_WINDOW);
     let after = head(after, CONTEXT_WINDOW);
@@ -843,8 +853,8 @@ fn best_match(
     let mut perfect_below: Option<usize> = None;
     let mut exact_below: Option<usize> = None;
 
-    for pos in occurrences(hay, needle) {
-        let score = context_score(hay, pos, needle.len(), before, after);
+    for pos in positions {
+        let score = context_score(hay, pos, needle_len, before, after);
         if score >= perfect {
             // Tier 1 rides here: an occurrence where the *source* still holds
             // `prefix + quote + suffix` byte for byte outranks one that merely
@@ -963,9 +973,114 @@ impl<'a> SourceIndex<'a> {
         suffix: &str,
         hint_line: usize,
     ) -> Option<Location> {
+        match self.plan(prefix, quote, suffix, hint_line) {
+            Plan::Settled(loc) => loc,
+            Plan::Normalized(job) => {
+                let source = self.source;
+                let span = {
+                    let stripped = self.stripped()?;
+                    let at =
+                        job.pick(source, stripped, occurrences(&stripped.text, &job.quote_ns))?;
+                    stripped.span(at, job.quote_ns.len())?
+                };
+                Some(Location {
+                    line_start: self.line_at(span.0),
+                    line_end: self.line_at(span.1),
+                })
+            }
+        }
+    }
+
+    /// [`SourceIndex::locate_near`] for every anchor in a file at once.
+    ///
+    /// `Store::reanchor_file` runs on every save of the open document, and the
+    /// whitespace-stripped tier is where a rendered selection always lands —
+    /// so what it used to do was scan a 1.5MB haystack once *per mark*. Above
+    /// [`BATCH_MIN`] anchors the quotes are searched for together, in a single
+    /// pass, and each one then makes exactly the decision its own scan would
+    /// have made from exactly the same occurrences.
+    ///
+    /// Results are positional: one entry per anchor, in order.
+    pub fn locate_all(&mut self, anchors: &[Anchor<'_>]) -> Vec<Option<Location>> {
+        let plans: Vec<Plan<'_>> = anchors
+            .iter()
+            .map(|a| self.plan(a.prefix, a.quote, a.suffix, a.hint_line))
+            .collect();
+        let source = self.source;
+        // Stripped-text spans first, while the index is borrowed; the line
+        // lookup below needs `self` back.
+        let spans: Vec<Option<(usize, usize)>> = {
+            let jobs: Vec<&Normalized<'_>> = plans
+                .iter()
+                .filter_map(|p| match p {
+                    Plan::Normalized(job) => Some(job),
+                    Plan::Settled(_) => None,
+                })
+                .collect();
+            // Built only if something actually needs it. A file whose every
+            // quote settled above tier 3 must not pay for a stripped copy of
+            // the document nobody is going to search.
+            match if jobs.is_empty() {
+                None
+            } else {
+                self.stripped()
+            } {
+                None => vec![None; plans.len()],
+                Some(stripped) => {
+                    let hits = Hits::over(&stripped.text, &jobs);
+                    let mut nth = 0;
+                    plans
+                        .iter()
+                        .map(|p| match p {
+                            Plan::Settled(_) => None,
+                            Plan::Normalized(job) => {
+                                let at = hits.of(nth, &job.quote_ns, &stripped.text);
+                                nth += 1;
+                                job.pick(source, stripped, at)
+                                    .and_then(|at| stripped.span(at, job.quote_ns.len()))
+                            }
+                        })
+                        .collect()
+                }
+            }
+        };
+        plans
+            .iter()
+            .zip(spans)
+            .map(|(plan, span)| match plan {
+                Plan::Settled(loc) => loc.clone(),
+                Plan::Normalized(_) => span.map(|(start, end)| Location {
+                    line_start: self.line_at(start),
+                    line_end: self.line_at(end),
+                }),
+            })
+            .collect()
+    }
+
+    /// The whitespace-stripped index, built on first use.
+    ///
+    /// `None` past `u32::MAX` bytes of source: tier 3 is unavailable for a
+    /// document that large, not wrong — the slot is left empty so every call
+    /// keeps trying rather than caching a permanent miss.
+    fn stripped(&mut self) -> Option<&Stripped> {
+        if self.stripped.is_none() {
+            self.stripped = Stripped::build(self.source);
+        }
+        self.stripped.as_ref()
+    }
+
+    /// Everything about one anchor that can be decided before the stripped
+    /// index exists — which for the tiers above tier 3 is the whole answer.
+    fn plan<'q>(
+        &self,
+        prefix: &'q str,
+        quote: &'q str,
+        suffix: &'q str,
+        hint_line: usize,
+    ) -> Plan<'q> {
         let quote = quote.trim();
         if quote.is_empty() {
-            return None;
+            return Plan::Settled(None);
         }
 
         let has_context = !prefix.is_empty() || !suffix.is_empty();
@@ -999,7 +1114,7 @@ impl<'a> SourceIndex<'a> {
         if has_context && exceeds_stripped_capacity(self.source.len()) {
             let needle = format!("{prefix}{quote}{suffix}");
             if let Some(pos) = self.source.find(&needle) {
-                return Some(self.span(pos + prefix.len(), quote.len()));
+                return Plan::Settled(Some(self.span(pos + prefix.len(), quote.len())));
             }
         }
 
@@ -1011,7 +1126,7 @@ impl<'a> SourceIndex<'a> {
         // only tier 3 can compare against the source.
         if !has_context {
             if let Some(pos) = self.source.find(quote) {
-                return Some(self.span(pos, quote.len()));
+                return Plan::Settled(Some(self.span(pos, quote.len())));
             }
         }
 
@@ -1022,39 +1137,178 @@ impl<'a> SourceIndex<'a> {
         // on whichever copy comes first in the file.
         let quote_ns = strip_ws(quote);
         if quote_ns.is_empty() {
-            return None;
+            return Plan::Settled(None);
         }
-        let (prefix_ns, suffix_ns) = (strip_ws(prefix), strip_ws(suffix));
-        // Where the hint line begins in the source, before the index is
-        // borrowed — `line_starts` and `stripped` are both fields of `self`.
-        let hint_src = hint_line
-            .checked_sub(1)
-            .and_then(|i| self.line_starts.get(i).copied());
-        let source = self.source;
-        if self.stripped.is_none() {
-            // `None` past `u32::MAX` bytes of source: tier 3 is unavailable
-            // for a document that large, not wrong — leave the slot empty so
-            // every call keeps taking this branch rather than caching a
-            // permanent miss, and fall through to it below.
-            self.stripped = Stripped::build(source);
-        }
-        let stripped = self.stripped.as_ref()?;
-        let hint = hint_src.map(|b| stripped.offset_of(b));
+        Plan::Normalized(Normalized {
+            quote,
+            prefix,
+            suffix,
+            has_context,
+            quote_ns,
+            prefix_ns: strip_ws(prefix),
+            suffix_ns: strip_ws(suffix),
+            // Where the hint line begins in the source. Resolved here, against
+            // `line_starts`, so the stripped index need never see a line
+            // number.
+            hint_src: hint_line
+                .checked_sub(1)
+                .and_then(|i| self.line_starts.get(i).copied()),
+        })
+    }
+}
+
+/// One anchor to locate: what [`SourceIndex::locate_near`] takes, as a value,
+/// so a file's worth of them can be handed over together.
+pub struct Anchor<'a> {
+    pub prefix: &'a str,
+    pub quote: &'a str,
+    pub suffix: &'a str,
+    /// 1-based line the quote was last found at, or 0 for "no idea".
+    pub hint_line: usize,
+}
+
+/// Below this many anchors a file re-anchors one quote at a time. A single
+/// `str::find` stops at the answer and runs at memory speed — 0.13ms against
+/// the 2MB corpus document — where the shared pass reads the whole haystack
+/// once whatever it is looking for, at about 5.7ms. So it only pays for itself
+/// once there are enough quotes to share it between, and measured break-even
+/// on `bench.reanchor_with_context` is around sixty.
+const BATCH_MIN: usize = 64;
+
+/// How many bytes of a quote the shared automaton is built over. Long enough
+/// that a false candidate is rare in prose, short enough that hundreds of
+/// quotes still make a small automaton.
+const PROBE: usize = 32;
+
+enum Plan<'a> {
+    /// Decided by a tier above the stripped one, or not at all.
+    Settled(Option<Location>),
+    /// Waiting for the whitespace-stripped pass.
+    Normalized(Normalized<'a>),
+}
+
+/// One anchor, reduced to what the whitespace-stripped tier needs.
+struct Normalized<'a> {
+    quote: &'a str,
+    prefix: &'a str,
+    suffix: &'a str,
+    has_context: bool,
+    quote_ns: String,
+    prefix_ns: String,
+    suffix_ns: String,
+    /// Where the quote was last found, as a byte offset into the *source*.
+    hint_src: Option<usize>,
+}
+
+impl Normalized<'_> {
+    /// The winning occurrence, given every occurrence of `quote_ns` in the
+    /// stripped text.
+    fn pick(
+        &self,
+        source: &str,
+        stripped: &Stripped,
+        positions: impl IntoIterator<Item = usize>,
+    ) -> Option<usize> {
+        let hint = self.hint_src.map(|b| stripped.offset_of(b));
         // Tier 1, in source coordinates: the quote starts at `at`, so the
         // needle would start `prefix.len()` bytes earlier. Written as three
         // byte comparisons rather than one slice-and-compare so that no index
-        // has to land on a char boundary.
+        // has to land on a char boundary. The predicate is stated in *source*
+        // coordinates — it is about bytes the stripped index has thrown away —
+        // so the mapping happens here rather than in `best_match_over`, which
+        // knows only about stripped text.
         let exact_src = |at: usize| {
-            has_context
-                && source.as_bytes()[at..].starts_with(quote.as_bytes())
-                && source.as_bytes()[..at].ends_with(prefix.as_bytes())
-                && source.as_bytes()[at + quote.len()..].starts_with(suffix.as_bytes())
+            self.has_context
+                && source.as_bytes()[at..].starts_with(self.quote.as_bytes())
+                && source.as_bytes()[..at].ends_with(self.prefix.as_bytes())
+                && source.as_bytes()[at + self.quote.len()..].starts_with(self.suffix.as_bytes())
         };
-        let (start, end) = stripped.find(&quote_ns, &prefix_ns, &suffix_ns, hint, exact_src)?;
-        Some(Location {
-            line_start: self.line_at(start),
-            line_end: self.line_at(end),
-        })
+        best_match_over(
+            &stripped.text,
+            positions,
+            self.quote_ns.len(),
+            &self.prefix_ns,
+            &self.suffix_ns,
+            hint,
+            |p| {
+                stripped
+                    .source_offsets
+                    .get(p)
+                    .is_some_and(|&o| exact_src(o as usize))
+            },
+        )
+    }
+}
+
+/// Where every quote in a file occurs in the stripped text.
+///
+/// Two shapes behind one answer. With few enough anchors each quote is found
+/// on demand with `str::find`, which is what a single `locate_near` does.
+/// Above [`BATCH_MIN`] one Aho-Corasick pass finds all of them together: the
+/// per-quote scan is memory-speed but runs once per mark, and a file with
+/// hundreds of marks was reading a megabyte and a half of haystack for each.
+/// Overlapping matches, because `occurrences` includes them and a quote
+/// dragged across a repeated block is routinely one of the copies a
+/// resume-after-match search would skip.
+enum Hits {
+    PerQuote,
+    Shared(Vec<Vec<usize>>),
+}
+
+impl Hits {
+    fn over(hay: &str, jobs: &[&Normalized<'_>]) -> Self {
+        if jobs.len() < BATCH_MIN {
+            return Hits::PerQuote;
+        }
+        // The automaton is built over a fixed-length *probe* of each quote
+        // rather than the whole thing, and a candidate is confirmed against the
+        // full quote when it is reported. A hundred quotes are ten kilobytes of
+        // pattern where their probes are three, and the pass runs at the speed
+        // the automaton fits in cache; a false candidate costs one comparison
+        // and thirty-two stripped bytes of prose are enough that there are
+        // almost none.
+        let needles: Vec<&str> = jobs.iter().map(|j| head(&j.quote_ns, PROBE)).collect();
+        let Ok(ac) = aho_corasick::AhoCorasick::builder()
+            // `Standard` is the only kind that supports overlapping search,
+            // which is the semantics `occurrences` has.
+            .match_kind(aho_corasick::MatchKind::Standard)
+            // A contiguous NFA rather than whatever the builder would pick:
+            // hundreds of quotes of a hundred bytes each is enough pattern for
+            // a DFA's transition table to cost more than the pass saves.
+            .kind(Some(aho_corasick::AhoCorasickKind::ContiguousNFA))
+            .build(&needles)
+        else {
+            // Nothing here is worth failing a re-anchor over — an automaton
+            // that would not build simply means every quote scans for itself.
+            return Hits::PerQuote;
+        };
+        let mut found = vec![Vec::new(); needles.len()];
+        for m in ac.find_overlapping_iter(hay) {
+            found[m.pattern().as_usize()].push(m.start());
+        }
+        Hits::Shared(found)
+    }
+
+    /// The occurrences of the `nth` job's quote, in increasing order — which
+    /// is the order `occurrences` produces and the order `best_match_over`
+    /// reads them in.
+    fn of<'h>(
+        &'h self,
+        nth: usize,
+        needle: &'h str,
+        hay: &'h str,
+    ) -> Box<dyn Iterator<Item = usize> + 'h> {
+        match self {
+            Hits::PerQuote => Box::new(occurrences(hay, needle)),
+            // Candidates, not matches: the automaton was built over probes, so
+            // each one is confirmed against the whole quote here.
+            Hits::Shared(found) => Box::new(
+                found[nth]
+                    .iter()
+                    .copied()
+                    .filter(move |&p| hay.as_bytes()[p..].starts_with(needle.as_bytes())),
+            ),
+        }
     }
 }
 
@@ -1085,19 +1339,62 @@ fn exceeds_stripped_capacity(len: usize) -> bool {
     len > u32::MAX as usize
 }
 
+/// The ASCII half of `char::is_whitespace`, as a byte test: U+0009..U+000D and
+/// U+0020. Deliberately *not* `u8::is_ascii_whitespace`, which omits the
+/// vertical tab — the stripped index has to agree with `str::trim` and with
+/// `strip_ws` about what a whitespace character is, or a quote and the text it
+/// is being matched against are stripped differently.
+fn is_ascii_space(b: u8) -> bool {
+    matches!(b, 0x09..=0x0D | 0x20)
+}
+
 impl Stripped {
+    /// Built once per `reanchor_file` and paid on every save, so it walks runs
+    /// rather than characters: a run of non-whitespace ASCII is one `push_str`
+    /// and one `extend` of a range, where `char_indices` plus a `resize` per
+    /// character was a UTF-8 decode, an encode and a fill call for each of the
+    /// ~1.5 million of them in the 2MB corpus document.
     fn build(source: &str) -> Option<Self> {
         if exceeds_stripped_capacity(source.len()) {
             return None;
         }
+        let bytes = source.as_bytes();
         let mut text = String::with_capacity(source.len());
-        // Whitespace is typically a fifth to a third of a markdown document.
-        let mut source_offsets = Vec::with_capacity(source.len() * 3 / 4);
-        for (i, ch) in source.char_indices() {
-            if !ch.is_whitespace() {
-                text.push(ch);
-                // Safe: `i < source.len() <= u32::MAX` (checked above).
-                source_offsets.resize(text.len(), i as u32);
+        // One entry per non-whitespace *byte*, so the only capacity that
+        // cannot be wrong is the source's own length. Guessing three quarters
+        // of it was under on ordinary prose, and the doubling realloc it
+        // triggered copied six megabytes on the 2MB corpus document — the
+        // whole of what a `:w` pays to build this. The slack is address space,
+        // not memory: only the pages actually written are ever touched.
+        let mut source_offsets = Vec::with_capacity(source.len());
+        let mut i = 0;
+        while i < bytes.len() {
+            let b = bytes[i];
+            if b < 0x80 {
+                if is_ascii_space(b) {
+                    i += 1;
+                    continue;
+                }
+                let start = i;
+                while i < bytes.len() && bytes[i] < 0x80 && !is_ascii_space(bytes[i]) {
+                    i += 1;
+                }
+                text.push_str(&source[start..i]);
+                // One entry per byte, and an ASCII byte is a whole character:
+                // the offsets over a run are exactly its byte range.
+                // Safe: `i <= source.len() <= u32::MAX` (checked above).
+                source_offsets.extend(start as u32..i as u32);
+            } else {
+                // A multi-byte character, decoded once. Its offset repeats for
+                // each of its bytes, which is what makes `offset_of` a plain
+                // binary search over a non-decreasing table.
+                let ch = source[i..].chars().next().unwrap_or('\u{fffd}');
+                let width = ch.len_utf8();
+                if !ch.is_whitespace() {
+                    text.push(ch);
+                    source_offsets.resize(text.len(), i as u32);
+                }
+                i += width;
             }
         }
         Some(Self {
@@ -1116,27 +1413,10 @@ impl Stripped {
         self.source_offsets.partition_point(|&o| (o as usize) < src)
     }
 
-    /// Byte offsets in the *original* source of the first and last char of
-    /// `quote_ns` (itself already whitespace-stripped). `prefix_ns`/`suffix_ns`
-    /// are the stripped context, used to pick between repeated occurrences, and
-    /// `hint` is where the quote was last found, as an offset into `text`.
-    fn find(
-        &self,
-        quote_ns: &str,
-        prefix_ns: &str,
-        suffix_ns: &str,
-        hint: Option<usize>,
-        mut exact_src: impl FnMut(usize) -> bool,
-    ) -> Option<(usize, usize)> {
-        // The predicate is stated in *source* coordinates — it is about bytes
-        // this index has thrown away — so the mapping happens here rather than
-        // in `best_match`, which knows only about stripped text.
-        let at = best_match(&self.text, quote_ns, prefix_ns, suffix_ns, hint, |p| {
-            self.source_offsets
-                .get(p)
-                .is_some_and(|&o| exact_src(o as usize))
-        })?;
-        let last = at + quote_ns.len().saturating_sub(1);
+    /// Byte offsets in the *original* source of the first and last char of a
+    /// match of `len` stripped bytes starting at `at`.
+    fn span(&self, at: usize, len: usize) -> Option<(usize, usize)> {
+        let last = at + len.saturating_sub(1);
         let start = *self.source_offsets.get(at)? as usize;
         let end = self
             .source_offsets

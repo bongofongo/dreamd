@@ -896,6 +896,23 @@ dropped because a document that is *not* hard-wrapped does reach it. Exactness
 ranks above a perfect score rather than winning first-past-the-post: within
 either rank the hint picks, so two exact copies of a block are told apart by
 where the mark already was, which the old first-in-the-file scan could not do.
+**A file's quotes are searched for together.** The stripped pass is where a
+rendered selection always lands, and it used to read the whole 1.5MB haystack
+once *per mark* — so a file with hundreds of them re-read the document hundreds
+of times on every `:w`. `SourceIndex::locate_all` — the one call
+`Store::reanchor_file` makes — runs a single Aho-Corasick pass over the stripped
+text for every quote at once, above `BATCH_MIN` anchors. The automaton is built
+over a fixed-length *probe* of each quote and a candidate is confirmed against
+the whole of it, which keeps it small enough to stay in cache. Below the
+threshold each quote still scans for itself: one `str::find` stops at the answer
+and runs at memory speed (0.13ms on the 2MB corpus doc) where the shared pass
+reads everything whatever it is looking for (~5.7ms), so break-even is around
+sixty. `bench.reanchor_with_context/500` went 70.7ms to 16.2ms and `/100` 18.9ms
+to 14.5ms. What makes it safe is that the *decision* was split from the *scan*:
+`best_match_over` is handed the occurrences instead of finding them, so it sees
+the same positions in the same order either way, and `locate_check` compares
+batched against one-shot on all 611 fixtures.
+
 `reanchor_file` re-runs this on save; failure
 marks the highlight `Stale` rather than dropping it — **but only if it ever
 anchored.** A quote spanning inline markdown (`**bold**`, a link) is DOM text

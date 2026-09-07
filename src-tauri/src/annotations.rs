@@ -541,18 +541,41 @@ impl Store {
         if !self.has_marks_for(file_path) {
             return;
         }
-        // One index for the whole file, not one per highlight — see
-        // [`markdown::SourceIndex`].
+        // One index for the whole file, not one per highlight, and **one
+        // stripped pass for the whole file** rather than one per highlight —
+        // see [`markdown::SourceIndex::locate_all`]. Which marks to move is
+        // settled first so the anchors can be read while the store is still
+        // borrowed immutably; the answers come back positionally.
+        //
+        // The previous line goes along as a hint: when a block appears twice
+        // verbatim, the quote and its context are identical in both copies and
+        // only "it was here a moment ago" can tell them apart.
         let mut index = markdown::SourceIndex::new(source);
-        for h in self
+        let of: Vec<usize> = self
             .highlights
-            .iter_mut()
-            .filter(|h| h.file_path == file_path)
-        {
-            // The previous line is passed as a hint: when a block appears twice
-            // verbatim, the quote and its context are identical in both copies
-            // and only "it was here a moment ago" can tell them apart.
-            match index.locate_near(&h.prefix, &h.quote, &h.suffix, h.line_start) {
+            .iter()
+            .enumerate()
+            .filter(|(_, h)| h.file_path == file_path)
+            .map(|(i, _)| i)
+            .collect();
+        let found = {
+            let anchors: Vec<markdown::Anchor<'_>> = of
+                .iter()
+                .map(|&i| {
+                    let h = &self.highlights[i];
+                    markdown::Anchor {
+                        prefix: &h.prefix,
+                        quote: &h.quote,
+                        suffix: &h.suffix,
+                        hint_line: h.line_start,
+                    }
+                })
+                .collect();
+            index.locate_all(&anchors)
+        };
+        for (&i, loc) in of.iter().zip(found) {
+            let h = &mut self.highlights[i];
+            match loc {
                 Some(loc) => {
                     h.line_start = loc.line_start;
                     h.line_end = loc.line_end;
