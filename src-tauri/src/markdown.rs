@@ -428,19 +428,28 @@ pub fn utf16_units(s: &str) -> usize {
 fn with_events<R>(source: &str, code_theme: &str, f: impl FnOnce(Vec<Event>) -> R) -> R {
     let parser = Parser::new_ext(source, options());
 
-    // Reserved rather than grown. The stream is hundreds of thousands of events
-    // on a 2MB file and `Event` is wide, so growing from nothing copies the
-    // whole buffer again on the way up — 6ms of `render/table/2m`'s 25ms.
+    // Grown, not reserved — and that is a measured decision, not an oversight.
     //
-    // A fixed fraction of the source, and a compromise on purpose: how many
-    // events a byte becomes swings twentyfold between prose and a table, and
-    // both directions cost. Sizing it from the rate events actually arrive at
-    // was tried and is worse — `into_offset_iter` plus a check per event cost
-    // more than the doubling it removed (`render_blocks/mixed/2m` 10.2ms ->
-    // 10.5ms). An eighth covers prose, code and mixed outright and leaves a
-    // table one more growth; a quarter suits tables and costs everything else
-    // more than it saves them.
-    let mut events: Vec<Event> = Vec::with_capacity(source.len() / 8);
+    // Reserving a fraction of the source looks obviously right: this is
+    // hundreds of thousands of wide `Event`s on a 2MB file, and growing from
+    // nothing costs `render/prose/2m` a third of its time. It also **doubles**
+    // `render/code/2m`, reproducibly, at every fraction tried between a
+    // quarter and a thirty-second — 3.9ms to 7.6ms even when the reserve is
+    // only three times what that document needs. The cost is not the copying:
+    // it is that a large up-front block and the HTML `String` growing beside
+    // it stop the allocator extending either in place, and a code-heavy
+    // document renders six megabytes of HTML for every one of source. Which
+    // makes it a fact about glibc's malloc rather than about this code, and
+    // dreamd ships on a platform with a different one.
+    //
+    // Sizing it from the document instead of guessing does fix the shape
+    // problem, and costs more than it saves: `into_offset_iter` plus a check
+    // per event put `render_blocks/mixed/2m` at 10.5ms against 10.2ms.
+    //
+    // A hint from the *previous* render of the same file is the idea none of
+    // this rules out — `main.rs` already keeps one — but it needs an argument
+    // threaded through a public function, so it wants its own decision.
+    let mut events: Vec<Event> = Vec::new();
     // (lang, text) of the fence currently being read.
     let mut code_buf: Option<(String, String)> = None;
     // Fenced blocks are collected during the parse and highlighted afterwards,

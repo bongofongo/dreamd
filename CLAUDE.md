@@ -370,13 +370,20 @@ the upgrade procedure.
   growing allocations on the way out and a second 4MB copy in `frame_blocks` on
   the way in. Folding an element-less segment into the block before it (escaped
   raw HTML, tenet 4) becomes *declining to record a boundary* rather than
-  joining two strings. The event buffer is **reserved, not grown**: a 2MB
-  document is hundreds of thousands of wide `Event`s, and doubling from nothing
-  copies the whole buffer again on the way up — 6ms of `render/table/2m`'s 25ms.
-  The fraction of the source is a deliberate compromise, because how many events
-  a byte becomes swings twentyfold between prose and a table and both directions
-  cost; sizing it from the rate events actually arrive at (`into_offset_iter`
-  plus a check per event) was tried and is worse than the doubling it removes.
+  joining two strings. **Do not reserve the event buffer.** It is
+  hundreds of thousands of wide `Event`s on a 2MB file and growing from nothing
+  costs `render/prose/2m` a third of its time, so reserving a fraction of the
+  source looks obviously right — and it **doubles** `render/code/2m`,
+  reproducibly, at every fraction between a quarter and a thirty-second, even
+  when the reserve is three times what that document needs. The cost is not
+  copying: a large up-front block and the HTML `String` growing beside it stop
+  the allocator extending either in place, and code renders six megabytes of
+  HTML per megabyte of source. That makes it a fact about glibc's malloc, and
+  dreamd ships on a platform with a different one. Sizing the buffer from the
+  document rather than guessing does fix the shape problem and costs more than
+  it saves (`into_offset_iter` plus a check per event: `render_blocks/mixed/2m`
+  10.2ms against 10.5ms). A hint carried from the *previous* render of the same
+  file is the idea this does not rule out.
   Block spans are worked out in a depth scan that moves
   nothing, so each event travels exactly once — into `push_html` — rather than
   through a per-block scratch vector as well; the footnote question is answered
