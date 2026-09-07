@@ -159,6 +159,22 @@ async function init() {
   // into JS boot, which is invisible against the time the window took to exist.
   const initial = await pInitial;
   if (!initial) document.body.classList.remove("nav-collapsed");
+  if (initial) {
+    // The document's own payload, in flight the moment its path is known
+    // rather than after the theme, the panel sizes and the keymap have been
+    // applied. Rust has already rendered it on a background thread during the
+    // webview's boot (`AppState::prerender`), so what this actually starts is
+    // four megabytes of transfer — and that had no reason to queue behind ten
+    // milliseconds of chrome. Nothing below it can change what the render
+    // answers: the syntax theme comes from the config Rust already read, and
+    // `applyTheme` re-renders only when it sees the theme *change*, which it
+    // cannot on the first call.
+    const payload = invoke("render_markdown", { path: initial, since: null });
+    // A second handler, so an unconsumed payload cannot be an unhandled
+    // rejection; `renderCurrent` still sees the rejection on its own await.
+    payload.catch(() => {});
+    bootRender = { path: initial, payload };
+  }
 
   // Theme applied next: index.html only carries fallback colours, so every
   // await ahead of this is time the window spends in the default theme rather
@@ -812,6 +828,9 @@ let lastBlocksBackend = false;
 // Null whenever there is nothing the backend could safely diff against — the
 // legacy string path, a message standing in for a document, a fresh file.
 let lastGen = null;
+// The first document's payload, fetched during boot before anything awaited it.
+// `renderCurrent` takes it in place of its own request, once.
+let bootRender = null;
 /// Put `html` on screen, replacing as little of the document as possible.
 ///
 /// A `:w` in Neovim re-renders the whole file, and writing `innerHTML` makes the
@@ -1191,8 +1210,12 @@ async function renderCurrent({ preserveScroll, reanchor }) {
   const since = base ? lastGen : null;
   let html;
   let gen = null;
+  // The boot fetch, if this is the call it was started for. Cleared either way:
+  // it answers exactly one render, and a second use would be a stale document.
+  const booted = bootRender && bootRender.path === currentFile ? bootRender.payload : null;
+  bootRender = null;
   try {
-    html = await invoke("render_markdown", { path: currentFile, since });
+    html = await (booted ?? invoke("render_markdown", { path: currentFile, since }));
     // The command answers raw bytes (an ArrayBuffer): a JSON header, a
     // newline, then blocks back to back — framed rather than JSON-encoded
     // because escaping 4MB was ~90ms of the old await, and framed rather than

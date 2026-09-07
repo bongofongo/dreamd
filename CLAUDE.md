@@ -1016,6 +1016,10 @@ call came first. `perf::span` times the command body in Rust as `d:rust_*` so th
 are separable: `d:ipc_get_highlights` once measured 1254ms against a body of 0.0015ms.
 Forcing the layout earlier to make the span honest is not the fix — it costs first
 paint, because the layout then stops overlapping the IPC round trip.
+At boot `d:ipc_render_markdown` is
+further still: the request goes out as soon as `initial_file` answers, several
+milliseconds before `renderCurrent` exists to time it, so the span is the
+residual wait and not the round trip.
 `d:ipc_reanchor`/`d:ipc_get_highlights` are further from a command cost than the
 rest: `renderCurrent` puts that invoke in flight *before* awaiting
 `render_markdown`, so `d:rust_reanchor` overlaps the render round trip and the
