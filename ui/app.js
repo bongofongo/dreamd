@@ -2076,7 +2076,12 @@ function applyHighlights(list, replaced = null) {
 
   // Marks on screen from the previous paint, by id. Several per id is normal:
   // a quote spanning inline markup is one `<mark>` per text-node slice.
-  const standing = replaced ? standingMarks() : new Map();
+  // Called even when the answer is thrown away: `standingMarks` is also what
+  // prunes marks the DOM has taken back, and a full write disconnects every
+  // one of them at once. A set holding detached nodes nobody prunes is a leak,
+  // and opening files without ever saving one is a way to grow it.
+  const drawn = standingMarks();
+  const standing = replaced ? drawn : new Map();
   // Unwrapping is the only thing here that leaves adjacent text nodes, so only
   // the parents it touches need merging — the same bargain `clearHighlights`
   // strikes, and mandatory for the same reason: a quote split across two of

@@ -312,6 +312,7 @@ case "$TIER" in
   quick)
     run_bench locate "${BENCH_ARGS[@]}" 'reanchor/today/(1|10)$|locate_single' || true
     run_bench render "${BENCH_ARGS[@]}" 'render/(mixed|code)/(128k|512k)$' || true
+    run_bench render_blocks "${BENCH_ARGS[@]}" 'mixed/128k$' || true
     run_bench search "${BENCH_ARGS[@]}" 'keystrokes/500' || true
     ;;
   pass)
@@ -321,12 +322,14 @@ case "$TIER" in
     # failure.
     run_bench locate "${BENCH_ARGS[@]}" 'reanchor/[a-z_]+/(1|10|100)$|locate_single' || true
     run_bench render "${BENCH_ARGS[@]}" 'render/[a-z]+/(8k|128k|512k)$|syntect_cold' || true
+    run_bench render_blocks "${BENCH_ARGS[@]}" 'mixed/(8k|128k|512k)$' || true
     run_bench search "${BENCH_ARGS[@]}" || true
     run_bench walk   "${BENCH_ARGS[@]}" || true
     ;;
   deep)
     run_bench locate "${BENCH_ARGS[@]}" || true
     run_bench render "${BENCH_ARGS[@]}" || true
+    run_bench render_blocks "${BENCH_ARGS[@]}" || true
     run_bench search "${BENCH_ARGS[@]}" || true
     run_bench walk   "${BENCH_ARGS[@]}" || true
     ;;

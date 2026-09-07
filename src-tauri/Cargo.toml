@@ -117,6 +117,11 @@ name = "render"
 harness = false
 
 [[bench]]
+# Its own binary, not a group inside `render`: see the module docs there.
+name = "render_blocks"
+harness = false
+
+[[bench]]
 name = "locate"
 harness = false
 

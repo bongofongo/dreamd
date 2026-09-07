@@ -376,8 +376,13 @@ the upgrade procedure.
   by that same pass and stops it, since a document using them cannot be split at
   all. `bench.render_blocks/mixed/*` is what makes the cost of the split
   visible: `render` is what `render_agent_text` calls, and the gap between the
-  two groups is what a boundary per block costs — 1.9ms at 2MB before those
-  passes were merged, 1.1ms after. `utf16_units`, which the framing
+  two is what a boundary per block costs — 1.9ms at 2MB before those passes were
+  merged, 1.1ms after. **It is its own bench target, not a group inside
+  `render`.** Beside it in one binary it moved `render/table/2m` by 12% and
+  `render/mixed/2m` by 9%, on code that had not changed a byte and reproducibly
+  — removing the group put both back. Two criterion groups in one binary perturb
+  each other's layout that much, which is worth remembering the next time a
+  `bench.*` row moves for no reason. `utf16_units`, which the framing
   runs over every rendered byte, takes an `is_ascii` fast path and otherwise two
   vectorized byte counts instead of one byte-at-a-time match.
   `d:rust_render_markdown` 19.3ms to 12.6ms on the save loop; the byte-identity
