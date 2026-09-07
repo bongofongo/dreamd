@@ -3662,7 +3662,7 @@ await patch.addInitScript((css) => {
   window.__TAURI__ = {
     core: {
       convertFileSrc: (p) => "asset://localhost/" + encodeURIComponent(p),
-      async invoke(cmd) {
+      async invoke(cmd, args) {
         switch (cmd) {
           case "perf_enabled": return false;
           case "repo_info": return { root: "/repo", name: "repo", display: "~/repo" };
@@ -3678,12 +3678,35 @@ await patch.addInitScript((css) => {
           };
           case "initial_file": return "/repo/doc.md";
           case "render_markdown": {
-            // Frame the blocks the way main.rs's frame_blocks does: lengths
-            // in UTF-16 code units (JS string .length), then the bytes.
+            // Frame the blocks the way main.rs's frame_blocks does — a JSON
+            // header, a newline, then the bytes — and answer with the same
+            // *difference* the real backend does when the page echoes back the
+            // generation it holds, so the splice path is exercised here rather
+            // than only in the app. Block lengths are UTF-16 code units, which
+            // is what JS string `.length` counts.
             const blocks = await window.__body();
+            const prev = window.__lastRender;
+            const gen = (window.__renderGen = (window.__renderGen ?? 0) + 1);
+            window.__lastRender = { gen, blocks };
+            let head = null;
+            if (args && args.since != null && prev && prev.gen === args.since) {
+              const limit = Math.min(prev.blocks.length, blocks.length);
+              let h = 0;
+              while (h < limit && prev.blocks[h] === blocks[h]) h++;
+              let t = 0;
+              while (t < limit - h &&
+                     prev.blocks[prev.blocks.length - 1 - t] === blocks[blocks.length - 1 - t]) t++;
+              head = { from: h, drop: prev.blocks.length - h - t,
+                       send: blocks.slice(h, blocks.length - t) };
+              window.__deltas = (window.__deltas ?? 0) + 1;
+            }
+            const send = head ? head.send : blocks;
             const enc = new TextEncoder();
-            const parts = blocks.map((b) => enc.encode(b));
-            const header = enc.encode(JSON.stringify(blocks.map((b) => b.length)) + "\n");
+            const parts = send.map((b) => enc.encode(b));
+            const meta = head
+              ? { gen, from: head.from, drop: head.drop, lens: send.map((b) => b.length) }
+              : { gen, lens: send.map((b) => b.length) };
+            const header = enc.encode(JSON.stringify(meta) + "\n");
             const buf = new Uint8Array(header.length + parts.reduce((n, x) => n + x.length, 0));
             buf.set(header, 0);
             let o = header.length;
@@ -3758,6 +3781,16 @@ check(
   (await kept(["t", "a", "b", "c"])).join() === "t,a,b,c",
 );
 check("and is gone from the document", (await body()) === DOC4.join(""), await body());
+
+// All three saves above answered with a difference rather than a document —
+// the page echoes back the generation it holds and splices what comes back
+// onto the blocks it recorded under it. Without this the assertions above pass
+// just as well against a backend that never learned to send one.
+check(
+  "and every save so far crossed as a difference, not a document",
+  (await patch.evaluate(() => window.__deltas)) === 3,
+  String(await patch.evaluate(() => window.__deltas)),
+);
 
 await stamp();
 await save(DOC4);

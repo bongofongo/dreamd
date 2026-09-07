@@ -804,6 +804,31 @@ that went out with the blocks it names. Every other writer of
 `contentEl.innerHTML` goes through `showContentMessage`, which drops the record
 — a stale one would patch against a document no longer on screen.
 
+**A save crosses as its own difference.** The render command answers raw bytes
+— a JSON header, a newline, then blocks back to back — and the header now
+carries a generation the frontend echoes back on the next request. When the
+number still names the render `main.rs` is holding, only the blocks that
+changed cross: `{"gen":N,"from":F,"drop":D,"lens":[...]}` says *replace `D`
+blocks from index `F` with these*, and a `:w` on the 2MB corpus document is a
+few kilobytes where it used to be 4.4MB the page already had. `d:decode_payload`
+went 5ms to 0 and `d:ipc_render_markdown` 31ms to 13ms, most of which is now the
+render body itself. `writeContent`'s own block diff is unchanged and still runs
+— the kept blocks come back *by reference*, so its memcmp is mostly an identity
+compare.
+
+The generation is the whole safety story, and the reason nothing needs
+invalidating: a delta is computed only against the render the echoed number
+names, so a file switch, a reload, a second render that raced this one or a
+window that has never asked all fall back to the whole document without anyone
+having to notice. The frontend captures its base array *at request time* rather
+than reading `lastBlocks` back after the await, so two renders in flight each
+splice onto the blocks they asked against. The cost is one retained copy of the
+rendered html per window — 4.4MB on the corpus doc, nothing on a real one — and
+that is deliberate: keying the comparison on a hash instead would trade a wrong
+document on screen against a few kilobytes. `ui-check.mjs` mirrors the framing
+*and* the delta, and asserts that the saves it drives really did cross as
+differences.
+
 **A repaint keeps the marks whose blocks survived.** The patch path used to
 `clearHighlights()` and draw the whole overlay again, because marks inside
 surviving blocks would otherwise be wrapped a second time. But a kept block is

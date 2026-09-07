@@ -20,7 +20,7 @@ use dreamd::{
 };
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 use tauri::{Emitter, Manager, State};
@@ -43,26 +43,91 @@ struct Prerendered {
     blocks: markdown::Rendered,
 }
 
-/// The wire shape of a rendered document: a JSON array of block lengths in
-/// **UTF-16 code units**, a newline, then the blocks' bytes back to back.
-/// Framed rather than sent as a JSON array of strings because that would
-/// re-escape all 4MB — the exact cost the raw `ipc::Response` exists to avoid
-/// — and framed rather than as one string because per-block strings are what
-/// the frontend's save diff compares (`writeContent`); block boundaries are
-/// load-bearing there.
+/// The previous render of a document, kept so the next one can cross as the
+/// difference rather than as four megabytes the frontend already holds.
 ///
-/// Code units, not bytes, because of what the frontend does with the header:
-/// one `TextDecoder.decode` of the whole payload and a `slice` per block.
-/// Byte lengths forced a decode *per block* — ~1300 ICU round trips at boot,
-/// measured at ~80ms of the render await — where JS string slicing wants
-/// exactly the units `String.prototype.length` counts.
-fn frame_blocks(doc: &markdown::Rendered) -> Vec<u8> {
-    let lens: Vec<usize> = doc.blocks().map(markdown::utf16_units).collect();
-    let mut out = serde_json::to_vec(&lens).unwrap_or_default();
-    out.reserve(doc.html().len() + 1);
+/// `gen` is the whole safety story: the frontend echoes back the number it was
+/// last given, and a delta is computed only against the render that number
+/// names. Anything else — a file switch, a second render in flight, a reload,
+/// a window that has never asked — simply gets the whole document. Nothing has
+/// to be invalidated, because a stale echo cannot match.
+struct LastRender {
+    path: String,
+    gen: u64,
+    doc: markdown::Rendered,
+}
+
+/// The wire shape of a rendered document: a JSON header, a newline, then the
+/// blocks' bytes back to back. Framed rather than sent as a JSON array of
+/// strings because that would re-escape all 4MB — the exact cost the raw
+/// `ipc::Response` exists to avoid — and framed rather than as one string
+/// because per-block strings are what the frontend's save diff compares
+/// (`writeContent`); block boundaries are load-bearing there.
+///
+/// The header is `{"gen":N,"lens":[...]}` for a whole document and
+/// `{"gen":N,"from":F,"drop":D,"lens":[...]}` for a difference — replace `D`
+/// blocks from index `F` with the ones that follow. A `:w` changes one block
+/// of the corpus document, so the difference is a few kilobytes where the
+/// document is 4.4MB, and the frontend's own diff then compares mostly
+/// identical *string references*.
+///
+/// `lens` is in **UTF-16 code units**, not bytes, because of what the frontend
+/// does with the header: one `TextDecoder.decode` of the whole payload and a
+/// `slice` per block. Byte lengths forced a decode *per block* — ~1300 ICU
+/// round trips at boot, measured at ~80ms of the render await — where JS
+/// string slicing wants exactly the units `String.prototype.length` counts.
+fn frame_blocks(gen: u64, doc: &markdown::Rendered, delta: Option<Delta>) -> Vec<u8> {
+    let (first, count) = match delta {
+        Some(d) => (d.from, d.take),
+        None => (0, doc.block_count()),
+    };
+    let blocks: Vec<&str> = doc.blocks().skip(first).take(count).collect();
+    let lens: Vec<usize> = blocks.iter().map(|b| markdown::utf16_units(b)).collect();
+    let bytes: usize = blocks.iter().map(|b| b.len()).sum();
+    let header = match delta {
+        Some(d) => serde_json::json!({ "gen": gen, "from": d.from, "drop": d.drop, "lens": lens }),
+        None => serde_json::json!({ "gen": gen, "lens": lens }),
+    };
+    let mut out = serde_json::to_vec(&header).unwrap_or_default();
+    out.reserve(bytes + 1);
     out.push(b'\n');
-    out.extend_from_slice(doc.html().as_bytes());
+    for b in blocks {
+        out.extend_from_slice(b.as_bytes());
+    }
     out
+}
+
+/// The span of blocks two renders of one document disagree about: replace
+/// `drop` of the previous render's blocks from index `from` with the `take`
+/// blocks that follow the header.
+#[derive(Clone, Copy)]
+struct Delta {
+    from: usize,
+    drop: usize,
+    take: usize,
+}
+
+/// Walked in from both ends, the same shape the frontend's own diff takes and
+/// for the same reason: an edit is contiguous in practice, a scattered one
+/// simply widens the span, and there is no LCS to get wrong. A save that
+/// appends a line to the 2MB corpus document comes out as one block.
+fn block_delta(prev: &markdown::Rendered, next: &markdown::Rendered) -> Delta {
+    let a: Vec<&str> = prev.blocks().collect();
+    let b: Vec<&str> = next.blocks().collect();
+    let limit = a.len().min(b.len());
+    let mut head = 0;
+    while head < limit && a[head] == b[head] {
+        head += 1;
+    }
+    let mut tail = 0;
+    while tail < limit - head && a[a.len() - 1 - tail] == b[b.len() - 1 - tail] {
+        tail += 1;
+    }
+    Delta {
+        from: head,
+        drop: a.len() - head - tail,
+        take: b.len() - head - tail,
+    }
 }
 
 struct AppState {
@@ -131,6 +196,18 @@ struct AppState {
     /// existed. `Arc` for the reason every other one here is: the rendering
     /// thread outlives `.setup()`.
     prerender: Arc<Mutex<Option<Prerendered>>>,
+    /// The render the frontend is holding, and the number it will echo back to
+    /// claim it. See [`LastRender`]: this is what lets a `:w` cross as the one
+    /// block that changed instead of the whole document a second time.
+    ///
+    /// It costs one extra copy of the rendered html — 4.4MB on the 2MB corpus
+    /// document, nothing on a normal one — and that is the price of not
+    /// keying the comparison on a hash, which would trade a wrong document on
+    /// screen against a few kilobytes.
+    last_render: Mutex<Option<LastRender>>,
+    /// Stamped onto every render. Never reused, so an echo from before a file
+    /// switch cannot be mistaken for one after it.
+    render_gen: AtomicU64,
     /// Behind a lock because the settings panel rewrites it at runtime — the
     /// only mutable-at-runtime configuration dreamd has.
     config: Mutex<Config>,
@@ -508,6 +585,7 @@ fn initial_file(state: State<AppState>) -> Option<String> {
 async fn render_markdown(
     state: State<'_, AppState>,
     path: String,
+    since: Option<u64>,
 ) -> Result<tauri::ipc::Response, String> {
     // Spanned for the reason `rust_get_highlights` is: `d:ipc_render_markdown`
     // is an await, and the gap between the two numbers is what the round trip
@@ -521,8 +599,24 @@ async fn render_markdown(
     // the DOM. The error arm stays a plain String, so a failed read still
     // rejects the invoke with a message `showContentMessage` can print.
     perf::span("rust_render_markdown", || {
-        render_markdown_body(&state, &path)
-            .map(|blocks| tauri::ipc::Response::new(frame_blocks(&blocks)))
+        let doc = render_markdown_body(&state, &path)?;
+        // Held across the framing because the delta is computed against it,
+        // and released before the response leaves — nothing else takes this
+        // lock, so it is only ever contended by two renders in flight.
+        let mut slot = state.last_render.lock().unwrap();
+        let gen = state.render_gen.fetch_add(1, Ordering::Relaxed) + 1;
+        // A delta only against the exact render the frontend says it holds.
+        // Everything else — a file switch, a second render that raced this
+        // one, a window that has never asked — sends the whole document.
+        let delta = match (since, slot.as_ref()) {
+            (Some(seen), Some(prev)) if prev.gen == seen && prev.path == path => {
+                Some(block_delta(&prev.doc, &doc))
+            }
+            _ => None,
+        };
+        let framed = frame_blocks(gen, &doc, delta);
+        *slot = Some(LastRender { path, gen, doc });
+        Ok(tauri::ipc::Response::new(framed))
     })
 }
 
@@ -2110,6 +2204,8 @@ fn main() {
         mcp_registered: Mutex::new(None),
         initial_file: initial,
         prerender: Arc::new(Mutex::new(None)),
+        last_render: Mutex::new(None),
+        render_gen: AtomicU64::new(0),
         config: Mutex::new(cfg),
         store: store.clone(),
         open_doc: open_doc.clone(),

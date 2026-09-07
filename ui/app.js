@@ -807,6 +807,11 @@ let lastHtml = null;
 // (true) or DOM-serialized outerHTML (false). The two must never be compared
 // against each other, so a mode flip forces a full write.
 let lastBlocksBackend = false;
+// The backend's name for the render `lastBlocks` came from, echoed back on the
+// next request so it can answer with the difference instead of the document.
+// Null whenever there is nothing the backend could safely diff against — the
+// legacy string path, a message standing in for a document, a fresh file.
+let lastGen = null;
 /// Put `html` on screen, replacing as little of the document as possible.
 ///
 /// A `:w` in Neovim re-renders the whole file, and writing `innerHTML` makes the
@@ -829,14 +834,14 @@ let lastBlocksBackend = false;
 /// sibling below) and keeps the original DOM-serialized comparison. The
 /// `lastBlocksBackend` flag is what keeps a record from one space from ever
 /// being compared against the other.
-function writeContent(doc, { stage = false } = {}) {
-  if (Array.isArray(doc)) return writeBackendBlocks(doc, stage);
+function writeContent(doc, { stage = false, gen = null } = {}) {
+  if (Array.isArray(doc)) return writeBackendBlocks(doc, stage, gen);
   return writeLegacyHtml(doc, stage);
 }
 
 /// Backend blocks: the diff is memcmp over strings that were never near the
 /// DOM, and only the changed slice is ever parsed.
-function writeBackendBlocks(blocks, stage) {
+function writeBackendBlocks(blocks, stage, gen) {
   const live = contentEl.children;
 
   // Patchable only from a known-good start: same file, a *backend* record,
@@ -855,10 +860,10 @@ function writeBackendBlocks(blocks, stage) {
     lastBlocks[0].charCodeAt(0) === 60; // '<'
 
   if (!patchable) {
-    if (stage) return stagedFullWrite(blocks);
+    if (stage) return stagedFullWrite(blocks, gen);
     writeGen++;
     contentEl.innerHTML = blocks.join("");
-    recordBackend(blocks);
+    recordBackend(blocks, gen);
     return null;
   }
 
@@ -890,7 +895,7 @@ function writeBackendBlocks(blocks, stage) {
   if (tpl.content.childElementCount !== blocks.length - tail - head) {
     writeGen++;
     contentEl.innerHTML = blocks.join("");
-    recordBackend(blocks);
+    recordBackend(blocks, gen);
     return null;
   }
 
@@ -912,15 +917,16 @@ function writeBackendBlocks(blocks, stage) {
   const added = [...tpl.content.children];
   contentEl.insertBefore(tpl.content, endNode);
 
-  recordBackend(blocks);
+  recordBackend(blocks, gen);
   return added;
 }
 
-function recordBackend(blocks) {
+function recordBackend(blocks, gen) {
   lastBlocks = blocks;
   lastBlocksBackend = true;
   lastBlocksFile = currentFile;
   lastHtml = null;
+  lastGen = gen;
 }
 
 /// The original single-string path, kept verbatim for callers that have no
@@ -953,6 +959,7 @@ function writeLegacyHtml(html, stage) {
     lastBlocksBackend = false;
     lastBlocksFile = currentFile;
     lastHtml = html;
+    lastGen = null;
     return null;
   }
 
@@ -1031,18 +1038,19 @@ let writeGen = 0;
 /// would clamp against the head's extent), and everything downstream of the
 /// await — decoration, highlights, the outline, the find bar — sees the
 /// complete document, because the promise resolves after the tail lands.
-function stagedFullWrite(doc) {
+function stagedFullWrite(doc, renderGen) {
   // Either shape stages; what differs is the record left behind. For backend
   // blocks the head/tail split needs no parse at all — it is a slice and two
   // joins — and the record is the block array itself.
   const backend = Array.isArray(doc);
   const record = backend
-    ? () => recordBackend(doc)
+    ? () => recordBackend(doc, renderGen)
     : () => {
         lastBlocks = [...contentEl.children].map((el) => el.outerHTML);
         lastBlocksBackend = false;
         lastBlocksFile = currentFile;
         lastHtml = doc;
+        lastGen = null;
       };
   const tHP = perf.now();
   const tpl = document.createElement("template");
@@ -1123,6 +1131,7 @@ function showContentMessage(html) {
   lastBlocks = null;
   lastBlocksFile = null;
   lastHtml = null;
+  lastGen = null;
 }
 
 /// `querySelectorAll` across several roots, each of which may itself match.
@@ -1174,31 +1183,56 @@ async function renderCurrent({ preserveScroll, reanchor }) {
   const highlightsP = invoke(reanchor ? "reanchor" : "get_highlights", {
     path: currentFile,
   }).catch(() => []);
+  // What the backend may answer with a difference rather than a document: the
+  // blocks recorded under `lastGen`, captured *here* rather than read back
+  // after the await, so two renders in flight each splice onto the base they
+  // asked against instead of onto whichever landed first.
+  const base = lastBlocksBackend && lastBlocksFile === currentFile ? lastBlocks : null;
+  const since = base ? lastGen : null;
   let html;
+  let gen = null;
   try {
-    html = await invoke("render_markdown", { path: currentFile });
-    // The command answers raw bytes (an ArrayBuffer): a JSON array of block
-    // lengths in UTF-16 code units, a newline, then the blocks back to back —
-    // framed rather than JSON-encoded because escaping 4MB was ~90ms of the
-    // old await, and framed rather than one string because the block
-    // boundaries are what `writeContent`'s diff compares. One decode and a
-    // slice per block: decoding per block instead was ~1300 ICU round trips,
-    // ~80ms at boot. The typeof guard keeps the harness stubs (plain strings)
-    // on the legacy single-string path.
+    html = await invoke("render_markdown", { path: currentFile, since });
+    // The command answers raw bytes (an ArrayBuffer): a JSON header, a
+    // newline, then blocks back to back — framed rather than JSON-encoded
+    // because escaping 4MB was ~90ms of the old await, and framed rather than
+    // one string because the block boundaries are what `writeContent`'s diff
+    // compares. One decode and a slice per block: decoding per block instead
+    // was ~1300 ICU round trips, ~80ms at boot. The typeof guard keeps the
+    // harness stubs (plain strings) on the legacy single-string path.
+    //
+    // `from` present means the payload is only what changed since the render
+    // named by `since` — a `:w` on the 2MB corpus doc crosses as one block
+    // rather than as 4.4MB the page already holds. The blocks it keeps come
+    // back by reference, so `writeContent`'s own diff then compares mostly
+    // identical strings by identity.
     if (typeof html !== "string") {
       const buf = new Uint8Array(html);
       const nl = buf.indexOf(10);
       const dec = new TextDecoder();
-      const lens = JSON.parse(dec.decode(buf.subarray(0, nl)));
+      const head = JSON.parse(dec.decode(buf.subarray(0, nl)));
       const tD = perf.now();
       const text = dec.decode(buf.subarray(nl + 1));
       perf.span("decode_payload", tD);
       let at = 0;
-      html = lens.map((len) => {
+      const fresh = head.lens.map((len) => {
         const s = text.slice(at, at + len);
         at += len;
         return s;
       });
+      gen = head.gen ?? null;
+      if (head.from === undefined) {
+        html = fresh;
+      } else if (base) {
+        html = base.slice();
+        html.splice(head.from, head.drop, ...fresh);
+      } else {
+        // Unreachable: a difference is only ever sent in answer to a `since`,
+        // and `since` is only sent when there is a base to splice onto. Said
+        // out loud rather than left to throw somewhere further down, where the
+        // symptom would be a wrong document rather than a message.
+        throw new Error("render answered with a difference and nothing to apply it to");
+      }
     }
   } catch (e) {
     showContentMessage(`<div class="empty">${escapeHtml(String(e))}</div>`);
@@ -1215,7 +1249,7 @@ async function renderCurrent({ preserveScroll, reanchor }) {
   // this task at a microtask checkpoint, and an adopted `<img>`'s queued load
   // runs at exactly that checkpoint — the decoration pass below must beat it
   // to the src, which it can only do by running in the same task.
-  let changed = writeContent(html, { stage: prevScroll === 0 });
+  let changed = writeContent(html, { stage: prevScroll === 0, gen });
   if (changed instanceof Promise) changed = await changed;
   perf.span("innerhtml", t);
 
