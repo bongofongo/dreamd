@@ -24,6 +24,18 @@
         "peak_rss_mb": 39.98,
         "appimage_mb": 81.13
       }
+    },
+    {
+      "version": "0.4.1",
+      "sha": "03b5658",
+      "date": "2026-09-07",
+      "runner": "ubuntu-22.04 (CI)",
+      "metrics": {
+        "first_paint_ms": 580,
+        "save_to_paint_p50_ms": 29.00000000000091,
+        "peak_rss_mb": 40.11,
+        "appimage_mb": 81.14
+      }
     }
   ]
 }
