@@ -3716,6 +3716,7 @@ await patch.addInitScript((css) => {
           case "list_markdown_files": return tree;
           case "get_highlights": case "reanchor": return await window.__marks();
           case "get_stack": return [];
+          case "copy_to_clipboard": window.__copied = args && args.text; return null;
           default: return null;
         }
       },
@@ -3933,7 +3934,51 @@ check(
   String(await marks()),
 );
 
+// The copy button on a fenced block. It carries no listeners of its own —
+// `#content` catches the click for every block in the document — so the wiring
+// is worth an assertion: 640 blocks used to mean 1,280 registrations, and the
+// delegated version is the kind of change that works until the day the button
+// sits inside something that swallows the event.
 patchMarks = [];
+const DOCPRE = [
+  '<h1 id="t">Title</h1>',
+  '<pre id="pre1"><code>alpha();\nbravo();\n</code></pre>',
+  '<p id="after">tail</p>',
+];
+await save(DOCPRE);
+check(
+  "a fenced block is wrapped and given a copy button",
+  await patch.evaluate(() =>
+    document.querySelectorAll("#content .code-block > pre").length === 1 &&
+    document.querySelectorAll("#content .code-block > button.code-copy").length === 1),
+);
+await patch.evaluate(() => { window.__copied = null; });
+await patch.click("#content .code-block button.code-copy");
+await patch.waitForTimeout(60);
+check(
+  "and clicking it copies the block's code",
+  (await patch.evaluate(() => window.__copied)) === "alpha();\nbravo();",
+  JSON.stringify(await patch.evaluate(() => window.__copied)),
+);
+// The same click must not be read as the end of a text selection: `#content`'s
+// mouseup starts a highlight whenever one is standing, and the button used to
+// stop propagation itself to prevent exactly that.
+await patch.evaluate(() => {
+  highlightMode = true;
+  const r = document.createRange();
+  r.selectNodeContents(document.getElementById("after"));
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(r);
+});
+await patch.click("#content .code-block button.code-copy");
+await patch.waitForTimeout(80);
+check(
+  "and does not open the annotation modal on the way",
+  await patch.evaluate(() => !document.getElementById("annot-overlay").classList.contains("open")),
+);
+await patch.evaluate(() => { highlightMode = false; window.getSelection().removeAllRanges(); });
+
 await stamp();
 await patch.evaluate(() => openFile("/repo/other.md"));
 await patch.waitForTimeout(150);

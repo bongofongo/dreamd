@@ -1898,6 +1898,29 @@ const COPY_ICON_SVG =
 /// Called *before* `applyHighlights` so the DOM shape is settled before any
 /// mark is placed; the button adds no text nodes either way, so neither the
 /// text-node scan nor `getSelection().toString()` can see it.
+/// The copy button, built once and cloned per code block.
+///
+/// `innerHTML = COPY_ICON_SVG` parses two SVGs, and the corpus document has 640
+/// fences: `cloneNode` copies a tree the engine has already built instead.
+let copyButtonProto = null;
+function copyButton() {
+  if (!copyButtonProto) {
+    copyButtonProto = document.createElement("button");
+    copyButtonProto.type = "button";
+    copyButtonProto.className = "icon code-copy";
+    copyButtonProto.setAttribute("aria-label", "Copy code");
+    copyButtonProto.dataset.tip = "Copy code";
+    copyButtonProto.innerHTML = COPY_ICON_SVG;
+  }
+  return copyButtonProto.cloneNode(true);
+}
+
+/// Wrap each `<pre>` so a copy button can sit over it.
+///
+/// No listeners are attached here. A click on one of these is caught by
+/// `#content`'s own delegated handler, which is one listener for the document
+/// rather than two per block — 1,280 registrations and 640 closures on the
+/// corpus document, for a button most readers never press.
 function decorateCodeBlocks(roots = [contentEl]) {
   for (const pre of within(roots, "pre")) {
     const parent = pre.parentNode;
@@ -1911,23 +1934,7 @@ function decorateCodeBlocks(roots = [contentEl]) {
     wrap.className = "code-block";
     parent.insertBefore(wrap, pre);
     wrap.appendChild(pre);
-
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "icon code-copy";
-    btn.setAttribute("aria-label", "Copy code");
-    btn.dataset.tip = "Copy code";
-    btn.innerHTML = COPY_ICON_SVG;
-    btn.addEventListener("click", (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      copyCodeBlock(pre, btn);
-    });
-    // #content's own `mouseup` listener starts a highlight whenever the
-    // selection is non-empty, and a leftover selection elsewhere in the
-    // document would otherwise make a copy click open the annotation modal.
-    btn.addEventListener("mouseup", (e) => e.stopPropagation());
-    wrap.appendChild(btn);
+    wrap.appendChild(copyButton());
   }
 }
 
@@ -6013,7 +6020,11 @@ function wireUi() {
     setEditing(true);
   });
   // In highlight mode, finishing a text selection auto-starts the flow.
-  contentEl.addEventListener("mouseup", () => {
+  contentEl.addEventListener("mouseup", (e) => {
+    // A mouseup on a code block's copy button is not a selection gesture. The
+    // button used to stop propagation itself, which meant a listener per
+    // block; the check belongs here, where there is one of it.
+    if (e.target.closest && e.target.closest(".code-copy")) return;
     if (!highlightMode || pending) return;
     const sel = window.getSelection();
     if (sel && !sel.isCollapsed && sel.toString().trim()) triggerHighlight();
@@ -6022,6 +6033,17 @@ function wireUi() {
   // is armed: there a click on a mark is the start of dragging the new extent
   // over it, and opening a modal would take the document away mid-gesture.
   contentEl.addEventListener("click", (e) => {
+    // The copy button, delegated: one listener for every code block in the
+    // document. Ahead of the mark check because a button can sit over a
+    // highlighted fence, and the press is about the code either way.
+    const copy = e.target.closest && e.target.closest(".code-copy");
+    if (copy) {
+      e.preventDefault();
+      e.stopPropagation();
+      const pre = copy.parentNode && copy.parentNode.querySelector("pre");
+      if (pre) copyCodeBlock(pre, copy);
+      return;
+    }
     if (resizing) return;
     const m = e.target.closest && e.target.closest("mark.hl");
     if (m && contentEl.contains(m)) { e.preventDefault(); openEditHighlight(m.dataset.id); }

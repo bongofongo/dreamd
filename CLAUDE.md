@@ -801,6 +801,17 @@ header at all** — the dock's status text has nowhere to go there, so
 `setPaneStatus` also keeps the string on `pty.status` for the hint line to read,
 and a session that cannot start says why instead of saying "starting" forever.
 
+**The copy button on a fence carries no listener of its own.** A 2MB document
+has 640 of them, and one `click` plus one `mouseup` handler each was 1,280
+registrations and 640 closures for a control most readers never press.
+`#content` catches both, delegated — which also puts the "a copy click is not
+the end of a text selection" rule in the one place it applies, instead of a
+`stopPropagation` per button. The button itself is built once and cloned rather
+than parsed from `COPY_ICON_SVG` per block. `d:decorate_code` 17ms to 12ms,
+first_paint 306ms to 297ms. `ui-check.mjs` clicks one, because the delegated
+version is the kind that works until the button sits inside something that
+swallows the event.
+
 **A save patches the document, it does not rewrite it.** `renderCurrent` used to
 assign `contentEl.innerHTML`, so one `:w` in Neovim made the webview lay out the
 whole file again — 528ms of layout for a one-line edit at 2MB, against 4.7ms when
