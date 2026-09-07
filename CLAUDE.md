@@ -372,7 +372,12 @@ the upgrade procedure.
   raw HTML, tenet 4) becomes *declining to record a boundary* rather than
   joining two strings. Block spans are worked out in a depth scan that moves
   nothing, so each event travels exactly once — into `push_html` — rather than
-  through a per-block scratch vector as well. `utf16_units`, which the framing
+  through a per-block scratch vector as well; the footnote question is answered
+  by that same pass and stops it, since a document using them cannot be split at
+  all. `bench.render_blocks/mixed/*` is what makes the cost of the split
+  visible: `render` is what `render_agent_text` calls, and the gap between the
+  two groups is what a boundary per block costs — 1.9ms at 2MB before those
+  passes were merged, 1.1ms after. `utf16_units`, which the framing
   runs over every rendered byte, takes an `is_ascii` fast path and otherwise two
   vectorized byte counts instead of one byte-at-a-time match.
   `d:rust_render_markdown` 19.3ms to 12.6ms on the save loop; the byte-identity

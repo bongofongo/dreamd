@@ -67,6 +67,37 @@ fn bench_render(c: &mut Criterion) {
     g.finish();
 }
 
+/// The shape the app actually renders in.
+///
+/// `render` above is what `render_agent_text` calls; every document the reader
+/// opens or saves goes through `render_blocks`, which is the same parse and the
+/// same `push_html` plus a boundary per top-level block. The gap between the
+/// two groups is what that costs, and it is the only way to see it — one
+/// variant is enough for that, and four sizes keep the shape visible.
+fn bench_render_blocks(c: &mut Criterion) {
+    warm();
+
+    let mut g = c.benchmark_group("render_blocks");
+    for size in common::SIZES {
+        let src = common::doc("mixed", size);
+        g.sample_size(match *size {
+            "2m" | "8m" | "512k" => 10,
+            "128k" => 30,
+            _ => 100,
+        });
+        g.throughput(Throughput::Bytes(src.len() as u64));
+        g.bench_with_input(BenchmarkId::new("mixed", *size), &src, |b, src| {
+            b.iter(|| {
+                black_box(markdown::render_blocks(
+                    black_box(src),
+                    markdown::CODE_THEME,
+                ))
+            })
+        });
+    }
+    g.finish();
+}
+
 fn bench_syntect_cold(c: &mut Criterion) {
     let mut g = c.benchmark_group("syntect_cold");
     // Each iteration is a full dump load — expensive, so keep the sample count
@@ -82,5 +113,10 @@ fn bench_syntect_cold(c: &mut Criterion) {
     g.finish();
 }
 
-criterion_group!(benches, bench_render, bench_syntect_cold);
+criterion_group!(
+    benches,
+    bench_render,
+    bench_render_blocks,
+    bench_syntect_cold
+);
 criterion_main!(benches);

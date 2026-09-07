@@ -343,17 +343,6 @@ pub fn render_blocks(source: &str, code_theme: &str) -> Rendered {
             html: String::with_capacity(source.len() * 2),
             ends: Vec::new(),
         };
-        let footnotes = events.iter().any(|e| {
-            matches!(
-                e,
-                Event::FootnoteReference(_) | Event::Start(Tag::FootnoteDefinition(_))
-            )
-        });
-        if footnotes {
-            pulldown_cmark::html::push_html(&mut out.html, events.into_iter());
-            out.ends.push(out.html.len());
-            return out;
-        }
         // A top-level block is the events from a depth-0 `Start` through its
         // matching `End` — or a single standalone depth-0 event (a `Rule`, or
         // the `Html` a highlighted fence became; `Start(CodeBlock)` never
@@ -364,19 +353,36 @@ pub fn render_blocks(source: &str, code_theme: &str) -> Rendered {
         // straight into `push_html`. Collecting each block into a scratch
         // `Vec<Event>` on the way cost a push and a drain per event, and there
         // are hundreds of thousands of them in a 2MB document.
+        //
+        // The footnote question is answered by the same pass, and stops it: a
+        // document that uses them cannot be split at all, so there is nothing
+        // left to learn once one has been seen.
         let mut runs: Vec<usize> = Vec::new();
         let mut depth = 0usize;
         let mut start = 0usize;
+        let mut footnotes = false;
         for (i, ev) in events.iter().enumerate() {
             match ev {
-                Event::Start(_) => depth += 1,
+                Event::FootnoteReference(_) => footnotes = true,
+                Event::Start(tag) => {
+                    footnotes |= matches!(tag, Tag::FootnoteDefinition(_));
+                    depth += 1;
+                }
                 Event::End(_) => depth = depth.saturating_sub(1),
                 _ => {}
+            }
+            if footnotes {
+                break;
             }
             if depth == 0 {
                 runs.push(i + 1 - start);
                 start = i + 1;
             }
+        }
+        if footnotes {
+            pulldown_cmark::html::push_html(&mut out.html, events.into_iter());
+            out.ends.push(out.html.len());
+            return out;
         }
         if start < events.len() {
             // An unbalanced stream cannot happen out of pulldown, but a
