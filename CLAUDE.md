@@ -253,13 +253,15 @@ handlers, the builder. All logic lives in the `dreamd` **library** crate (`src/l
 modules) *because a `[[bin]]` target cannot be imported*: the split is what makes
 `src-tauri/benches/` possible. New logic goes in a module, not in `main.rs`.
 
-State is one `AppState`: `RwLock<PathBuf>` for the root (every command reads it, only
-File ▸ Open writes), `Mutex<Config>`, `Arc<Mutex<Store>>` (highlights + stack) and
+State is one `AppState`: `RwLock<PathBuf>` for the root (every command reads it; the
+two writers are File ▸ Open and the root field, both through `adopt_root`),
+`Mutex<Config>`, `Arc<Mutex<Store>>` (highlights + stack) and
 `Arc<Catalog>` — the tree and the search index, from one walk behind one readiness gate.
 It spans every file opened in the session, and the store is the one part that outlives
 the process, through `marks_file` (tenet 2). Every `Arc` in it is state shared with a
-thread that outlives a command, and there are four: the MCP socket thread holds the
-store and a reader over `open_doc`, a deferred walk fills the catalog, and the
+thread that outlives a command, and there are five: the MCP socket thread holds the
+store and a reader over `open_doc`, a deferred walk fills the catalog, the boot
+pre-render thread fills `prerender`, and the
 debounced marks-save thread reads `dirty`. `Config` is behind a lock because the settings panel
 rewrites it at runtime — it is the only configuration that changes after startup.
 

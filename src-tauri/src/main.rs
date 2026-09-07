@@ -71,8 +71,9 @@ fn frame_blocks(blocks: &[String]) -> Vec<u8> {
 struct AppState {
     /// Behind a lock because File -> Open can move it: a `.app` launched from
     /// Finder starts with no repo at all, and picking one is how it gets one.
-    /// `RwLock` rather than `Mutex` because every command reads it and only the
-    /// menu handler writes.
+    /// `RwLock` rather than `Mutex` because every command reads it and only
+    /// `adopt_root` writes — reached from the menu handler and from the
+    /// sidebar's root field (`set_root`), which are the two ways to move.
     repo_root: RwLock<PathBuf>,
     /// Whether `repo_root` means anything yet. False only when dreamd was
     /// launched with no path and the walk-up found no `.git` — the Finder
@@ -248,6 +249,23 @@ impl AppState {
     /// exactly the calls that changed something.
     fn touch(&self) {
         self.dirty.store(true, Ordering::Relaxed);
+    }
+
+    /// The pairs a send names: an explicit selection, or the whole stack when
+    /// `ids` is empty.
+    ///
+    /// Shared by [`send_stack`] and [`queue_send`] so the tmux path and the
+    /// pane's cannot drift apart on what "send everything" means — they were
+    /// two copies of this block, and `selected_pairs`' own filtering (an id
+    /// naming nothing, a mark with no annotation) is the half worth stating
+    /// once.
+    fn chosen_pairs(&self, ids: &[Id]) -> Vec<Pair> {
+        let store = self.store.lock().unwrap();
+        if ids.is_empty() {
+            store.stack_pairs()
+        } else {
+            store.selected_pairs(ids)
+        }
     }
 
     /// The syntect theme the active palette asks for, or syntect's default.
@@ -680,9 +698,10 @@ fn remove_pair(state: State<AppState>, id: String) {
 /// scanning the store for it. A repo where you open two documents pays for
 /// two; one where you open two hundred pays for two hundred, which is the
 /// right way round.
-#[tauri::command]
+///
 /// `async` like `reanchor`, and infallible in practice — the `Result` is only
 /// the shape Tauri requires of an async command borrowing `State`.
+#[tauri::command]
 #[allow(clippy::unnecessary_wraps)]
 async fn get_highlights(
     state: State<'_, AppState>,
@@ -772,14 +791,7 @@ fn get_stack(state: State<AppState>) -> Vec<Pair> {
 /// text sits on the clipboard — is the one that gets asked twice.
 #[tauri::command]
 fn send_stack(state: State<AppState>, ids: Vec<Id>) -> Result<SendResult, String> {
-    let pairs = {
-        let store = state.store.lock().unwrap();
-        if ids.is_empty() {
-            store.stack_pairs()
-        } else {
-            store.selected_pairs(&ids)
-        }
-    };
+    let pairs = state.chosen_pairs(&ids);
     let config = state.config.lock().unwrap().clone();
     let result = send::send(&config, &state.root(), &pairs)?;
     let sent: Vec<Id> = pairs.iter().map(|p| p.highlight.id.clone()).collect();
@@ -809,14 +821,7 @@ fn send_stack(state: State<AppState>, ids: Vec<Id>) -> Result<SendResult, String
 /// no rollback to get wrong.
 #[tauri::command]
 fn queue_send(state: State<AppState>, ids: Vec<Id>) -> Option<flow::Pending> {
-    let pairs = {
-        let store = state.store.lock().unwrap();
-        if ids.is_empty() {
-            store.stack_pairs()
-        } else {
-            store.selected_pairs(&ids)
-        }
-    };
+    let pairs = state.chosen_pairs(&ids);
     let ids: Vec<Id> = pairs.iter().map(|p| p.highlight.id.clone()).collect();
     state.flow.lock().unwrap().queue(ids)
 }
@@ -1976,10 +1981,9 @@ fn main() {
 
     let cli = Cli::parse();
 
-    // Headless subcommands exit here: after the config read they need, before
-    // the repo walk and index build they don't. `--bench-startup` deliberately
-    // sits further down, past the walk, because that is what it measures
-    // (except on a file argument, where there is no pre-window walk left).
+    // Headless subcommands exit here: before the repo walk and index build they
+    // do not need. `--bench-startup` sits further down, past the marks load —
+    // see its own comment there for why it stops short of the walk.
     if let Some(cmd) = cli.command {
         if let Err(e) = cli::run(cmd) {
             eprintln!("dreamd: {e}");
@@ -2099,7 +2103,10 @@ fn main() {
     // makes the answer right in the window between the socket binding and that
     // first render.
     let open_doc = Arc::new(Mutex::new(initial.clone().map(PathBuf::from)));
-    let menubar_pref = cfg.ui.clone();
+    // Read before `cfg` moves into the state, and answered here rather than in
+    // `.setup()` because a menubar that exists cannot be reliably hidden before
+    // the window is shown — `apply_chrome` has the measurement.
+    let menubar = menubar_at_launch(&cfg.ui);
     let state = AppState {
         repo_root: RwLock::new(repo_root.clone()),
         has_repo: AtomicBool::new(has_repo),
@@ -2131,11 +2138,6 @@ fn main() {
         agent: Mutex::new(None),
         flow: Mutex::new(Flow::default()),
     };
-
-    // Read before `cfg` moves into the state, and answered here rather than in
-    // `.setup()` because a menubar that exists cannot be reliably hidden before
-    // the window is shown — `apply_chrome` has the measurement.
-    let menubar = menubar_at_launch(&menubar_pref);
 
     let builder = tauri::Builder::default()
         .manage(state)
