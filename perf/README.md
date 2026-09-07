@@ -147,6 +147,19 @@ These were measured, not guessed — two consecutive runs on identical code:
 | any `.max` statistic | up to 25% | ignored entirely |
 | any `real.*` timing under 1ms | — | never flagged |
 
+**A criterion number is only comparable with one measured the same way.** The
+settings are identical across tiers, but *which* benchmarks run in a binary
+changes what the ones that do run measure: `render/table/512k` reads 4.0ms in a
+full sweep of the `render` target and 6.5ms when the run is filtered to that one
+case, on the same commit. Two flagged "regressions" of +58% and +119% were
+nothing but a `pass` run being compared against a `deep` baseline that had swept
+the whole target. So `pass` now runs each bench target whole, exactly as `deep`
+does — about forty seconds more, for the only thing the comparison is for — and
+`quick`, which cannot afford that, has its `bench.*` rows **recorded rather than
+compared**, with a line in the report saying so. The same caution applies by
+hand: a filtered `cargo bench --bench render -- 'table/512k'` may only be
+compared with another filtered the same way.
+
 **The save loop's frontend metrics were bimodal until block patching landed**,
 and the history is worth keeping because the threshold moved twice. Five
 `loop.sh --release --highlights 100 --saves 12` runs on *identical* code once

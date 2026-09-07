@@ -305,6 +305,16 @@ collect_criterion() {
 # benchmark more cheaply — otherwise the result is not comparable to the
 # baseline it is checked against. The tiers differ in their filter and nothing
 # else.
+#
+# **A filter is not free of that problem either.** Which benchmarks run in a
+# binary changes what the ones that do run measure: `render/table/512k` reads
+# 4.0ms in a full sweep of the render target and 6.5ms when filtered to itself,
+# on the same commit. So `pass` now runs each bench target whole, exactly as
+# `deep` does — the tiers differ in *which targets* they run and in the real-app
+# and Chromium work around them, not in which cases inside a target. That costs
+# `pass` about forty seconds and it buys the only thing the comparison is for.
+# `quick` still filters, because ninety seconds does not stretch; its `bench.*`
+# rows are therefore recorded and not compared (see lib/report.mjs).
 BENCH_ARGS=(--warm-up-time 1 --measurement-time 3)
 
 say "rust benches ($TIER)"
@@ -316,13 +326,12 @@ case "$TIER" in
     run_bench search "${BENCH_ARGS[@]}" 'keystrokes/500' || true
     ;;
   pass)
-    # Everything except the two cases that dominate wall time: 500 highlights
-    # (~4s per iteration) and 2MB renders. Both are in the deep tier, and both
-    # show up in the "not measured this run" list here — that is expected, not a
-    # failure.
-    run_bench locate "${BENCH_ARGS[@]}" 'reanchor/[a-z_]+/(1|10|100)$|locate_single' || true
-    run_bench render "${BENCH_ARGS[@]}" 'render/[a-z]+/(8k|128k|512k)$|syntect_cold' || true
-    run_bench render_blocks "${BENCH_ARGS[@]}" 'mixed/(8k|128k|512k)$' || true
+    # Whole targets, the same as deep: a filtered subset of a bench binary does
+    # not measure what the full sweep measures, and this is the tier whose
+    # numbers are checked against a baseline the deep tier wrote.
+    run_bench locate "${BENCH_ARGS[@]}" || true
+    run_bench render "${BENCH_ARGS[@]}" || true
+    run_bench render_blocks "${BENCH_ARGS[@]}" || true
     run_bench search "${BENCH_ARGS[@]}" || true
     run_bench walk   "${BENCH_ARGS[@]}" || true
     ;;

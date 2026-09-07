@@ -18,7 +18,12 @@ const HIGHER_IS_BETTER = [/\bapplied$/, /\bthroughput/];
  * there rather than restating a figure here, which is how this comment and that
  * table came to disagree about the Chromium drift. Rust benches did not move:
  * criterion's sampling does its job, and every tier uses identical criterion
- * settings so their numbers are directly comparable. The Chromium scenarios
+ * settings. That is *not* the same as their numbers being comparable across
+ * tiers: which benchmarks run in a binary changes what the ones that do run
+ * measure, and `render/table/512k` reads 4.0ms in a full sweep against 6.5ms
+ * filtered to itself on one commit. `pass` and `deep` therefore run whole bench
+ * targets, and `quick`'s `bench.*` rows are skipped below rather than compared
+ * against a baseline it did not measure the same way. The Chromium scenarios
  * drift the most by far, being single-sample measurements of a whole browser
  * engine.
  *
@@ -152,11 +157,25 @@ export function diff(current, baselinePath) {
       metrics: Object.keys(now).length,
     };
   }
-  const base = flatten(JSON.parse(readFileSync(baselinePath, "utf8")));
+  const baseline = JSON.parse(readFileSync(baselinePath, "utf8"));
+  const base = flatten(baseline);
+
+  // `quick` filters each bench binary to a handful of cases, and a subset does
+  // not measure what the whole sweep measures — the same case moves by half
+  // again depending on what else ran in the process. So when exactly one side
+  // of this comparison is a quick run, its criterion numbers are recorded and
+  // not diffed. Every other pair ran whole targets and is comparable.
+  const subset = (r) => r?.meta?.tier === "quick";
+  const benchIncomparable = subset(current) !== subset(baseline);
+  let notCompared = 0;
 
   const rows = [];
   for (const [path, value] of Object.entries(now)) {
     if (ignored(path)) continue;
+    if (benchIncomparable && path.startsWith("bench.")) {
+      notCompared++;
+      continue;
+    }
     const before = base[path];
     if (before === undefined) {
       rows.push({ path, before: null, after: value, delta: null, status: "new" });
@@ -183,7 +202,7 @@ export function diff(current, baselinePath) {
   // tier, occasionally a script that silently failed. Worth surfacing.
   const missing = Object.keys(base).filter((p) => !(p in now) && !ignored(p));
 
-  return { rows, missing, missingBaseline: false };
+  return { rows, missing, missingBaseline: false, notCompared };
 }
 
 const ICON = { ok: "  ", warn: "! ", fail: "XX", better: "+ ", new: "* " };
@@ -235,6 +254,14 @@ export function render(result, { verbose = false } = {}) {
     }
   };
 
+  if (result.notCompared) {
+    lines.push(
+      "",
+      `${result.notCompared} bench metrics recorded, not compared:`,
+      "  a quick run measures a subset of each bench binary, and a subset does",
+      "  not measure what the whole sweep does. Use pass or deep for these.",
+    );
+  }
   section("RUST BENCHES", bySource.bench, "native, criterion means in ms");
   section("REAL APP", bySource["real-app"]);
   section("CHROMIUM HARNESS", bySource.chromium, "relative only; not WKWebView timings");

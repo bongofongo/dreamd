@@ -1113,6 +1113,17 @@ highlights from a corpus fixture.
   does *not* cover the NVIDIA/Wayland crash `webkit` works around: no hosted
   runner has the driver or a compositor, and that stays a hand-check.
 - Repeatable flows become skills in `.claude/skills/`.
+- **A criterion number is only comparable with one measured the same way.**
+  Every tier uses identical criterion settings, but *which* benchmarks run in a
+  binary changes what the ones that do run measure: `render/table/512k` reads
+  4.0ms in a full sweep of the `render` target and 6.5ms filtered to itself, on
+  one commit. That is why `pass` runs each bench target **whole**, as `deep`
+  does — the tiers differ in which targets and which real-app work they run, not
+  in which cases inside a target — and why `quick`, which cannot afford that,
+  has its `bench.*` rows recorded rather than compared, with a line in the
+  report saying so. The same rule applies by hand: compare a filtered
+  `cargo bench` only against another filtered identically. Two "+58%" and
+  "+119%" regressions this session were nothing but this.
 - Performance is measured, not guessed. `/perf-quick` (~60s) after an edit,
   `/perf-pass` (~5min) before a large commit touching `src-tauri/` or `ui/` (do `/perf-quick` for smaller commits), `/perf-deep`
   (~20min) to profile or move the baseline only on user request. The baseline
