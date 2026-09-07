@@ -428,7 +428,19 @@ pub fn utf16_units(s: &str) -> usize {
 fn with_events<R>(source: &str, code_theme: &str, f: impl FnOnce(Vec<Event>) -> R) -> R {
     let parser = Parser::new_ext(source, options());
 
-    let mut events: Vec<Event> = Vec::new();
+    // Reserved rather than grown. The stream is hundreds of thousands of events
+    // on a 2MB file and `Event` is wide, so growing from nothing copies the
+    // whole buffer again on the way up — 6ms of `render/table/2m`'s 25ms.
+    //
+    // A fixed fraction of the source, and a compromise on purpose: how many
+    // events a byte becomes swings twentyfold between prose and a table, and
+    // both directions cost. Sizing it from the rate events actually arrive at
+    // was tried and is worse — `into_offset_iter` plus a check per event cost
+    // more than the doubling it removed (`render_blocks/mixed/2m` 10.2ms ->
+    // 10.5ms). An eighth covers prose, code and mixed outright and leaves a
+    // table one more growth; a quarter suits tables and costs everything else
+    // more than it saves them.
+    let mut events: Vec<Event> = Vec::with_capacity(source.len() / 8);
     // (lang, text) of the fence currently being read.
     let mut code_buf: Option<(String, String)> = None;
     // Fenced blocks are collected during the parse and highlighted afterwards,

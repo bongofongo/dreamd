@@ -370,7 +370,14 @@ the upgrade procedure.
   growing allocations on the way out and a second 4MB copy in `frame_blocks` on
   the way in. Folding an element-less segment into the block before it (escaped
   raw HTML, tenet 4) becomes *declining to record a boundary* rather than
-  joining two strings. Block spans are worked out in a depth scan that moves
+  joining two strings. The event buffer is **reserved, not grown**: a 2MB
+  document is hundreds of thousands of wide `Event`s, and doubling from nothing
+  copies the whole buffer again on the way up — 6ms of `render/table/2m`'s 25ms.
+  The fraction of the source is a deliberate compromise, because how many events
+  a byte becomes swings twentyfold between prose and a table and both directions
+  cost; sizing it from the rate events actually arrive at (`into_offset_iter`
+  plus a check per event) was tried and is worse than the doubling it removes.
+  Block spans are worked out in a depth scan that moves
   nothing, so each event travels exactly once — into `push_html` — rather than
   through a per-block scratch vector as well; the footnote question is answered
   by that same pass and stops it, since a document using them cannot be split at
