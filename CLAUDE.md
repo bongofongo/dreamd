@@ -363,6 +363,21 @@ the upgrade procedure.
   small Rust-side cost, not a latency win — `d:rust_reanchor` moves,
   `save_to_paint` doesn't, same pattern as `d:ipc_get_highlights`: layout
   dominates it.
+  **`render_blocks` returns one buffer, not one string per block.**
+  `markdown::Rendered` is the html plus a `Vec<usize>` of block ends, because
+  the boundaries are what the frontend's save diff compares while the bytes are
+  concatenated straight back together on the wire — a `Vec<String>` was ~1300
+  growing allocations on the way out and a second 4MB copy in `frame_blocks` on
+  the way in. Folding an element-less segment into the block before it (escaped
+  raw HTML, tenet 4) becomes *declining to record a boundary* rather than
+  joining two strings. Block spans are worked out in a depth scan that moves
+  nothing, so each event travels exactly once — into `push_html` — rather than
+  through a per-block scratch vector as well. `utf16_units`, which the framing
+  runs over every rendered byte, takes an `is_ascii` fast path and otherwise two
+  vectorized byte counts instead of one byte-at-a-time match.
+  `d:rust_render_markdown` 19.3ms to 12.6ms on the save loop; the byte-identity
+  contract (`render_blocks(s).html() == render_with(s)`) is unchanged and still
+  the property test.
 - `annotations::Store` — `Highlight { quote, prefix, suffix, line_start/end, state }` plus an
   ordered `stack` of ids. `set_annotation` is what enqueues a pair. `mark_sent`
   stamps `sent_at`, sets `prior`, and takes the ids off the stack; the `prior` is

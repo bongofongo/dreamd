@@ -40,7 +40,7 @@ struct Prerendered {
     path: String,
     theme: String,
     source: String,
-    blocks: Vec<String>,
+    blocks: markdown::Rendered,
 }
 
 /// The wire shape of a rendered document: a JSON array of block lengths in
@@ -56,15 +56,12 @@ struct Prerendered {
 /// Byte lengths forced a decode *per block* — ~1300 ICU round trips at boot,
 /// measured at ~80ms of the render await — where JS string slicing wants
 /// exactly the units `String.prototype.length` counts.
-fn frame_blocks(blocks: &[String]) -> Vec<u8> {
-    let lens: Vec<usize> = blocks.iter().map(|b| markdown::utf16_units(b)).collect();
-    let total: usize = blocks.iter().map(|b| b.len()).sum();
+fn frame_blocks(doc: &markdown::Rendered) -> Vec<u8> {
+    let lens: Vec<usize> = doc.blocks().map(markdown::utf16_units).collect();
     let mut out = serde_json::to_vec(&lens).unwrap_or_default();
-    out.reserve(total + 1);
+    out.reserve(doc.html().len() + 1);
     out.push(b'\n');
-    for b in blocks {
-        out.extend_from_slice(b.as_bytes());
-    }
+    out.extend_from_slice(doc.html().as_bytes());
     out
 }
 
@@ -529,7 +526,7 @@ async fn render_markdown(
     })
 }
 
-fn render_markdown_body(state: &State<AppState>, path: &str) -> Result<Vec<String>, String> {
+fn render_markdown_body(state: &State<AppState>, path: &str) -> Result<markdown::Rendered, String> {
     let source = read_source(path)?;
     // Recorded here because this is the one call that means "this document is
     // now what the human is looking at" — see `AppState::open_doc`. Before the

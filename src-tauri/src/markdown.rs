@@ -261,23 +261,88 @@ pub fn render_with(source: &str, code_theme: &str) -> String {
     })
 }
 
-/// [`render_with`], delivered as one string per top-level block.
+/// A rendered document: its HTML in one buffer, plus where each top-level
+/// block ends in it.
 ///
-/// This is the shape the frontend's save-path diff wants: comparing backend
-/// strings block by block is a memcmp, where diffing one concatenated document
-/// cost a full template parse plus an `outerHTML` re-serialization per save —
-/// measured at 130ms of a 209ms save loop before this existed. The guarantee
-/// that makes it safe is byte-identity: `concat(render_blocks(s)) ==
-/// render_with(s)`, pinned by a property test below, so the two entry points
-/// can never disagree about what a document renders to.
+/// The block boundaries are what the frontend's save diff compares (see
+/// [`render_blocks`]) — but the blocks are also concatenated straight back
+/// together on the wire (`frame_blocks` in main.rs), so carrying them as a
+/// `Vec<String>` meant ~1300 growing allocations on the way out and a second
+/// 4MB copy on the way in, for a document that was one string at both ends.
+/// Offsets into one buffer cost neither.
+pub struct Rendered {
+    html: String,
+    /// Byte offset one past the end of each block. Non-decreasing, and the
+    /// last entry is `html.len()`.
+    ends: Vec<usize>,
+}
+
+impl Rendered {
+    /// The whole document, which is exactly what [`render_with`] returns for
+    /// the same input — the identity a property test below pins.
+    pub fn html(&self) -> &str {
+        &self.html
+    }
+
+    /// The blocks, in document order.
+    pub fn blocks(&self) -> impl Iterator<Item = &str> + '_ {
+        let mut from = 0;
+        self.ends.iter().map(move |&end| {
+            let block = &self.html[from..end];
+            from = end;
+            block
+        })
+    }
+
+    pub fn block_count(&self) -> usize {
+        self.ends.len()
+    }
+
+    /// Close the block that ends at the current end of `html`.
+    ///
+    /// Folding a segment that rendered no element of its own into the block
+    /// before it is, in this shape, simply declining to record a boundary —
+    /// where the `Vec<String>` version had to concatenate two strings.
+    /// Escaped raw HTML (tenet 4 re-emits it as text) is the case that exists:
+    /// it renders as bare text starting with `&lt;`, never `<`. The frontend's
+    /// splice indexes blocks by element, so one block must be one top-level
+    /// element plus whatever trailing text belongs to it. A document that
+    /// *opens* with such text keeps it as block zero; the frontend sees a
+    /// block that does not start with `<` and declines to patch that document
+    /// at all.
+    fn close(&mut self, at: usize) {
+        if self.ends.is_empty() || self.html.as_bytes().get(at) == Some(&b'<') {
+            self.ends.push(self.html.len());
+        } else {
+            *self.ends.last_mut().unwrap() = self.html.len();
+        }
+    }
+}
+
+/// [`render_with`], with the boundary of every top-level block recorded.
+///
+/// Those boundaries are the shape the frontend's save-path diff wants:
+/// comparing backend strings block by block is a memcmp, where diffing one
+/// concatenated document cost a full template parse plus an `outerHTML`
+/// re-serialization per save — measured at 130ms of a 209ms save loop before
+/// this existed. The guarantee that makes it safe is byte-identity:
+/// `render_blocks(s).html() == render_with(s)`, pinned by a property test
+/// below, so the two entry points can never disagree about what a document
+/// renders to.
 ///
 /// One caveat is structural: pulldown's `push_html` numbers footnotes
 /// statefully *across* a single call, so a document that uses them cannot be
 /// rendered per-block without renumbering — those fall back to a single
 /// segment, which the frontend treats as one big block (a full write per
 /// save, exactly the pre-blocks behaviour).
-pub fn render_blocks(source: &str, code_theme: &str) -> Vec<String> {
+pub fn render_blocks(source: &str, code_theme: &str) -> Rendered {
     with_events(source, code_theme, |events| {
+        // Rendered HTML reliably outgrows its source; starting at double skips
+        // most of the doubling reallocs, the same bargain `render_with` makes.
+        let mut out = Rendered {
+            html: String::with_capacity(source.len() * 2),
+            ends: Vec::new(),
+        };
         let footnotes = events.iter().any(|e| {
             matches!(
                 e,
@@ -285,54 +350,47 @@ pub fn render_blocks(source: &str, code_theme: &str) -> Vec<String> {
             )
         });
         if footnotes {
-            let mut html = String::new();
-            pulldown_cmark::html::push_html(&mut html, events.into_iter());
-            return vec![html];
+            pulldown_cmark::html::push_html(&mut out.html, events.into_iter());
+            out.ends.push(out.html.len());
+            return out;
         }
         // A top-level block is the events from a depth-0 `Start` through its
         // matching `End` — or a single standalone depth-0 event (a `Rule`, or
         // the `Html` a highlighted fence became; `Start(CodeBlock)` never
         // reaches the stream, see the builder above).
-        let mut out = Vec::new();
-        let mut seg: Vec<Event> = Vec::new();
+        //
+        // How many events each block spans is worked out first, in a scan that
+        // moves nothing, so that the events themselves travel exactly once —
+        // straight into `push_html`. Collecting each block into a scratch
+        // `Vec<Event>` on the way cost a push and a drain per event, and there
+        // are hundreds of thousands of them in a 2MB document.
+        let mut runs: Vec<usize> = Vec::new();
         let mut depth = 0usize;
-        for ev in events {
-            match &ev {
+        let mut start = 0usize;
+        for (i, ev) in events.iter().enumerate() {
+            match ev {
                 Event::Start(_) => depth += 1,
                 Event::End(_) => depth = depth.saturating_sub(1),
                 _ => {}
             }
-            seg.push(ev);
             if depth == 0 {
-                let mut html = String::new();
-                pulldown_cmark::html::push_html(&mut html, seg.drain(..));
-                out.push(html);
+                runs.push(i + 1 - start);
+                start = i + 1;
             }
         }
-        if !seg.is_empty() {
+        if start < events.len() {
             // An unbalanced stream cannot happen out of pulldown, but a
             // truncated segment silently dropped would be a missing block.
-            let mut html = String::new();
-            pulldown_cmark::html::push_html(&mut html, seg.drain(..));
-            out.push(html);
+            runs.push(events.len() - start);
         }
-        // Fold any segment that renders no element of its own into the block
-        // before it. Escaped raw HTML (tenet 4 re-emits it as text) is the
-        // case that exists: it renders as bare text starting with `&lt;`,
-        // never `<`. The frontend's splice indexes blocks by element, so one
-        // block must be one top-level element plus whatever trailing text
-        // belongs to it — a pure regrouping, so the concat identity above is
-        // untouched. A document that *opens* with such text keeps it as block
-        // zero; the frontend sees a block that does not start with `<` and
-        // declines to patch that document at all.
-        let mut folded: Vec<String> = Vec::with_capacity(out.len());
-        for seg in out {
-            match folded.last_mut() {
-                Some(prev) if !seg.starts_with('<') => prev.push_str(&seg),
-                _ => folded.push(seg),
-            }
+
+        let mut rest = events.into_iter();
+        for run in runs {
+            let at = out.html.len();
+            pulldown_cmark::html::push_html(&mut out.html, rest.by_ref().take(run));
+            out.close(at);
         }
-        folded
+        out
     })
 }
 
@@ -342,13 +400,19 @@ pub fn render_blocks(source: &str, code_theme: &str) -> Vec<String> {
 /// block lengths in these units so the frontend can decode the payload once
 /// and `slice` per block — JS string offsets *are* UTF-16 units.
 pub fn utf16_units(s: &str) -> usize {
-    s.bytes()
-        .map(|b| match b {
-            0x80..=0xBF => 0,
-            0xF0..=0xFF => 2,
-            _ => 1,
-        })
-        .sum()
+    // The framing runs this over every byte of every render, so the two
+    // vectorized counts below beat the one byte-at-a-time match they replace:
+    // start from the byte length, drop the continuation bytes (a scalar's
+    // trailing bytes are not units of their own) and add one for each 4-byte
+    // lead (those scalars need a surrogate pair). `(b as i8) < -64` is the
+    // continuation-byte test `str::chars().count()` uses, for the same reason.
+    if s.is_ascii() {
+        return s.len();
+    }
+    let bytes = s.as_bytes();
+    let continuations = bytes.iter().filter(|&&b| (b as i8) < -64).count();
+    let quads = bytes.iter().filter(|&&b| b >= 0xF0).count();
+    s.len() - continuations + quads
 }
 
 /// Build the event stream — headings slugged, fences highlighted and spliced
@@ -1158,16 +1222,21 @@ mod tests {
         // per-block render would renumber; the fallback is one segment, and
         // the byte-identity contract still holds through it.
         let src = "first[^1] paragraph\n\nsecond paragraph\n\n[^1]: the note\n";
-        let blocks = render_blocks(src, CODE_THEME);
-        assert_eq!(blocks.len(), 1, "a footnote document must not be split");
-        assert_eq!(blocks.concat(), render_with(src, CODE_THEME));
+        let doc = render_blocks(src, CODE_THEME);
+        assert_eq!(
+            doc.block_count(),
+            1,
+            "a footnote document must not be split"
+        );
+        assert_eq!(doc.html(), render_with(src, CODE_THEME));
     }
 
     #[test]
     fn a_mixed_document_splits_into_its_top_level_blocks() {
         let src = "# h\n\npara\n\n```rust\nfn x() {}\n```\n\n---\n\n- a\n- b\n";
-        let blocks = render_blocks(src, CODE_THEME);
-        assert_eq!(blocks.concat(), render_with(src, CODE_THEME));
+        let doc = render_blocks(src, CODE_THEME);
+        assert_eq!(doc.html(), render_with(src, CODE_THEME));
+        let blocks: Vec<&str> = doc.blocks().collect();
         // heading, paragraph, fence, rule, list.
         assert_eq!(blocks.len(), 5, "{blocks:?}");
         assert!(blocks[2].contains("<pre"), "the fence is its own block");
@@ -1180,8 +1249,9 @@ mod tests {
         // before it, so the frontend's one-element-per-block splice holds,
         // and the concat identity must survive the regrouping.
         let src = "para one\n\n<!-- a comment -->\n\npara two\n";
-        let blocks = render_blocks(src, CODE_THEME);
-        assert_eq!(blocks.concat(), render_with(src, CODE_THEME));
+        let doc = render_blocks(src, CODE_THEME);
+        assert_eq!(doc.html(), render_with(src, CODE_THEME));
+        let blocks: Vec<&str> = doc.blocks().collect();
         assert_eq!(blocks.len(), 2, "{blocks:?}");
         assert!(blocks[0].starts_with("<p>"), "{blocks:?}");
         assert!(
@@ -1517,8 +1587,8 @@ mod properties {
         fn blocks_concat_to_the_whole_document(
             source in "([a-z #>*`|:\\[\\]()\\n-]{0,24}\\n){0,20}",
         ) {
-            let blocks = render_blocks(&source, CODE_THEME);
-            prop_assert_eq!(blocks.concat(), render_with(&source, CODE_THEME));
+            let doc = render_blocks(&source, CODE_THEME);
+            prop_assert_eq!(doc.html(), render_with(&source, CODE_THEME));
         }
 
         /// "Uniqueness is a guarantee here rather than a near-certainty" —
