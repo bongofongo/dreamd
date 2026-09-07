@@ -130,18 +130,20 @@ pub fn run(cmd: Cmd) -> Result<(), String> {
         return crate::agent::hook::run(socket);
     }
     let repo_root = crate::resolve_repo_root(None);
-    // `mcp` runs before the config read the other two need: it reads no
-    // configuration at all, and every millisecond here is on the path of an
-    // agent's first tool call. It also never returns until stdin closes.
+    // `mcp` runs before the config read `theme` needs: it reads no configuration
+    // at all, and every millisecond here is on the path of an agent's first tool
+    // call. It also never returns until stdin closes.
     if matches!(cmd, Cmd::Mcp) {
         return crate::mcp::shim::run(&repo_root);
     }
-    let cfg = Config::load(&repo_root);
     match cmd {
-        Cmd::Theme { action } => theme_cmd(action, &cfg),
+        // The only arm that reads configuration, so the load lives here rather
+        // than above the `match`: `config` and `marks` both go straight to the
+        // file they are about.
+        Cmd::Theme { action } => theme_cmd(action, &Config::load(&repo_root)),
         Cmd::Config { action } => config_cmd(action, &repo_root),
         Cmd::Marks { action } => marks_cmd(action, &repo_root),
-        // Both handled above, before the config read.
+        // Both returned above, before any of this ran.
         Cmd::Mcp | Cmd::Approve { .. } => unreachable!(),
     }
 }
