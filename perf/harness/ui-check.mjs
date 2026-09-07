@@ -3914,6 +3914,25 @@ check(
   String(await marks()),
 );
 
+// And those three are one highlight, which only reads right if the marks come
+// back in *document* order — `placeAcrossNodes` wrapped them back to front, so
+// insertion order spells the passage backwards and `drawnText` would disagree
+// with the quote. The consequence of getting it wrong is silent: the mark is
+// taken down and drawn again on every save instead of being reused.
+await patch.evaluate(() => {
+  for (const m of document.querySelectorAll("#content mark.hl")) m.__kept = true;
+});
+const DOC9 = DOC8.map((b) => b.replace(">alpha edited<", ">alpha edited twice<"));
+await save(DOC9);
+check(
+  "and a passage drawn across three nodes is reused whole by a save elsewhere",
+  await patch.evaluate(() => {
+    const ms = [...document.querySelectorAll("#content mark.hl")];
+    return ms.length === 3 && ms.every((m) => m.__kept === true);
+  }),
+  String(await marks()),
+);
+
 patchMarks = [];
 await stamp();
 await patch.evaluate(() => openFile("/repo/other.md"));

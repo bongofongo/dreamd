@@ -852,6 +852,20 @@ skipped by `locateInNodes`, and the mark would stop finding itself next time.
 `clearHighlights` is unchanged and still the right call for every repaint that
 makes no claim about what it replaced (`repaintHighlights`, a file open).
 
+**The marks on screen are a set, not a query.** `applyHighlights` needs to know
+what is already drawn, and asking the document — `contentEl.querySelectorAll("mark.hl")`
+— walked 110k nodes to find a hundred, on every repaint. `wrapRange` is the only
+thing that creates a `<mark class="hl">` and `unwrap` the only thing that takes
+one down, so `drawnMarks` cannot be *missing* one; it is allowed to hold stale
+entries, because a patch that replaced a block took that block's marks out
+without unwrapping them, and `isConnected` is how they say so.
+`d:apply_highlights` 3ms to 1ms. `standingMarks` sorts each id's marks into
+**document order** and that is load-bearing: `placeAcrossNodes` wraps its slices
+back to front, so insertion order spells a cross-node passage backwards and
+`drawnText` would never agree with the quote — the mark would be taken down and
+drawn again on every save. `ui-check.mjs` asserts it directly, and the
+assertion fails if the sort is removed.
+
 **A passage no block holds is looked for once.** The narrowing above has one
 deliberate exception: a mark that failed to place inside the replaced blocks
 widens to the whole document, because it may simply live elsewhere. But a

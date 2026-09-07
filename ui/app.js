@@ -2076,14 +2076,7 @@ function applyHighlights(list, replaced = null) {
 
   // Marks on screen from the previous paint, by id. Several per id is normal:
   // a quote spanning inline markup is one `<mark>` per text-node slice.
-  const standing = new Map();
-  if (replaced) {
-    for (const m of contentEl.querySelectorAll("mark.hl")) {
-      const at = standing.get(m.dataset.id);
-      if (at) at.push(m);
-      else standing.set(m.dataset.id, [m]);
-    }
-  }
+  const standing = replaced ? standingMarks() : new Map();
   // Unwrapping is the only thing here that leaves adjacent text nodes, so only
   // the parents it touches need merging — the same bargain `clearHighlights`
   // strikes, and mandatory for the same reason: a quote split across two of
@@ -2497,6 +2490,45 @@ function selectionContext(range) {
   return { prefix: prefix.slice(-CONTEXT_CHARS), suffix: suffix.slice(0, CONTEXT_CHARS) };
 }
 
+/// Every `<mark class="hl">` this page has drawn.
+///
+/// `wrapRange` below is the only thing that creates one and `unwrap` the only
+/// thing that takes one down, so this cannot be *missing* a mark — which is
+/// what lets `applyHighlights` read it instead of sweeping the document. The
+/// sweep it replaced walked 110k nodes to find a hundred marks, on every
+/// repaint: 2ms of a 22ms save loop.
+///
+/// It is allowed to hold *stale* entries, and does: a patch that replaced a
+/// block took that block's marks out of the document without unwrapping them.
+/// `isConnected` is how they say so, and `standingMarks` prunes them.
+const drawnMarks = new Set();
+
+/// What is on the document right now, by highlight id, in document order.
+///
+/// Order matters and insertion order will not do: `placeAcrossNodes` wraps its
+/// slices back to front, because an earlier wrap would move the later ones, so
+/// the several marks sharing one id are created in reverse. `drawnText` reads
+/// them as a sentence.
+function standingMarks() {
+  const by = new Map();
+  for (const m of drawnMarks) {
+    if (!m.isConnected || !contentEl.contains(m)) {
+      drawnMarks.delete(m);
+      continue;
+    }
+    const at = by.get(m.dataset.id);
+    if (at) at.push(m);
+    else by.set(m.dataset.id, [m]);
+  }
+  for (const marks of by.values()) {
+    if (marks.length > 1) {
+      marks.sort((a, b) =>
+        a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1);
+    }
+  }
+  return by;
+}
+
 // `prior` is the fade `ui/theme.css` keys off. It is a *transient* flag — the
 // Rust side sets it only on marks read off disk, and declares it
 // `skip_serializing_if = "is_false"`, so the overwhelming majority of highlights
@@ -2514,10 +2546,12 @@ function wrapRange(range, id, stale, prior) {
     mark.appendChild(range.extractContents());
     range.insertNode(mark);
   }
+  drawnMarks.add(mark);
   return mark;
 }
 
 function unwrap(mark) {
+  drawnMarks.delete(mark);
   const parent = mark.parentNode;
   if (!parent) return;
   while (mark.firstChild) parent.insertBefore(mark.firstChild, mark);
