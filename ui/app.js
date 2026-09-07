@@ -1242,7 +1242,22 @@ async function renderCurrent({ preserveScroll, reanchor }) {
   }
   perf.span("ipc_render_markdown", t0);
 
+  // Awaited *here*, before the document is written, and the reason is what the
+  // main thread does in between. Both commands were dispatched together and
+  // both bodies run at once — but a response can only be handed to JS when the
+  // main thread is free, and writing 4MB of blocks plus the frame that follows
+  // it is not free. Awaiting the second answer while there is nothing else to
+  // do collects it as soon as Rust has it; doing the write first pushed it
+  // behind a whole repaint. `d:ipc_reanchor` 14ms -> 4ms at 100 marks, and
+  // `save_to_paint` 33ms -> 23ms with it.
+  //
+  // Nothing here is lost: `applyHighlights` needs `changed` and still runs
+  // after the write. Only the *waiting* moved.
   let t = perf.now();
+  const highlights = await highlightsP;
+  perf.span(reanchor ? "ipc_reanchor" : "ipc_get_highlights", t);
+
+  t = perf.now();
   // Staged (head first, tail after the frame) only when there is no scroll
   // position to restore — a pending restore would clamp against the head's
   // extent. Awaited only when it *is* a promise: an unconditional await parks
@@ -1253,14 +1268,13 @@ async function renderCurrent({ preserveScroll, reanchor }) {
   if (changed instanceof Promise) changed = await changed;
   perf.span("innerhtml", t);
 
-  // Restored here — before the await below yields — not after the highlights
-  // land: on the full-write path the `innerHTML` assignment collapsed the
-  // scroll extent and clamped `scrollTop` toward 0, and the old ordering let
-  // the browser paint a frame at that wrong position while the reanchor IPC
-  // ran, a visible jump-to-top-and-back on a `:w` whose block count changed.
-  // Nothing between here and the old site reads scroll-dependent geometry
-  // (`applyHighlights` walks text nodes; `findRecompute`, which does, runs
-  // after).
+  // Restored the instant the write lands, and before anything can yield: on
+  // the full-write path the `innerHTML` assignment collapsed the scroll extent
+  // and clamped `scrollTop` toward 0, and an ordering that let the browser
+  // paint a frame before this ran was a visible jump-to-top-and-back on a `:w`
+  // whose block count changed. Nothing between here and `applyHighlights`
+  // reads scroll-dependent geometry (it walks text nodes; `findRecompute`,
+  // which does, runs after).
   //
   // Guarded, not unconditional: the write forces style+layout of the fresh
   // document *now*, and the decoration passes below then mutate a laid-out
@@ -1299,13 +1313,6 @@ async function renderCurrent({ preserveScroll, reanchor }) {
   // and that still has to happen: the reader asked to resize a mark and the
   // document has moved under them.
   if (changed) endResize();
-
-  // The span now measures the *residual* wait — what the save path still pays
-  // after the overlap above — not the command's cost; `d:rust_reanchor` is
-  // still the body's own number.
-  t = perf.now();
-  const highlights = await highlightsP;
-  perf.span(reanchor ? "ipc_reanchor" : "ipc_get_highlights", t);
 
   t = perf.now();
   applyHighlights(highlights, changed);

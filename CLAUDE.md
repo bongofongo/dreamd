@@ -984,7 +984,12 @@ paint, because the layout then stops overlapping the IPC round trip.
 `d:ipc_reanchor`/`d:ipc_get_highlights` are further from a command cost than the
 rest: `renderCurrent` puts that invoke in flight *before* awaiting
 `render_markdown`, so `d:rust_reanchor` overlaps the render round trip and the
-span measures only the residual wait after the paint.
+span measures only the residual wait. **Both command bodies really do run at
+once** — marks emitted on entry to each land within 0.05ms of one another — so
+what that residual measures is not Rust but the main thread: a response reaches
+JS only when the webview is free, and while the save path spent that gap writing
+4MB of blocks, the second answer sat behind a whole repaint. It is collected
+before the write for exactly that reason.
 `--bench-startup` runs the pre-window sequence — resolve, config, marks; the
 walk is deferred on every launch — and exits; `DREAMD_PERF_SEED` preloads
 highlights from a corpus fixture.
