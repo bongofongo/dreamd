@@ -843,14 +843,13 @@ fn occurrences<'h>(hay: &'h str, needle: &'h str) -> impl Iterator<Item = usize>
 /// copy comes first in the file. Occurrences are produced in order, so the
 /// nearest full context match is either the last one before the hint or the
 /// first one at or after it, and the scan can stop as soon as it has both.
-/// The decision itself, told where the occurrences are rather than finding
-/// them.
 ///
-/// Separating the two is what lets re-anchoring a file find every quote's
-/// occurrences in **one** pass (see [`SourceIndex::locate_all`]) and still
-/// reach exactly the answer a per-quote scan would: this function sees the
-/// same positions in the same order either way, so the two cannot disagree —
-/// which `examples/locate_check.rs` asserts over all 611 fixtures.
+/// This is the decision itself, told where the occurrences are rather than
+/// finding them, and separating the two is what lets re-anchoring a file find
+/// every quote's occurrences in **one** pass (see [`SourceIndex::locate_all`])
+/// and still reach exactly the answer a per-quote scan would: this function
+/// sees the same positions in the same order either way, so the two cannot
+/// disagree — which `examples/locate_check.rs` asserts over all 611 fixtures.
 fn best_match_over(
     hay: &str,
     positions: impl IntoIterator<Item = usize>,
@@ -1854,9 +1853,10 @@ mod tests {
 
     #[test]
     fn without_context_the_first_occurrence_wins() {
-        // `best_match` short-circuits to `find` when there is nothing to score
-        // against, so a hint alone cannot move the answer. Documented here
-        // because it is the difference between this and the test above.
+        // With nothing to score against, `plan` settles this at tier 2 — a
+        // bare `find`, which never reaches `best_match_over` and so never sees
+        // the hint. Documented here because it is the difference between this
+        // and the test above.
         let src = "dup\n\ndup\n";
         let mut index = SourceIndex::new(src);
         assert_eq!(index.locate_near("", "dup", "", 3).unwrap().line_start, 1);

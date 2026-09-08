@@ -324,7 +324,11 @@ mod properties {
                 let s = sentinel();
                 let insert = match mode {
                     0 => s.to_string(),
-                    1 => format!("{}{}{}", &s[..s.len() / 2], "", &s[s.len() / 2..]),
+                    // Split *around* a whole one, so the replacement lands
+                    // exactly where the two halves would otherwise rejoin.
+                    // Joining the halves with nothing between them, which is
+                    // what this arm used to do, is mode 0 spelled twice.
+                    1 => format!("{}{s}{}", &s[..s.len() / 2], &s[s.len() / 2..]),
                     _ => format!("{s}{s}"),
                 };
                 let mut pos = at.index(body.len() + 1);
