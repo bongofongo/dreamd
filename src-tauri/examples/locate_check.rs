@@ -2,8 +2,10 @@
 //!
 //!     cargo run --release --example locate_check [-v]
 //!
-//! The repo has no `#[cfg(test)]` tests; this is the standing check for the one
-//! piece of logic where correctness is genuinely subtle. The invariant:
+//! `cargo test` pins the tiers on hand-written sources; what it cannot reach is
+//! the corpus, where one document repeats whole blocks and the right answer is
+//! recorded by the generator rather than recoverable by searching. The
+//! invariant:
 //!
 //!   For every sampled highlight, `locate` must resolve the **rendered**
 //!   (whitespace-collapsed) string the frontend actually sends back to the

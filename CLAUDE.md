@@ -18,7 +18,7 @@ cargo build --features perf          # timing-instrumented binary (NDJSON marks 
 cargo build --profile profiling --features perf   # release + symbols, for Instruments/samply
 cargo tauri build                    # release binary
 
-cargo bench --bench render           # one bench target: render | locate | search | walk
+cargo bench --bench render           # one target: render | render_blocks | locate | search | walk
 cargo bench --bench locate -- locate_single/today  # a single case (filter is a regex)
 
 ./perf/run.sh quick|pass|deep [--verbose] [--no-window]
@@ -65,8 +65,10 @@ example tests): arbitrary op sequences must leave the `Store` structurally
 sound (stack names only live, bright, annotated marks, exactly once), `admit`
 must hold its contract against arbitrary hostile documents and its own save
 round trip, an envelope carries exactly two sentinels whatever the body
-smuggles, any bytes survive the base64 wire, slugs stay unique, and an exact
-substring always locates at its trimmed text's first occurrence. Failing seeds
+smuggles, any bytes survive the base64 wire, slugs stay unique, an exact
+substring always locates at its trimmed text's first occurrence, a document's
+blocks concatenate to exactly what a whole-document render produces, and
+`utf16_units` agrees with `encode_utf16` on any string. Failing seeds
 persist in `src-tauri/proptest-regressions/` and are re-run first — check new
 ones in.
 Nothing there touches `config_dir()` — that reads the real `~/.config/dreamd`,
@@ -941,8 +943,10 @@ carries (0 of `locate_check`'s 611 fixtures reach it) — is now a few hundred b
 comparisons at occurrences that pass is visiting anyway. Re-anchoring a 2MB
 document went 57ms to 19ms at 100 marks and 265ms to 72ms at 500, with every one
 of the 611 fixtures landing on the same lines. The tier is kept rather than
-dropped because a document that is *not* hard-wrapped does reach it. Exactness
-ranks above a perfect score rather than winning first-past-the-post: within
+dropped because a document that is *not* hard-wrapped does reach it, and its own
+`find` survives in `plan` for one case: a source past the `u32` cap above, which
+has no stripped pass to ride on. Exactness ranks above a perfect score rather
+than winning first-past-the-post: within
 either rank the hint picks, so two exact copies of a block are told apart by
 where the mark already was, which the old first-in-the-file scan could not do.
 **A file's quotes are searched for together.** The stripped pass is where a
