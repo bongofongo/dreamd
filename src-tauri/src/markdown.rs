@@ -111,7 +111,11 @@ fn fallback_code(code: &str) -> String {
     )
 }
 
-fn escape_html(s: &str) -> String {
+/// `pub` — not `pub(crate)` — because `main.rs` is a separate `[[bin]]` crate
+/// and needs this to escape the file label its export renderer puts beside
+/// rendered content. Same three replacements, one implementation: a second
+/// copy over there is how the two would drift.
+pub fn escape_html(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")

@@ -1696,6 +1696,19 @@
         #palette-overlay, .modal-overlay,
         button.code-copy { display: none !important; }
 
+        /* A PDF export stands in for the reader's document inside `#content`
+           for the length of the print, which is what gives it the theme's
+           typography, the code colours and the asset:// images without a
+           second rendering path or a second copy of these rules. The classes
+           are inert every other moment: nothing else in the app emits them.
+
+           The file label is shown only for a multi-document export — one
+           document does not need to be told what it is, and its own H1 is
+           usually the better title. */
+        .export-doc + .export-doc { break-before: page; page-break-before: always; }
+        .export-src { display: none; font-size: 11px; opacity: 0.55; margin: 0 0 1.6em; }
+        #content.export-multi .export-src { display: block; }
+
         /* Zoom is a reading preference and paper has its own measure: a reader
            at 200% is asking for larger type *on this screen*, not for a PDF
            whose every page holds four paragraphs. One declaration undoes all
@@ -2062,7 +2075,7 @@
           <span id="share-step-of">Step 1 of 2</span>
         </div>
 
-        <div id="share-step-format">
+        <div id="share-step-format" hidden>
           <div class="share-opt cur" data-format="md" tabindex="-1">
             <span class="mark">●</span>
             <span>
@@ -2079,7 +2092,7 @@
           </div>
         </div>
 
-        <div id="share-step-files" hidden>
+        <div id="share-step-files">
           <div id="share-files"></div>
           <div id="share-note"></div>
         </div>

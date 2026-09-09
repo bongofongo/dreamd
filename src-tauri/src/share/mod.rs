@@ -165,6 +165,29 @@ fn sweep_stale_exports(dir: &Path, today: u64) -> usize {
     swept
 }
 
+/// Reduce a frontend-supplied name to something safe to put in a filename.
+///
+/// `file_stem` already strips directories, so `../../etc/passwd` arrives as
+/// `passwd` — but a name is easier to reason about when the rule is written
+/// down rather than inherited from `Path`'s behaviour, and a separator that
+/// survived would put the export somewhere nobody swept. Anything left empty
+/// falls back to `document`.
+pub fn safe_stem(name: &str) -> String {
+    let cleaned: String = Path::new(name)
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default()
+        .chars()
+        .filter(|c| !matches!(c, '/' | '\\' | ':' | '\0'))
+        .collect();
+    let trimmed = cleaned.trim().trim_matches('.').to_string();
+    if trimmed.is_empty() {
+        "document".into()
+    } else {
+        trimmed
+    }
+}
+
 /// Mint the path a PDF export should be written to, sweeping earlier days' on
 /// the session's first call.
 ///
@@ -362,6 +385,19 @@ mod tests {
         assert!(name.starts_with(EXPORT_PREFIX), "{name}");
         assert!(name.ends_with("-design notes.pdf"), "{name}");
         assert_eq!(p.parent(), Some(std::env::temp_dir().as_path()));
+    }
+
+    #[test]
+    fn a_supplied_name_cannot_escape_the_temp_directory() {
+        // The frontend names the PDF after the selection, so this is the one
+        // string in the export path that did not come from the walker.
+        assert_eq!(safe_stem("../../etc/passwd"), "passwd");
+        assert_eq!(safe_stem("a/b/c.md"), "c");
+        assert_eq!(safe_stem("notes.md"), "notes");
+        assert_eq!(safe_stem("   "), "document");
+        assert_eq!(safe_stem(""), "document");
+        assert_eq!(safe_stem("..."), "document");
+        assert!(!safe_stem("we:ird/name").contains(['/', ':']));
     }
 
     #[test]

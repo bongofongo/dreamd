@@ -1435,33 +1435,57 @@ fn share_files(
     Ok(result)
 }
 
-/// Print the open document to a PDF and share that.
+/// Render the chosen documents into one block of HTML for export.
 ///
-/// Takes no file list on purpose: printing the live webview can only produce
-/// the document that is in it (see `share::pdf`), so the frontend narrows the
-/// selection step to the open file when this format is chosen.
+/// Deliberately **not** `render_markdown`: that command records the open
+/// document for `mcp::tools::get_open_document` and drives the generation/delta
+/// machinery, so asking it to render a file the reader is not looking at would
+/// tell an agent the wrong thing and desynchronise the frontend's block cache.
+/// This is the same renderer with neither of those side effects.
+///
+/// The frontend stages the result in a container the print sheet shows and the
+/// screen does not, which is what lets a PDF cover several files without an
+/// offscreen webview and without a second copy of the print CSS to keep in
+/// step — see `#print-doc` in `ui/index.html`.
+#[tauri::command]
+fn render_for_export(state: State<AppState>, files: Vec<String>) -> Result<String, String> {
+    let root = state.root();
+    let files = share::resolve(&root, &files)?;
+    let code_theme = state.syntax_theme();
+    let mut out = String::new();
+    for f in &files {
+        let source = dreamd::read_source(&f.to_string_lossy())?;
+        let rel = f
+            .strip_prefix(&root)
+            .unwrap_or(f.as_path())
+            .to_string_lossy()
+            .into_owned();
+        out.push_str("<section class=\"export-doc\"><div class=\"export-src\">");
+        // The path is dreamd's own text about a file it walked, but it lands in
+        // a document beside escaped content and is escaped on the same terms.
+        out.push_str(&markdown::escape_html(&rel));
+        out.push_str("</div>");
+        out.push_str(&markdown::render_with(&source, &code_theme));
+        out.push_str("</section>");
+    }
+    Ok(out)
+}
+
+/// Print what the window is currently showing to a PDF, and share that.
+///
+/// Takes a `name` rather than a file list because by the time this is called
+/// the frontend has already staged the documents into `#print-doc`: printing
+/// the live webview is what makes the export reuse the `#print-css` block
+/// verbatim, and the page is therefore the argument. `name` only decides what
+/// the recipient sees the attachment called.
 #[tauri::command]
 fn share_pdf(
-    state: State<AppState>,
     app: tauri::AppHandle,
+    name: String,
     anchor: ShareAnchor,
 ) -> Result<ShareResult, String> {
-    let source = state
-        .open_doc
-        .lock()
-        .unwrap()
-        .clone()
-        .ok_or_else(|| "no document open to export".to_string())?;
-    // The same containment check a markdown share gets. The open document
-    // came from `render_markdown` rather than from this call, but a repo swap
-    // between the render and the share would otherwise export a file the
-    // current root does not contain.
-    let root = state.root();
-    let files = share::resolve(&root, &[source.to_string_lossy().into_owned()])?;
-    let dest = share::export_path(&source);
-
+    let dest = share::export_path(Path::new(&share::safe_stem(&name)));
     export_pdf(&app, &dest)?;
-
     let result = ShareResult {
         format: share::Format::Pdf,
         count: 1,
@@ -1470,7 +1494,6 @@ fn share_pdf(
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "document.pdf".into()),
     };
-    let _ = files;
     show_picker(&app, vec![dest], anchor)?;
     Ok(result)
 }
@@ -2440,6 +2463,7 @@ fn main() {
             print_document,
             share_available,
             share_files,
+            render_for_export,
             share_pdf,
             delete_file,
             open_external,
