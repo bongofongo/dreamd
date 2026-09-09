@@ -14,6 +14,7 @@ use dreamd::config::{Config, Keymap};
 use dreamd::flow::Flow;
 use dreamd::fs_walk::FileNode;
 use dreamd::send::SendResult;
+use dreamd::share::{self, ShareResult};
 use dreamd::{
     agent, chrome, cli, config, flow, guard, home_relative, markdown, marks_file, mcp, menu,
     notify, perf, prompt, pty, read_source, rootfield, send, theme, watcher,
@@ -1372,6 +1373,173 @@ fn print_document(app: tauri::AppHandle) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+/// Where the share sheet should point, in CSS pixels from the top-left of the
+/// webview — `getBoundingClientRect()` on the share button, straight through.
+///
+/// It crosses as data rather than being worked out in Rust because only the
+/// frontend knows where the button ended up: it moves with the titlebar's
+/// layout, and under `ui.titlebar_fade` the row it sits in is offset again.
+#[derive(serde::Deserialize, Clone, Copy, Default)]
+struct ShareAnchor {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+}
+
+#[cfg(target_os = "macos")]
+impl From<ShareAnchor> for share::picker::Anchor {
+    fn from(a: ShareAnchor) -> Self {
+        share::picker::Anchor {
+            x: a.x,
+            y: a.y,
+            width: a.width,
+            height: a.height,
+        }
+    }
+}
+
+/// Is there a system share surface on this platform at all?
+///
+/// The frontend hides the whole feature on a false rather than offering a
+/// button that can only apologise. Deliberately not a probe of
+/// `printOperationWithPrintInfo:` as well: `share::pdf` checks that selector
+/// itself and *refuses* rather than crashing, so a 10.15 machine gets a toast
+/// naming the reason on the one format that needs it, instead of losing
+/// markdown sharing too.
+#[tauri::command]
+fn share_available() -> bool {
+    cfg!(target_os = "macos")
+}
+
+/// Raise the system share sheet over `files`.
+///
+/// Validation is [`share::resolve`]'s and happens here, on the Rust side,
+/// against the root this process holds — the frontend chooses from a tree
+/// dreamd walked, but it is also the layer a document's own content can reach.
+#[tauri::command]
+fn share_files(
+    state: State<AppState>,
+    app: tauri::AppHandle,
+    files: Vec<String>,
+    anchor: ShareAnchor,
+) -> Result<ShareResult, String> {
+    let root = state.root();
+    let files = share::resolve(&root, &files)?;
+    let result = ShareResult {
+        format: share::Format::Md,
+        count: files.len(),
+        detail: share::describe(&files),
+    };
+    show_picker(&app, files, anchor)?;
+    Ok(result)
+}
+
+/// Print the open document to a PDF and share that.
+///
+/// Takes no file list on purpose: printing the live webview can only produce
+/// the document that is in it (see `share::pdf`), so the frontend narrows the
+/// selection step to the open file when this format is chosen.
+#[tauri::command]
+fn share_pdf(
+    state: State<AppState>,
+    app: tauri::AppHandle,
+    anchor: ShareAnchor,
+) -> Result<ShareResult, String> {
+    let source = state
+        .open_doc
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or_else(|| "no document open to export".to_string())?;
+    // The same containment check a markdown share gets. The open document
+    // came from `render_markdown` rather than from this call, but a repo swap
+    // between the render and the share would otherwise export a file the
+    // current root does not contain.
+    let root = state.root();
+    let files = share::resolve(&root, &[source.to_string_lossy().into_owned()])?;
+    let dest = share::export_path(&source);
+
+    export_pdf(&app, &dest)?;
+
+    let result = ShareResult {
+        format: share::Format::Pdf,
+        count: 1,
+        detail: dest
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "document.pdf".into()),
+    };
+    let _ = files;
+    show_picker(&app, vec![dest], anchor)?;
+    Ok(result)
+}
+
+/// Drive the webview's print operation to `dest`, blocking until it is done.
+///
+/// `with_webview` hops to the main thread and returns immediately, so the
+/// channel is what turns it back into something a command can report on: the
+/// share sheet must not open before the file it is about to offer exists.
+#[cfg(target_os = "macos")]
+fn export_pdf(app: &tauri::AppHandle, dest: &Path) -> Result<(), String> {
+    let win = app
+        .get_webview_window("main")
+        .ok_or_else(|| "no window to export".to_string())?;
+    let (tx, rx) = std::sync::mpsc::channel::<Result<(), String>>();
+    let target = dest.to_path_buf();
+    win.with_webview(move |wv| {
+        let inner = wv.inner() as *mut objc2::runtime::AnyObject;
+        let out = unsafe { share::pdf::print_to_file(inner, &target) };
+        let _ = tx.send(out);
+    })
+    .map_err(|e| e.to_string())?;
+    // Generous, and bounded: a print that never answers must not wedge the
+    // command thread for the life of the process. A long document on a busy
+    // machine is seconds, not tens of them.
+    rx.recv_timeout(Duration::from_secs(60))
+        .map_err(|_| "the export timed out".to_string())?
+}
+
+#[cfg(not(target_os = "macos"))]
+fn export_pdf(_app: &tauri::AppHandle, _dest: &Path) -> Result<(), String> {
+    Err("sharing is macOS-only for now".into())
+}
+
+/// Show the sheet. Main-thread-only, so the window handle — which is `Send` —
+/// is what crosses, and the `NSWindow` pointer is fetched on the far side
+/// rather than carried across.
+#[cfg(target_os = "macos")]
+fn show_picker(
+    app: &tauri::AppHandle,
+    files: Vec<PathBuf>,
+    anchor: ShareAnchor,
+) -> Result<(), String> {
+    let win = app
+        .get_webview_window("main")
+        .ok_or_else(|| "no window to share from".to_string())?;
+    app.run_on_main_thread(move || {
+        let Some(mtm) = objc2::MainThreadMarker::new() else {
+            return;
+        };
+        let Ok(ns) = win.ns_window() else {
+            return;
+        };
+        if let Err(e) = unsafe { share::picker::show(ns, &files, anchor.into(), mtm) } {
+            eprintln!("dreamd: share sheet failed: {e}");
+        }
+    })
+    .map_err(|e| e.to_string())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn show_picker(
+    _app: &tauri::AppHandle,
+    _files: Vec<PathBuf>,
+    _anchor: ShareAnchor,
+) -> Result<(), String> {
+    Err("sharing is macOS-only for now".into())
+}
+
 /// Move a file to the OS trash. The path must resolve to inside the repo root.
 #[tauri::command]
 fn delete_file(state: State<AppState>, path: String) -> Result<(), String> {
@@ -2270,6 +2438,9 @@ fn main() {
             delete_theme,
             copy_to_clipboard,
             print_document,
+            share_available,
+            share_files,
+            share_pdf,
             delete_file,
             open_external,
             agent_prefs,

@@ -98,6 +98,30 @@ libc = "0.2"
 # `arboard`'s defaults are off for `image-data`; Wayland's clipboard protocol is
 # a separate feature and dreamd needs it back, or the clipboard fallback in
 # `send.rs` fails on any Wayland session — which is the Arch default.
+# The share sheet (`share::picker`) and the print-to-file path
+# (`share::pdf`). All three are already in the tree transitively through
+# tao/wry — this only makes them addressable, the same note `aho-corasick` and
+# `libc` carry. macOS-only because `NSSharingServicePicker` has no counterpart
+# elsewhere; the rest of `share` compiles on both platforms on purpose.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = [
+  "NSGraphics",
+  "NSPrintInfo",
+  "NSResponder",
+  "NSSharingService",
+  "NSView",
+  "NSWindow",
+] }
+objc2-foundation = { version = "0.3", features = [
+  "NSArray",
+  "NSDictionary",
+  "NSGeometry",
+  "NSString",
+  "NSURL",
+  "NSValue",
+] }
+
 [target.'cfg(target_os = "linux")'.dependencies]
 arboard = { version = "3", default-features = false, features = [
   "wayland-data-control",

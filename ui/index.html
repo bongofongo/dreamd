@@ -1256,6 +1256,34 @@
       #confirm-msg { margin: 6px 0 4px; }
       #confirm-detail { font-size: 12px; opacity: 0.6; word-break: break-all; }
 
+      /* The share screen. One box, two steps, and the step that is not current
+         is `hidden` rather than unmounted — the file list is built once per
+         open and keeping it in the DOM is what lets Back be instant and lets
+         the checked set survive a trip forward and back. */
+      #share-box { width: 460px; max-width: 92vw; background: var(--sidebar-bg, #100e17); border: 1px solid var(--border, #2e2940); border-radius: 10px; padding: 14px; }
+      #share-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 10px; }
+      #share-head .title { font-weight: 600; }
+      #share-step-of { font-size: 12px; opacity: 0.55; margin-left: auto; }
+      /* Both steps are lists of the same kind of row, so they share one rule:
+         a radio in step one and a checkbox in step two differ in the glyph
+         they draw, not in how they highlight. */
+      .share-opt { display: flex; align-items: flex-start; gap: 10px; padding: 8px 10px; border: 1px solid transparent; border-radius: 8px; cursor: pointer; }
+      .share-opt:hover { background: var(--btn-bg, #1f1c2b); }
+      .share-opt.cur { border-color: var(--accent, #f2d16b); background: var(--btn-bg, #1f1c2b); }
+      .share-opt .mark { width: 1.1em; flex: none; opacity: 0.85; text-align: center; }
+      .share-opt .lbl { font-weight: 500; }
+      .share-opt .sub { font-size: 12px; opacity: 0.6; margin-top: 1px; }
+      .share-opt.off { opacity: 0.38; cursor: default; }
+      .share-opt.off:hover { background: none; }
+      #share-files { max-height: 46vh; overflow: auto; margin: 0 -4px; padding: 0 4px; }
+      #share-note { font-size: 12px; opacity: 0.6; margin: 8px 2px 0; }
+      /* The hint line carries the keyboard contract, because the whole point of
+         this screen is that Enter walks it without the mouse. */
+      #share-foot { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
+      #share-keys { font-size: 11px; opacity: 0.5; display: flex; align-items: center; gap: 5px; }
+      #share-keys .k { border: 1px solid var(--border, #2e2940); border-radius: 4px; padding: 0 4px; }
+      #share-foot .spacer { margin-left: auto; }
+
       /* icon-button tooltip: name + keybind, positioned by JS */
       #tooltip {
         position: fixed; z-index: 90; display: none; pointer-events: none;
@@ -1788,6 +1816,13 @@
                deliberate action with no keybind of its own, and the bar's right
                end is worth more to the three buttons that carry the reading loop.
                See `renderWindow` in app.js. -->
+          <!-- Share sits beside Settings rather than at the bar's right end,
+               which the comment above reserves for the three buttons carrying
+               the reading loop. Hidden entirely where there is no system share
+               surface — see `share_available`. -->
+          <button id="btn-share" class="icon" data-tip="Share this document" style="display:none">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v13"/><path d="M8 7l4-4 4 4"/><path d="M5 14v5a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-5"/></svg>
+          </button>
           <button id="btn-settings" class="icon" data-tip="Settings" data-tip-key="settings">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1.08-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1.08 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
           </button>
@@ -2013,6 +2048,52 @@
         <div class="modal-row">
           <button id="confirm-cancel">Cancel</button>
           <button id="confirm-ok" class="danger">Move to Trash</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Share. Step one picks the format, step two the files; Enter commits
+         whichever step is showing, so Enter-Enter shares the open document as
+         markdown without the reader touching the mouse. -->
+    <div id="share-overlay" class="modal-overlay">
+      <div id="share-box" role="dialog" aria-modal="true" aria-label="Share">
+        <div id="share-head">
+          <span class="title" id="share-title">Share</span>
+          <span id="share-step-of">Step 1 of 2</span>
+        </div>
+
+        <div id="share-step-format">
+          <div class="share-opt cur" data-format="md" tabindex="-1">
+            <span class="mark">●</span>
+            <span>
+              <div class="lbl">Markdown</div>
+              <div class="sub" id="share-md-sub">the source, for someone who will edit it</div>
+            </span>
+          </div>
+          <div class="share-opt" data-format="pdf" tabindex="-1">
+            <span class="mark">○</span>
+            <span>
+              <div class="lbl">PDF</div>
+              <div class="sub" id="share-pdf-sub">typeset like the window, reads anywhere</div>
+            </span>
+          </div>
+        </div>
+
+        <div id="share-step-files" hidden>
+          <div id="share-files"></div>
+          <div id="share-note"></div>
+        </div>
+
+        <div id="share-foot">
+          <div id="share-keys">
+            <span class="k">↑↓</span><span>move</span>
+            <span class="k">Space</span><span>pick</span>
+            <span class="k">Enter</span><span>next</span>
+          </div>
+          <span class="spacer"></span>
+          <button id="share-back" style="display:none">Back</button>
+          <button id="share-cancel">Cancel</button>
+          <button id="share-next" class="primary">Next</button>
         </div>
       </div>
     </div>

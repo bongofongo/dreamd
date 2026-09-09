@@ -196,6 +196,10 @@ async function init() {
   wireTooltips();
   perf.at("wired");
 
+  // Unawaited, like the tree below: whether the button exists is not worth a
+  // round trip on the path to first paint, and it appears a frame later.
+  initShare();
+
   // The tree is off the critical path when a document is opening: Rust blocks
   // until the background walk lands, so this simply resolves late and
   // `paintTree` marks the open file active whenever it does. `.catch` is
@@ -6063,6 +6067,7 @@ function wireUi() {
   $("settings-overlay").onclick = (e) => { if (e.target.id === "settings-overlay") closeSettings(); };
 
   wireFind();
+  wireShare();
   wireSettings();
   wireRootField();
   wireResizeHandles();
@@ -6141,8 +6146,8 @@ function wireKeys() {
       // which every overlay above covers — so its place in this order is a
       // formality rather than a ranking.
       const claimed = ["palette-overlay", "annot-overlay", "confirm-overlay",
-                       "settings-overlay", "file-menu", "find-bar", "pty-pane",
-                       "agent-popout", "lightbox"]
+                       "settings-overlay", "share-overlay", "file-menu", "find-bar",
+                       "pty-pane", "agent-popout", "lightbox"]
         .some((id) => $(id).classList.contains("open"));
       if (lightboxOpen()) closeLightbox();
       closePalette();
@@ -6153,6 +6158,10 @@ function wireKeys() {
       if ($("annot-overlay").classList.contains("open")) cancelAnnot();
       if ($("confirm-overlay").classList.contains("open")) closeConfirm();
       if ($("settings-overlay").classList.contains("open")) closeSettings();
+      // Escape closes the whole screen rather than stepping back one: Back is
+      // on the footer and on Shift-Tab, and a modal's Escape meaning anything
+      // but "close" is the kind of inconsistency this bar exists to avoid.
+      if (shareCtx) closeShare();
       // Resize mode is claimed last of all: it outranks view mode, because it is
       // the more specific thing to be escaping from, and loses to every overlay
       // above — an overlay sits on top of the document, and resize mode is a
@@ -6164,6 +6173,9 @@ function wireKeys() {
     // viewer is here for the mirror-image reason — it has no inputs, and every
     // binding below acts on a document it is covering. Its own two keys are
     // Escape and the zoom pair, both claimed above this line.
+    // The share screen has no inputs of its own, so it claims its keys here
+    // instead — above the guard below, which would otherwise swallow them.
+    if (shareCtx) { shareKey(e); return; }
     if (lightboxOpen() ||
         $("palette-overlay").classList.contains("open") ||
         $("annot-overlay").classList.contains("open") ||
@@ -7347,6 +7359,262 @@ function escapeHtml(s) {
 }
 
 let toastTimer = null;
+/// ---- share -----------------------------------------------------------
+///
+/// One button, then a two-step screen: format, then files. The screen exists
+/// rather than a bare picker because the format is a real choice — the source
+/// for someone who will edit it, a PDF for someone who will only read it — and
+/// because the reader wanted a menu Enter can walk without the mouse.
+///
+/// So the contract the whole section is built around: **Enter commits the step
+/// that is showing.** Enter-Enter shares the open document as markdown, which
+/// is the common case, and nothing on the way there needs a pointer. The
+/// cursor is a row index rather than DOM focus, because the rows are rebuilt
+/// on every paint and focus would not survive it (and `isEditable` would
+/// disarm the bare-letter bindings if a field were focused here — see the note
+/// on never auto-focusing).
+///
+/// `shareCtx` is null exactly when the overlay is closed; every handler below
+/// leans on that rather than re-reading the class.
+let shareCtx = null;
+
+/// Every markdown file in the tree, flattened depth-first — the order the
+/// sidebar paints, so the list reads the same way the tree does.
+function flattenTree(node, out) {
+  out = out || [];
+  for (const c of node?.children || []) {
+    if (c.is_dir) flattenTree(c, out);
+    else out.push({ path: c.path, rel: c.rel, name: c.name });
+  }
+  return out;
+}
+
+async function openShare() {
+  if (shareCtx) return;
+  let files = [];
+  try {
+    files = flattenTree(await invoke("list_markdown_files"));
+  } catch (e) {
+    toast(String(e));
+    return;
+  }
+  if (!files.length) { toast("No markdown files to share"); return; }
+
+  // The open document is pre-checked, which is what makes the second Enter
+  // meaningful: without it the fast path would share nothing and the screen
+  // would have to refuse. A window with nothing open starts with an empty set
+  // and the reader picks.
+  const checked = new Set();
+  if (currentFile && files.some((f) => f.path === currentFile)) checked.add(currentFile);
+
+  shareCtx = {
+    step: 0,
+    format: "md",
+    files,
+    checked,
+    // Start the cursor on the open document rather than at the top, so the
+    // list opens looking at the file the reader is actually in.
+    cursor: 0,
+  };
+  $("share-overlay").classList.add("open");
+  paintShare();
+}
+
+function closeShare() {
+  shareCtx = null;
+  $("share-overlay").classList.remove("open");
+}
+
+/// The rows the cursor moves over, for whichever step is showing. One function
+/// so `shareKey` never has to branch on the step to move.
+function shareRows() {
+  if (!shareCtx) return [];
+  return Array.from(
+    $(shareCtx.step === 0 ? "share-step-format" : "share-files")
+      .querySelectorAll(".share-opt")
+  );
+}
+
+/// A PDF is the *open* document and only ever that: it is produced by printing
+/// the live webview, which can only contain the file on screen. The file step
+/// says so rather than offering checkboxes the Rust side would refuse.
+function shareIsPdf() { return shareCtx?.format === "pdf"; }
+
+function paintShare() {
+  if (!shareCtx) return;
+  const { step, format, files, checked } = shareCtx;
+  $("share-step-of").textContent = `Step ${step + 1} of 2`;
+  $("share-step-format").hidden = step !== 0;
+  $("share-step-files").hidden = step !== 1;
+  $("share-back").style.display = step === 0 ? "none" : "";
+  $("share-next").textContent = step === 0 ? "Next" : "Share";
+
+  if (step === 0) {
+    for (const el of $("share-step-format").querySelectorAll(".share-opt")) {
+      const on = el.dataset.format === format;
+      el.querySelector(".mark").textContent = on ? "●" : "○";
+      el.classList.toggle("cur", on);
+    }
+    // The cursor tracks the chosen format on this step, so ↑↓ and the
+    // selection are the same thing and Space has nothing left to do.
+    shareCtx.cursor = format === "md" ? 0 : 1;
+    $("share-keys").innerHTML =
+      '<span class="k">↑↓</span><span>choose</span><span class="k">Enter</span><span>next</span>';
+    return;
+  }
+
+  const pdf = shareIsPdf();
+  const box = $("share-files");
+  box.innerHTML = "";
+  const frag = document.createDocumentFragment();
+  files.forEach((f, i) => {
+    const row = document.createElement("div");
+    // A PDF share can only be the open document, so every other row is inert
+    // rather than absent: seeing the rest greyed out explains the restriction,
+    // where an abruptly one-item list would just look broken.
+    const inert = pdf && f.path !== currentFile;
+    row.className = "share-opt" + (inert ? " off" : "") + (i === shareCtx.cursor ? " cur" : "");
+    row.dataset.idx = String(i);
+    const on = pdf ? f.path === currentFile : checked.has(f.path);
+    row.innerHTML =
+      `<span class="mark">${on ? "☑" : "☐"}</span>` +
+      `<span><div class="lbl"></div><div class="sub"></div></span>`;
+    row.querySelector(".lbl").textContent = f.name;
+    row.querySelector(".sub").textContent = f.rel;
+    frag.appendChild(row);
+  });
+  box.appendChild(frag);
+
+  const n = pdf ? (currentFile ? 1 : 0) : checked.size;
+  $("share-note").textContent = pdf
+    ? (currentFile
+        ? "A PDF is the document on screen — it is printed from the window itself."
+        : "Nothing is open, so there is no page to print.")
+    : `${n} file${n === 1 ? "" : "s"} selected`;
+  $("share-keys").innerHTML = pdf
+    ? '<span class="k">Enter</span><span>share</span>'
+    : '<span class="k">↑↓</span><span>move</span><span class="k">Space</span><span>pick</span><span class="k">Enter</span><span>share</span>';
+
+  const cur = box.querySelector(".share-opt.cur");
+  if (cur) cur.scrollIntoView({ block: "nearest" });
+}
+
+/// The share screen owns the keyboard while it is open — claimed in the global
+/// handler above the overlay guard, so none of the document bindings fire
+/// underneath it.
+function shareKey(e) {
+  if (!shareCtx) return;
+  const rows = shareRows();
+  const step = shareCtx.step;
+
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    e.preventDefault();
+    if (step === 0) {
+      shareCtx.format = shareCtx.format === "md" ? "pdf" : "md";
+    } else if (rows.length) {
+      const d = e.key === "ArrowDown" ? 1 : -1;
+      shareCtx.cursor = (shareCtx.cursor + d + rows.length) % rows.length;
+    }
+    paintShare();
+    return;
+  }
+  if (e.key === " " && step === 1 && !shareIsPdf()) {
+    e.preventDefault();
+    toggleShareRow(shareCtx.cursor);
+    return;
+  }
+  if (e.key === "Enter") {
+    e.preventDefault();
+    advanceShare();
+    return;
+  }
+  // Everything else is swallowed rather than passed down: a bare `f` reaching
+  // the document from behind an open modal is the bug this guard exists for.
+  if (e.key !== "Tab") e.preventDefault();
+}
+
+function toggleShareRow(i) {
+  const f = shareCtx?.files[i];
+  if (!f || shareIsPdf()) return;
+  if (shareCtx.checked.has(f.path)) shareCtx.checked.delete(f.path);
+  else shareCtx.checked.add(f.path);
+  shareCtx.cursor = i;
+  paintShare();
+}
+
+/// Enter, and the primary button: commit this step, or finish.
+function advanceShare() {
+  if (!shareCtx) return;
+  if (shareCtx.step === 0) {
+    shareCtx.step = 1;
+    // Land the cursor on the open document, which is both the pre-checked row
+    // and the only one a PDF can use.
+    const i = shareCtx.files.findIndex((f) => f.path === currentFile);
+    shareCtx.cursor = i >= 0 ? i : 0;
+    paintShare();
+    return;
+  }
+  commitShare();
+}
+
+async function commitShare() {
+  if (!shareCtx) return;
+  const pdf = shareIsPdf();
+  const files = shareCtx.files
+    .filter((f) => shareCtx.checked.has(f.path))
+    .map((f) => f.path);
+  if (!pdf && !files.length) { toast("Nothing selected to share"); return; }
+  if (pdf && !currentFile) { toast("Nothing open to export"); return; }
+
+  // The rect the sheet points at, measured before the overlay closes — the
+  // button is behind it but still laid out, so this is its real position.
+  const r = $("btn-share").getBoundingClientRect();
+  const anchor = { x: r.x, y: r.y, width: r.width, height: r.height };
+
+  closeShare();
+  try {
+    const res = pdf
+      ? await invoke("share_pdf", { anchor })
+      : await invoke("share_files", { files, anchor });
+    toast(`Sharing ${res.detail}`);
+  } catch (err) {
+    toast(String(err));
+  }
+}
+
+function wireShare() {
+  $("btn-share").onclick = () => openShare();
+  $("share-cancel").onclick = () => closeShare();
+  $("share-next").onclick = () => advanceShare();
+  $("share-back").onclick = () => {
+    if (!shareCtx) return;
+    shareCtx.step = 0;
+    paintShare();
+  };
+  $("share-overlay").onclick = (e) => { if (e.target.id === "share-overlay") closeShare(); };
+  // Click acts on the row it hit; the cursor follows so the keyboard picks up
+  // where the pointer left off rather than jumping back.
+  $("share-step-format").onclick = (e) => {
+    const row = e.target.closest(".share-opt");
+    if (!row || !shareCtx) return;
+    shareCtx.format = row.dataset.format;
+    paintShare();
+  };
+  $("share-files").onclick = (e) => {
+    const row = e.target.closest(".share-opt");
+    if (!row || row.classList.contains("off")) return;
+    toggleShareRow(Number(row.dataset.idx));
+  };
+}
+
+/// The button is absent where there is no system share surface, rather than
+/// present and apologetic. One IPC at boot; `share_available` is a `cfg!`.
+async function initShare() {
+  try {
+    if (await invoke("share_available")) $("btn-share").style.display = "";
+  } catch { /* an older backend simply has no button */ }
+}
+
 function toast(msg) {
   const t = $("toast");
   t.textContent = msg;

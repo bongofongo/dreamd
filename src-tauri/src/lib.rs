@@ -28,6 +28,7 @@ pub mod pty;
 pub mod rootfield;
 pub mod search;
 pub mod send;
+pub mod share;
 pub mod theme;
 pub mod untrusted;
 pub mod watcher;
