@@ -2,28 +2,34 @@
 const steps = [
   {
     title: "Highlight",
-    body: "Select a passage while you read. It stays marked in the margin — the same yellow the app uses, because this is the app's own colour.",
+    body: "Select a passage while you read. It stays marked in the app's own yellow.",
   },
   {
     title: "Annotate",
-    body: "Attach a question to the passage. The two travel together from here on; the quote is the evidence, the question is what you actually want to know.",
+    body: "Attach a question to it. Quote and question travel together from here — the passage is the evidence, the question is what you actually want to know.",
     aside: "why does this contradict the section above?",
   },
   {
     title: "Stack",
-    body: "Each pair queues up, and survives the session — the queue is written to a file of its own, never into your repo. Read the whole document first, marking as you go, rather than breaking off to type every time something snags.",
+    body: "Each pair queues, and survives the session — written to a file of its own, never into your repo. Read the whole document first, marking as you go.",
   },
   {
     title: "Send",
-    body: "Push the stack to a Claude Code session inside the window — one formatted question, every quote attached, file and line numbers included. The answer comes back typeset like the document, not painted into a terminal.",
+    body: "Push the stack to a Claude Code session inside the window: one message, every quote attached, file and line numbers included. The answer comes back typeset like the document, not painted into a terminal.",
   },
 ];
 ---
 
 <section class="section section-alt" id="loop">
   <div class="wrap">
-    <span class="eyebrow">the loop</span>
+    <span class="eyebrow">what it is</span>
     <h2>Highlight → annotation → stack → send</h2>
+    <p class="lede">
+      Terminal text is fine for code and miserable for prose. dreamd opens as
+      its own window, lists the markdown in the repo you are sitting in, and
+      renders it with real fonts, real spacing and highlighted code — built for
+      a day inside tmux, Neovim and Claude Code, not a browser tab.
+    </p>
     <ol class="steps">
       {
         steps.map((step, i) => (
@@ -49,6 +55,14 @@ const steps = [
 
 <style>
   h2 {
+    margin-bottom: 1.2rem;
+  }
+
+  /* The old "what it is" section, absorbed: the section now says what the
+     thing is and only then names the loop's four beats. */
+  .lede {
+    max-width: 36em;
+    color: var(--muted);
     margin-bottom: 2.6rem;
   }
 

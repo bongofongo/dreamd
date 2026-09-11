@@ -21,23 +21,6 @@ import {
   <Landing />
 
   <div class="page">
-  <section class="section section-alt what">
-    <div class="wrap">
-      <span class="eyebrow">what it is</span>
-      <p>
-        Terminal text is fine for code and miserable for prose. dreamd opens as
-        its own window, shows a file tree of every markdown file in the
-        repository you are sitting in, and renders the one you click with real
-        fonts, real spacing, and syntax-highlighted code blocks.
-      </p>
-      <p>
-        It was built for a day spent inside a terminal — tmux, Neovim, Claude
-        Code. Other previewers dump you into a browser tab, which breaks the
-        flow. This is the reading window that belongs in that setup.
-      </p>
-    </div>
-  </section>
-
   <LoopSteps />
 
   <section class="section get" id="install">
@@ -46,18 +29,16 @@ import {
       <h2>Install</h2>
       <p class="lede">
         Version {VERSION}. macOS on Apple Silicon and Intel, Linux on x86_64.
-        One binary either way: <code>dreamd.app</code> or a desktop entry
-        <em>and</em> <code>dreamd</code> on your <code>PATH</code>, so the window
-        and the command line can never be different versions of each other.
+        Every channel installs both halves — the window and the
+        <code>dreamd</code> command — so the two can never drift apart.
       </p>
 
       <div class="pkg">
         <span class="alt">macOS · Homebrew</span>
         <pre><code>brew install --cask {BREW_CASK}</code></pre>
         <p class="note">
-          Signed with a Developer ID certificate and notarised by Apple, so it
-          opens straight away. <code>brew upgrade --cask dreamd</code> takes you
-          to the next release.
+          Signed and notarised, so it opens straight away.
+          <code>brew upgrade --cask dreamd</code> for the next one.
         </p>
       </div>
 
@@ -65,8 +46,8 @@ import {
         <span class="alt">macOS or Linux · no package manager, no root</span>
         <pre><code>curl -fsSL {INSTALL_URL} | sh</code></pre>
         <p class="note">
-          The release artifact, checksum-verified before it unpacks. Updating
-          means re-running the line.
+          The release artifact, checksum-verified before it unpacks. Re-run the
+          line to update.
         </p>
       </div>
 
@@ -75,9 +56,9 @@ import {
         <pre><code>chmod +x dreamd-*.AppImage && ./dreamd-*.AppImage
 sudo dpkg -i dreamd-*.deb</code></pre>
         <p class="note">
-          AppImage, <code>.deb</code> and a plain tarball on every release, all
+          AppImage, <code>.deb</code> and a plain tarball every release, each
           carrying the same desktop entry and icons; Arch builds from the
-          PKGBUILD attached alongside them. Nothing here is signed — the
+          PKGBUILD beside them. Nothing here is signed — the
           <code>.sha256</code> files are the integrity check.
         </p>
       </div>
@@ -92,7 +73,7 @@ sudo dpkg -i dreamd-*.deb</code></pre>
       </div>
       <p class="note">
         <code>dreamd</code> opens the repo you are standing in,
-        <code>dreamd notes/todo.md</code> opens a file. Like nvim. Open source
+        <code>dreamd notes/todo.md</code> opens a file — like nvim. Open source
         under the
         <a href={LICENSE_URL} rel="noopener noreferrer">{LICENSE_NAME} licence</a>.
       </p>
@@ -104,15 +85,6 @@ sudo dpkg -i dreamd-*.deb</code></pre>
 </SiteLayout>
 
 <style>
-  .what p {
-    max-width: 36em;
-    color: var(--muted);
-  }
-
-  .what p + p {
-    margin-top: 1.2rem;
-  }
-
   .get h2 {
     margin-bottom: 1rem;
   }
