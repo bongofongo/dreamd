@@ -21,8 +21,10 @@
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{msg_send, sel};
-use objc2_app_kit::{NSPrintHeaderAndFooter, NSPrintInfo, NSPrintJobSavingURL, NSPrintSaveJob};
-use objc2_foundation::{NSNumber, NSString, NSURL};
+use objc2_app_kit::{
+    NSPrintHeaderAndFooter, NSPrintInfo, NSPrintJobSavingURL, NSPrintOperation, NSPrintSaveJob,
+};
+use objc2_foundation::{NSNumber, NSPoint, NSRect, NSString, NSURL};
 use std::path::Path;
 
 /// Is the selector this module needs actually on `WKWebView`?
@@ -96,6 +98,37 @@ pub unsafe fn print_to_file(webview: *mut AnyObject, dest: &Path) -> Result<(), 
         }
         let _: () = msg_send![op, setShowsPrintPanel: false];
         let _: () = msg_send![op, setShowsProgressPanel: false];
+
+        // **Size the operation's view to the page, or this does not finish.**
+        //
+        // `printOperationWithPrintInfo:` hands back an operation over a view
+        // that is still the size of the webview *on screen*. AppKit then
+        // paginates that width against a paper page, so a window a thousand
+        // points wide is sliced into a great many narrow ones and the run
+        // grinds — main thread pinned inside `_renderCurrentPageForPrintOperation`,
+        // writing pages, making progress, never arriving. It does not read as
+        // a slow export from outside: the window stops answering and macOS
+        // files a hang report, which is what the first version of this did.
+        //
+        // The frame is the whole paper and the margins are zeroed, so `@page
+        // { margin: 16mm }` in the print sheet is the only thing setting a
+        // margin. Splitting that decision between CSS and AppKit would mean
+        // two numbers that have to agree and no way to see both at once.
+        info.setTopMargin(0.0);
+        info.setBottomMargin(0.0);
+        info.setLeftMargin(0.0);
+        info.setRightMargin(0.0);
+        let paper = info.paperSize();
+        // Refused rather than skipped. A missing frame is not a cosmetic
+        // failure — it is the runaway pagination above, and the symptom is a
+        // window that stops answering for minutes. Better to say the export
+        // could not be set up than to start one that will not end.
+        let view = (*op)
+            .downcast_ref::<NSPrintOperation>()
+            .and_then(|o| o.view())
+            .ok_or_else(|| "the print operation has no view to size".to_string())?;
+        view.setFrame(NSRect::new(NSPoint::new(0.0, 0.0), paper));
+
         let ok: bool = msg_send![op, runOperation];
         if !ok {
             return Err("the print operation failed".into());
