@@ -110,8 +110,11 @@ ENTRY="$(jq -n \
     date: $date,
     runner: $runner,
     metrics: {
-      first_paint_ms: $first_paint_ms,
-      save_to_paint_p50_ms: $save_to_paint_p50_ms,
+      # The harness reports these as raw floats, so a p50 arrives as
+      # 29.00000000000091 and would be published verbatim. Two decimals is
+      # finer than either number is reproducible.
+      first_paint_ms: ($first_paint_ms * 100 | round) / 100,
+      save_to_paint_p50_ms: ($save_to_paint_p50_ms * 100 | round) / 100,
       peak_rss_mb: $peak_rss_mb,
       appimage_mb: $appimage_mb
     }

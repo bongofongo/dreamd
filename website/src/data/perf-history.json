@@ -32,7 +32,7 @@
       "runner": "ubuntu-22.04 (CI)",
       "metrics": {
         "first_paint_ms": 580,
-        "save_to_paint_p50_ms": 29.00000000000091,
+        "save_to_paint_p50_ms": 29,
         "peak_rss_mb": 40.11,
         "appimage_mb": 81.14
       }

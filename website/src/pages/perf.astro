@@ -184,16 +184,14 @@ const PAGE_DESC =
       </p>
       <p class="method">
         Each entry is one build's numbers from dreamd's own{" "}
-        <code>perf/run.sh</code> — a single run, not an average across
-        machines, and not a synthetic suite. CI-produced entries are measured
-        on GitHub's <code>ubuntu-22.04</code> Linux runner; a manually-captured
-        seed is measured on whatever machine produced it. The table below
-        names the exact machine behind every row, so it's clear which is
-        which. See{" "}
+        <code>perf/run.sh</code> — a single run on a single machine, not an
+        average and not a synthetic suite. Releases are measured on GitHub's{" "}
+        <code>ubuntu-22.04</code> runner; the table names the machine behind
+        every row.{" "}
         <a href={`${REPO_URL}/blob/main/perf/README.md`} rel="noopener noreferrer">
           perf/README.md
         </a>{" "}
-        in the repo for what each number represents and how much to trust it.
+        says what each number means and how much to trust it.
       </p>
     </div>
   </section>
@@ -252,6 +250,11 @@ const PAGE_DESC =
               const first = entries[0].metrics[metric.key];
               const last = entries[entries.length - 1].metrics[metric.key];
               const summary = `Line chart of ${metric.label} across ${n} releases, from ${fmt(first, metric.decimals)} to ${fmt(last, metric.decimals)} ${metric.unit}, lower is better.`;
+              // The trend the line draws, said in words — the shape is only
+              // legible against the first entry, and that is the comparison a
+              // reader makes anyway.
+              const pct = first === 0 ? 0 : Math.round(((last - first) / first) * 100);
+              const delta = `${pct > 0 ? "+" : pct < 0 ? "\u2212" : "\u00b1"}${Math.abs(pct)}% since ${entries[0].version}`;
               return (
                 <div class="chart-card">
                   <div class="chart-head">
@@ -264,6 +267,7 @@ const PAGE_DESC =
                   <p class="chart-note">
                     {metric.note} · lower is better
                   </p>
+                  <p class="chart-delta">{delta}</p>
                   <svg
                     viewBox={`0 0 ${CHART_W} ${CHART_H}`}
                     role="img"
@@ -324,7 +328,8 @@ const PAGE_DESC =
         <div class="wrap">
           <h2>Every number</h2>
           <p class="lede table-lede">
-            The exact values behind the charts above — no hover required.
+            The exact values behind the charts — no hover required. Lower is
+            better in every column.
           </p>
           <div class="table-wrap">
             <table>
@@ -482,6 +487,15 @@ const PAGE_DESC =
   .chart-note {
     margin-top: 0.2rem;
     font-size: 0.8rem;
+    color: var(--muted);
+  }
+
+  /* Stated in the same mono as the value it is about, and no louder than the
+     note above it: a trend, not a badge. */
+  .chart-delta {
+    margin-top: 0.35rem;
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
     color: var(--muted);
   }
 
