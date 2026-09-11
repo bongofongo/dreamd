@@ -7481,6 +7481,8 @@ function paintShare() {
 
     const n = shareChosen().length;
     $("share-note").textContent = `${n} file${n === 1 ? "" : "s"} selected`;
+    $("share-save").style.display = "none";
+
     $("share-keys").innerHTML =
       '<span class="k">\u2191\u2193</span><span>move</span>' +
       '<span class="k">Space</span><span>pick</span>' +
@@ -7496,15 +7498,16 @@ function paintShare() {
     el.querySelector(".mark").textContent = on ? "\u25cf" : "\u25cb";
     el.classList.toggle("cur", on);
   }
-  $("share-md-sub").textContent =
-    n === 1 ? "the source file, for someone who will edit it"
-            : `${n} source files, for someone who will edit them`;
-  $("share-pdf-sub").textContent =
-    n === 1 ? "typeset like the window, reads anywhere"
-            : `one PDF, ${n} documents, a page break between each`;
-  shareCtx.cursor = format === "md" ? 0 : 1;
+  // The count moved here from under the two labels: it is the same fact for
+  // both formats, so it belongs to the step rather than to either option.
+  $("share-note").textContent = `${n} document${n === 1 ? "" : "s"}`;
+  const pdf = format === "pdf";
+  $("share-save").style.display = pdf ? "" : "none";
+  shareCtx.cursor = pdf ? 1 : 0;
   $("share-keys").innerHTML =
-    '<span class="k">\u2191\u2193</span><span>choose</span><span class="k">Enter</span><span>share</span>';
+    '<span class="k">\u2191\u2193</span><span>choose</span>' +
+    (pdf ? '<span class="k">S</span><span>save</span>' : "") +
+    '<span class="k">Enter</span><span>share</span>';
 }
 
 /// The share screen owns the keyboard while it is open — claimed in the global
@@ -7528,6 +7531,13 @@ function shareKey(e) {
   if (e.key === " " && step === 0) {
     e.preventDefault();
     toggleShareRow(shareCtx.cursor);
+    return;
+  }
+  // No field is focused on this screen, so a bare letter is free — and Save is
+  // worth one, being the other thing a reader wants a PDF for.
+  if ((e.key === "s" || e.key === "S") && step === 1 && shareCtx.format === "pdf") {
+    e.preventDefault();
+    savePdf();
     return;
   }
   if (e.key === "Enter") {
@@ -7620,6 +7630,36 @@ function exportName(chosen) {
   return base || "documents";
 }
 
+/// Save the PDF instead of sharing it.
+///
+/// Same export, same staging — only the destination differs, so the two paths
+/// share `withStagedExport` rather than each standing the document in for
+/// itself. A cancelled panel says nothing: the reader changed their mind, and
+/// a toast reading "cancelled" is noise about their own decision.
+async function savePdf() {
+  if (!shareCtx) return;
+  const chosen = shareChosen();
+  if (!chosen.length) { toast("Nothing selected to share"); return; }
+
+  $("share-save").disabled = true;
+  $("share-next").disabled = true;
+  try {
+    const html = await invoke("render_for_export", { files: chosen.map((f) => f.path) });
+    const saved = await withStagedExport(html, chosen.length > 1, () =>
+      invoke("save_pdf", { name: exportName(chosen) })
+    );
+    if (saved) {
+      toast(`Saved ${saved.split("/").pop()}`);
+      closeShare();
+    }
+  } catch (err) {
+    toast(String(err));
+  } finally {
+    $("share-save").disabled = false;
+    $("share-next").disabled = false;
+  }
+}
+
 async function commitShare() {
   if (!shareCtx) return;
   const chosen = shareChosen();
@@ -7657,6 +7697,7 @@ function wireShare() {
   $("btn-share").onclick = () => openShare();
   $("share-cancel").onclick = () => closeShare();
   $("share-next").onclick = () => advanceShare();
+  $("share-save").onclick = () => savePdf();
   $("share-back").onclick = () => {
     if (!shareCtx) return;
     shareCtx.step = 0;

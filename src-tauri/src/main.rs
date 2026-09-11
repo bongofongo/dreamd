@@ -1498,6 +1498,63 @@ fn share_pdf(
     Ok(result)
 }
 
+/// Print what the window is showing, then let the reader put the PDF where they
+/// want it.
+///
+/// The same export the share sheet would have been handed, offered to a save
+/// panel instead — so "I only wanted the PDF" is one button rather than a trip
+/// through Mail to get a file back out. A saved export is `forget`ten: it has
+/// been moved somewhere the reader chose and is no longer the session's to
+/// delete on the way out.
+///
+/// `None` back means the panel was cancelled, which is not an error — the
+/// frontend says nothing rather than toasting a failure at someone who
+/// changed their mind.
+#[tauri::command]
+fn save_pdf(app: tauri::AppHandle, name: String) -> Result<Option<String>, String> {
+    let stem = share::safe_stem(&name);
+    let dest = share::export_path(Path::new(&stem));
+    export_pdf(&app, &dest)?;
+
+    let Some(target) = save_panel(&app, &stem)? else {
+        // Cancelled. The export stays tracked and goes with the session.
+        return Ok(None);
+    };
+    // `rename` is the cheap path and the common one; the temp directory and the
+    // reader's chosen folder are usually the same volume. Across volumes it
+    // fails with `CrossesDevices`, so fall back to a copy rather than refusing
+    // to save to an external disk.
+    if std::fs::rename(&dest, &target).is_err() {
+        std::fs::copy(&dest, &target).map_err(|e| format!("could not save: {e}"))?;
+        let _ = std::fs::remove_file(&dest);
+    }
+    share::forget(&dest);
+    Ok(Some(target.to_string_lossy().into_owned()))
+}
+
+/// The save panel, on the main thread, answered back over a channel.
+///
+/// `rfd` called straight from Rust for the reason `open_target` does it: the
+/// alternative is a plugin registration and an ACL entry to reach the same
+/// NSSavePanel.
+fn save_panel(app: &tauri::AppHandle, stem: &str) -> Result<Option<PathBuf>, String> {
+    let (tx, rx) = std::sync::mpsc::channel::<Option<PathBuf>>();
+    let name = format!("{stem}.pdf");
+    app.run_on_main_thread(move || {
+        let picked = rfd::FileDialog::new()
+            .set_title("Save PDF")
+            .set_file_name(&name)
+            .add_filter("PDF", &["pdf"])
+            .save_file();
+        let _ = tx.send(picked);
+    })
+    .map_err(|e| e.to_string())?;
+    // No timeout: the panel is modal and waits on the reader, who may take as
+    // long as they like choosing a folder.
+    rx.recv()
+        .map_err(|_| "the save panel went away".to_string())
+}
+
 /// Drive the webview's print operation to `dest`, blocking until it is done.
 ///
 /// `with_webview` hops to the main thread and returns immediately, so the
@@ -2465,6 +2522,7 @@ fn main() {
             share_files,
             render_for_export,
             share_pdf,
+            save_pdf,
             delete_file,
             open_external,
             agent_prefs,
@@ -2667,6 +2725,11 @@ fn main() {
                 // before it retires the socket, so a hook outliving the window
                 // reads a verdict rather than a closed connection.
                 *app.state::<AppState>().agent.lock().unwrap() = None;
+                // And the PDFs this session minted for the share sheet. They
+                // exist so the sheet had something to offer; nothing that
+                // outlives the window wants them, and one the reader saved was
+                // `forget`ten when it moved. See `share::cleanup_session`.
+                share::cleanup_session();
             }
         });
 }
