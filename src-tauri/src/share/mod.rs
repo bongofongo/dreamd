@@ -24,7 +24,6 @@ use crate::is_markdown;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(target_os = "macos")]
@@ -33,18 +32,6 @@ pub mod pdf;
 pub mod picker;
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
-
-/// Every export this process has minted and not handed away.
-///
-/// A PDF is a means rather than a document the reader asked to keep: it exists
-/// so the share sheet has something to offer, and once the window is gone
-/// there is nothing left that could want it. So the session cleans up after
-/// itself on the way out ([`cleanup_session`]) and the day-stamped sweep below
-/// becomes the backstop for a process that was killed rather than quit.
-///
-/// A saved export is [`forget`]ten instead: it has been moved somewhere the
-/// reader chose and is theirs, not ours.
-static EXPORTS: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
 
 /// Every export this module writes starts with this. The sweep will only ever
 /// consider deleting a name carrying it.
@@ -159,6 +146,13 @@ fn export_day(name: &str) -> Option<u64> {
 /// Today's are kept for the reason `send`'s are: the reader may still have a
 /// mail draft open holding the attachment, and a second dreamd is writing its
 /// own. Best-effort throughout.
+///
+/// **Deliberately the only cleanup, and deliberately not one on exit.** An
+/// exit-time sweep was written and taken back out: the services behind the
+/// share sheet do not all copy the file when they accept it — Mail puts it in
+/// the draft immediately, AirDrop reads it across the transfer — so quitting
+/// mid-send would delete the attachment out from under it. Waiting a day costs
+/// a few kilobytes in the temp directory and cannot do that.
 fn sweep_stale_exports(dir: &Path, today: u64) -> usize {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return 0;
@@ -218,32 +212,7 @@ pub fn export_path(source: &Path) -> PathBuf {
         .map(|s| s.to_string_lossy().into_owned())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "document".into());
-    let path = dir.join(export_name(day, std::process::id(), n, &stem));
-    EXPORTS.lock().unwrap().push(path.clone());
-    path
-}
-
-/// Stop tracking `path` — it has been saved somewhere the reader chose, so it
-/// is no longer this session's to delete.
-pub fn forget(path: &Path) {
-    EXPORTS.lock().unwrap().retain(|p| p != path);
-}
-
-/// Delete every export this session still owns. Called on the way out.
-///
-/// Best-effort, and deliberately not fussy about failures: a file that will
-/// not delete is one something else is holding, and the day-stamped sweep will
-/// find it tomorrow. Returns how many went, which is what the test asserts on.
-pub fn cleanup_session() -> usize {
-    let mut held = EXPORTS.lock().unwrap();
-    let mut gone = 0;
-    for p in held.iter() {
-        if std::fs::remove_file(p).is_ok() {
-            gone += 1;
-        }
-    }
-    held.clear();
-    gone
+    dir.join(export_name(day, std::process::id(), n, &stem))
 }
 
 #[cfg(test)]
@@ -423,25 +392,6 @@ mod tests {
         assert!(name.starts_with(EXPORT_PREFIX), "{name}");
         assert!(name.ends_with("-design notes.pdf"), "{name}");
         assert_eq!(p.parent(), Some(std::env::temp_dir().as_path()));
-    }
-
-    #[test]
-    fn the_session_deletes_the_exports_it_still_owns() {
-        // `export_path` records; `forget` hands one over to the reader. What is
-        // left is what a quit should take with it.
-        let kept = export_path(Path::new("saved.md"));
-        let dropped = export_path(Path::new("shared.md"));
-        std::fs::write(&kept, "pdf").expect("fixture");
-        std::fs::write(&dropped, "pdf").expect("fixture");
-
-        forget(&kept);
-        assert!(cleanup_session() >= 1, "the tracked export survived");
-        assert!(!dropped.exists(), "a tracked export was not cleaned up");
-        assert!(kept.exists(), "a forgotten export was deleted anyway");
-
-        // And the registry is empty afterwards, so a second quit is a no-op.
-        assert_eq!(cleanup_session(), 0);
-        let _ = std::fs::remove_file(&kept);
     }
 
     #[test]

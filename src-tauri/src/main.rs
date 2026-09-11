@@ -1509,7 +1509,8 @@ fn share_pdf(
 ///
 /// `None` back means the panel was cancelled, which is not an error — the
 /// frontend says nothing rather than toasting a failure at someone who
-/// changed their mind.
+/// changed their mind. The export it already produced stays in the temp
+/// directory until tomorrow's sweep, like every other one.
 #[tauri::command]
 fn save_pdf(app: tauri::AppHandle, name: String) -> Result<Option<String>, String> {
     let stem = share::safe_stem(&name);
@@ -1528,7 +1529,6 @@ fn save_pdf(app: tauri::AppHandle, name: String) -> Result<Option<String>, Strin
         std::fs::copy(&dest, &target).map_err(|e| format!("could not save: {e}"))?;
         let _ = std::fs::remove_file(&dest);
     }
-    share::forget(&dest);
     Ok(Some(target.to_string_lossy().into_owned()))
 }
 
@@ -2725,11 +2725,6 @@ fn main() {
                 // before it retires the socket, so a hook outliving the window
                 // reads a verdict rather than a closed connection.
                 *app.state::<AppState>().agent.lock().unwrap() = None;
-                // And the PDFs this session minted for the share sheet. They
-                // exist so the sheet had something to offer; nothing that
-                // outlives the window wants them, and one the reader saved was
-                // `forget`ten when it moved. See `share::cleanup_session`.
-                share::cleanup_session();
             }
         });
 }
