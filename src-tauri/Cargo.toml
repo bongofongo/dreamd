@@ -115,11 +115,22 @@ objc2-app-kit = { version = "0.3", features = [
 ] }
 objc2-foundation = { version = "0.3", features = [
   "NSArray",
+  "NSData",
   "NSDictionary",
+  "NSError",
   "NSGeometry",
   "NSString",
   "NSURL",
   "NSValue",
+] }
+# The PDF export asks the web process for the document and is answered through
+# a completion block, so the block runtime is a direct dependency rather than
+# one inherited from app-kit. Already in the tree through tao/wry.
+block2 = "0.6"
+objc2-web-kit = { version = "0.3", features = [
+  "WKPDFConfiguration",
+  "WKWebView",
+  "block2",
 ] }
 
 [target.'cfg(target_os = "linux")'.dependencies]

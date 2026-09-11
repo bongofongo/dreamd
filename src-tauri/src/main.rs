@@ -1478,7 +1478,10 @@ fn render_for_export(state: State<AppState>, files: Vec<String>) -> Result<Strin
 /// the live webview is what makes the export reuse the `#print-css` block
 /// verbatim, and the page is therefore the argument. `name` only decides what
 /// the recipient sees the attachment called.
-#[tauri::command]
+// `(async)` is load-bearing, not decoration: a plain command body runs on the
+// main thread, and that is precisely the thread the PDF's completion handler
+// needs free. See `share::pdf`.
+#[tauri::command(async)]
 fn share_pdf(
     app: tauri::AppHandle,
     name: String,
@@ -1511,7 +1514,10 @@ fn share_pdf(
 /// frontend says nothing rather than toasting a failure at someone who
 /// changed their mind. The export it already produced stays in the temp
 /// directory until tomorrow's sweep, like every other one.
-#[tauri::command]
+// `(async)` for the reason `share_pdf` has it, plus one of its own: the save
+// panel is modal and waits on the reader, which the main thread cannot do on
+// its behalf.
+#[tauri::command(async)]
 fn save_pdf(app: tauri::AppHandle, name: String) -> Result<Option<String>, String> {
     let stem = share::safe_stem(&name);
     let dest = share::export_path(Path::new(&stem));
@@ -1565,19 +1571,22 @@ fn export_pdf(app: &tauri::AppHandle, dest: &Path) -> Result<(), String> {
     let win = app
         .get_webview_window("main")
         .ok_or_else(|| "no window to export".to_string())?;
-    let (tx, rx) = std::sync::mpsc::channel::<Result<(), String>>();
-    let target = dest.to_path_buf();
+    let (tx, rx) = std::sync::mpsc::channel::<share::pdf::PdfResult>();
+    // `with_webview` runs this on the main thread, which is where the request
+    // has to be made — and `collect` then waits on *this* thread, which must
+    // not be that one. See `share::pdf`: the completion handler comes back on
+    // the main thread, so waiting there would deadlock against it.
     win.with_webview(move |wv| {
         let inner = wv.inner() as *mut objc2::runtime::AnyObject;
-        let out = unsafe { share::pdf::print_to_file(inner, &target) };
-        let _ = tx.send(out);
+        match objc2::MainThreadMarker::new() {
+            Some(mtm) => unsafe { share::pdf::start(inner, mtm, tx) },
+            None => {
+                let _ = tx.send(Err("the export did not reach the main thread".into()));
+            }
+        }
     })
     .map_err(|e| e.to_string())?;
-    // Generous, and bounded: a print that never answers must not wedge the
-    // command thread for the life of the process. A long document on a busy
-    // machine is seconds, not tens of them.
-    rx.recv_timeout(Duration::from_secs(60))
-        .map_err(|_| "the export timed out".to_string())?
+    share::pdf::collect(rx, dest)
 }
 
 #[cfg(not(target_os = "macos"))]

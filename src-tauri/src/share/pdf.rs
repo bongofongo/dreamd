@@ -1,41 +1,71 @@
-//! Print the open document to a PDF file, with no dialog.
+//! Ask the web process for a PDF of the page, and write it to a file.
 //!
-//! The `print_document` command already opens the OS print dialog, whose
-//! Save-as-PDF destination is the reader's own export path. This is the same
-//! machinery pointed at a file dreamd chose instead, because the share sheet
-//! needs an artifact on disk *before* it can offer to send one — a dialog the
-//! reader has to fill in first is exactly the trip out of the app this whole
-//! feature exists to remove.
+//! **This replaced an `NSPrintOperation` over the live `WKWebView`, which ran
+//! away.** That path never stopped paginating: a single `SKILL.md` produced a
+//! 2.1GB file across a five-minute freeze, and a `.hang` report and a live
+//! `sample` both put the main thread in `runOperation` ->
+//! `_renderCurrentPageForPrintOperation` -> `NSView canDraw` ->
+//! `dyld_image_header_containing_address`. That is AppKit walking a *view
+//! hierarchy* once per page rather than WebKit paginating its own content, so
+//! the operation was drawing the wrong thing; sizing its view was tried and
+//! changed nothing.
 //!
-//! What the page looks like is entirely the `#print-css` block in
-//! `ui/index.html`: it hides the chrome, unwraps the scroller, neutralises the
-//! theme's colours for paper and forces `--zoom: 1`. So this prints the *live*
-//! webview and needs no second render — the document on screen is already the
-//! document on the page.
+//! `createPDFWithConfiguration:completionHandler:` cannot fail that way, and
+//! the reason is structural rather than a fix to the old path: the work
+//! happens in the **web content process**, the output is one snapshot bounded
+//! by a content rect, and AppKit's view drawing is not involved at all. There
+//! is no loop here to run away.
 //!
-//! The consequence, and the reason `share_pdf` takes no file list: printing
-//! the live webview can only ever produce the document that is *in* it. A PDF
-//! share is the open document, and the frontend narrows the selection step to
-//! match rather than offering a choice this cannot honour.
+//! Two consequences worth knowing before changing anything here.
+//!
+//! The completion handler is called on the **main thread**, so a caller that
+//! blocks the main thread waiting for it deadlocks. That is why `share_pdf`
+//! and `save_pdf` are `#[tauri::command(async)]`: a plain command body runs on
+//! the main thread, which is exactly the thread this needs free.
+//!
+//! And the page shape is WebKit's, taken from the content rather than from a
+//! paper size. What the document *looks like* is still the `#print-css` block
+//! in `ui/index.html`, because the frontend stages the export into `#content`
+//! before calling — see `withStagedExport` in `ui/app.js`.
 
-use objc2::rc::Retained;
+use block2::RcBlock;
 use objc2::runtime::AnyObject;
-use objc2::{msg_send, sel};
-use objc2_app_kit::{
-    NSPrintHeaderAndFooter, NSPrintInfo, NSPrintJobSavingURL, NSPrintOperation, NSPrintSaveJob,
-};
-use objc2_foundation::{NSNumber, NSPoint, NSRect, NSString, NSURL};
+use objc2::{msg_send, sel, MainThreadMarker};
+use objc2_foundation::{NSData, NSError};
+use objc2_web_kit::{WKPDFConfiguration, WKWebView};
 use std::path::Path;
+use std::sync::mpsc;
+use std::time::Duration;
+
+/// How long to wait for the web process before giving up.
+///
+/// Generous, because a long document is legitimately slow, and bounded because
+/// a wait with no end is the failure this module exists to stop being. The
+/// wait is on a worker thread, so overrunning it costs the export and never
+/// the window.
+const PDF_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// A size past which something has gone wrong rather than a reader having a
+/// long document.
+///
+/// Insurance, not policy. The replaced path filled 3.3GB of the temp directory
+/// across three attempts, and nothing in the code noticed — every layer happily
+/// wrote whatever it was handed. This cannot recur through the same mechanism,
+/// since there is no pagination loop left to run away; the cap is here so that
+/// if it recurs through some *other* mechanism it ends with a sentence naming
+/// the size instead of a full disk.
+const MAX_PDF_BYTES: usize = 512 * 1024 * 1024;
+
+/// The finished document, or why there isn't one.
+pub type PdfResult = Result<Vec<u8>, String>;
 
 /// Is the selector this module needs actually on `WKWebView`?
 ///
-/// `printOperationWithPrintInfo:` is macOS 11, and `tauri.conf.json` still
-/// declares a `minimumSystemVersion` of 10.15. Tauri's own `WebviewWindow::print`
-/// already calls it, so a 10.15 machine has this problem with or without the
-/// share feature — but a missing selector here would be an `objc_msgSend` to
-/// nothing, which is a crash rather than a refusal. So [`print_to_file`] asks
-/// before it sends, and a machine that old loses the PDF format with a message
-/// naming the reason rather than losing the window.
+/// `createPDFWithConfiguration:completionHandler:` is macOS 11 and
+/// `tauri.conf.json` still declares a `minimumSystemVersion` of 10.15. A
+/// missing selector would be an `objc_msgSend` to nothing, so [`start`] asks
+/// before it sends and a machine that old loses the PDF format with a message
+/// rather than losing the window.
 ///
 /// # Safety
 ///
@@ -44,102 +74,74 @@ pub unsafe fn supported(webview: *mut AnyObject) -> bool {
     if webview.is_null() {
         return false;
     }
-    unsafe { msg_send![webview, respondsToSelector: sel!(printOperationWithPrintInfo:)] }
+    unsafe {
+        msg_send![webview, respondsToSelector: sel!(createPDFWithConfiguration:completionHandler:)]
+    }
 }
 
-/// Print `webview` to `dest`, blocking until AppKit has written the file.
+/// Ask the web process for a PDF, and return at once.
+///
+/// **Main thread only, and it must not be the thread that waits.** The
+/// completion handler is called on the main thread, so a caller that blocks it
+/// waiting for the answer deadlocks against itself — which is why this is
+/// split from [`collect`] rather than being one blocking call, and why
+/// `share_pdf`/`save_pdf` are `#[tauri::command(async)]`.
+///
+/// Every failure is reported *through the channel* rather than returned, so
+/// `collect` is the one place a caller has to look.
 ///
 /// # Safety
 ///
 /// `webview` must be a live `WKWebView` — what `PlatformWebview::inner()`
 /// hands back for as long as the window is open.
-pub unsafe fn print_to_file(webview: *mut AnyObject, dest: &Path) -> Result<(), String> {
-    if !supported(webview) {
-        return Err("printing to a file needs macOS 11 or newer".into());
+pub unsafe fn start(webview: *mut AnyObject, mtm: MainThreadMarker, tx: mpsc::Sender<PdfResult>) {
+    if !unsafe { supported(webview) } {
+        let _ = tx.send(Err("exporting a PDF needs macOS 11 or newer".into()));
+        return;
     }
-    let path = dest
-        .to_str()
-        .ok_or_else(|| format!("export path is not valid UTF-8: {}", dest.display()))?;
+    let view: &WKWebView = unsafe { &*(webview as *const WKWebView) };
 
-    // A *copy* of the shared print info: mutating the shared one would change
-    // what the reader's next File > Print does, which is not this feature's to
-    // touch.
-    let info: Retained<NSPrintInfo> = unsafe {
-        let shared = NSPrintInfo::sharedPrintInfo();
-        msg_send![&*shared, copy]
-    };
+    // `Fn`, not `FnOnce`: a block is callable more than once as far as this
+    // type is concerned, and `Sender::send` takes `&self`, which is what lets
+    // the channel live inside one. A second call would find the receiver gone
+    // and be ignored, which is the right answer either way.
+    let handler = RcBlock::new(move |data: *mut NSData, error: *mut NSError| {
+        let out = unsafe {
+            if !data.is_null() {
+                Ok((*data).to_vec())
+            } else if !error.is_null() {
+                Err((*error).localizedDescription().to_string())
+            } else {
+                Err("the web process returned neither a PDF nor an error".into())
+            }
+        };
+        let _ = tx.send(out);
+    });
 
-    unsafe {
-        let dict = info.dictionary();
-        let url = NSURL::fileURLWithPath(&NSString::from_str(path));
-        // The two keys that turn a print operation into a save, set on the
-        // info's dictionary because `NSPrintJobSavingURL` has no setter.
-        //
-        // **Through the real constants, never through their spelling.** An
-        // `NSPrintInfoAttributeKey` is an exported symbol whose runtime value
-        // is not promised to equal its name, and a key AppKit does not
-        // recognise is not an error — the entry simply sits in the dictionary
-        // unread, the job disposition still says "save", and the operation
-        // asks the reader where to put it. Which is exactly what Share did:
-        // it opened a save panel instead of the share sheet, and looked like
-        // the wrong button had been wired.
-        let _: () = msg_send![&*dict, setObject: &**url, forKey: NSPrintJobSavingURL];
-        info.setJobDisposition(NSPrintSaveJob);
-        // Margins are the `@page` rule's job, not this module's: WebKit reads
-        // `@page { margin: 16mm }` out of the print sheet and a margin set here
-        // would silently outrank a decision made in CSS beside the rules it
-        // has to agree with. The header and footer are AppKit's own furniture
-        // and have no CSS to lose to, so they are turned off here.
-        let _: () = msg_send![&*dict, setObject: &*NSNumber::new_bool(false), forKey: NSPrintHeaderAndFooter];
+    // A default configuration means "the whole content": WebKit takes the rect
+    // from the document rather than from a paper size, which is the property
+    // that makes this bounded. An explicit rect is how pagination would be
+    // added later, one call per page.
+    let config = unsafe { WKPDFConfiguration::new(mtm) };
+    unsafe { view.createPDFWithConfiguration_completionHandler(Some(&config), &handler) };
+}
 
-        let op: *mut AnyObject = msg_send![webview, printOperationWithPrintInfo: &*info];
-        if op.is_null() {
-            return Err("the webview refused to make a print operation".into());
-        }
-        let _: () = msg_send![op, setShowsPrintPanel: false];
-        let _: () = msg_send![op, setShowsProgressPanel: false];
-
-        // **Size the operation's view to the page, or this does not finish.**
-        //
-        // `printOperationWithPrintInfo:` hands back an operation over a view
-        // that is still the size of the webview *on screen*. AppKit then
-        // paginates that width against a paper page, so a window a thousand
-        // points wide is sliced into a great many narrow ones and the run
-        // grinds — main thread pinned inside `_renderCurrentPageForPrintOperation`,
-        // writing pages, making progress, never arriving. It does not read as
-        // a slow export from outside: the window stops answering and macOS
-        // files a hang report, which is what the first version of this did.
-        //
-        // The frame is the whole paper and the margins are zeroed, so `@page
-        // { margin: 16mm }` in the print sheet is the only thing setting a
-        // margin. Splitting that decision between CSS and AppKit would mean
-        // two numbers that have to agree and no way to see both at once.
-        info.setTopMargin(0.0);
-        info.setBottomMargin(0.0);
-        info.setLeftMargin(0.0);
-        info.setRightMargin(0.0);
-        let paper = info.paperSize();
-        // Refused rather than skipped. A missing frame is not a cosmetic
-        // failure — it is the runaway pagination above, and the symptom is a
-        // window that stops answering for minutes. Better to say the export
-        // could not be set up than to start one that will not end.
-        let view = (*op)
-            .downcast_ref::<NSPrintOperation>()
-            .and_then(|o| o.view())
-            .ok_or_else(|| "the print operation has no view to size".to_string())?;
-        view.setFrame(NSRect::new(NSPoint::new(0.0, 0.0), paper));
-
-        let ok: bool = msg_send![op, runOperation];
-        if !ok {
-            return Err("the print operation failed".into());
-        }
+/// Wait for [`start`]'s answer and write it to `dest`.
+///
+/// Any thread but the main one.
+pub fn collect(rx: mpsc::Receiver<PdfResult>, dest: &Path) -> Result<(), String> {
+    let bytes = rx
+        .recv_timeout(PDF_TIMEOUT)
+        .map_err(|_| "the PDF export timed out".to_string())??;
+    if bytes.is_empty() {
+        return Err("the web process produced an empty PDF".into());
     }
-
-    // `runOperation` reports that it *ran*, not that it wrote — a destination
-    // the sandbox refuses produces a true and no file. The share sheet would
-    // then be handed a URL to nothing, so the file is the assertion.
-    if !dest.exists() {
-        return Err("the print operation produced no file".into());
+    if bytes.len() > MAX_PDF_BYTES {
+        return Err(format!(
+            "refusing to write a {}MB PDF — something is wrong with the export",
+            bytes.len() / (1024 * 1024)
+        ));
     }
+    std::fs::write(dest, &bytes).map_err(|e| format!("could not write the PDF: {e}"))?;
     Ok(())
 }
