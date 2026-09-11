@@ -21,7 +21,7 @@
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{msg_send, sel};
-use objc2_app_kit::{NSPrintInfo, NSPrintSaveJob};
+use objc2_app_kit::{NSPrintHeaderAndFooter, NSPrintInfo, NSPrintJobSavingURL, NSPrintSaveJob};
 use objc2_foundation::{NSNumber, NSString, NSURL};
 use std::path::Path;
 
@@ -70,16 +70,25 @@ pub unsafe fn print_to_file(webview: *mut AnyObject, dest: &Path) -> Result<(), 
     unsafe {
         let dict = info.dictionary();
         let url = NSURL::fileURLWithPath(&NSString::from_str(path));
-        // The two keys that turn a print operation into a save. They are set
-        // on the info's dictionary rather than through setters because
-        // `NSPrintJobSavingURL` has none.
-        let _: () = msg_send![&*dict, setObject: &*url, forKey: &*NSString::from_str("NSPrintJobSavingURL")];
+        // The two keys that turn a print operation into a save, set on the
+        // info's dictionary because `NSPrintJobSavingURL` has no setter.
+        //
+        // **Through the real constants, never through their spelling.** An
+        // `NSPrintInfoAttributeKey` is an exported symbol whose runtime value
+        // is not promised to equal its name, and a key AppKit does not
+        // recognise is not an error — the entry simply sits in the dictionary
+        // unread, the job disposition still says "save", and the operation
+        // asks the reader where to put it. Which is exactly what Share did:
+        // it opened a save panel instead of the share sheet, and looked like
+        // the wrong button had been wired.
+        let _: () = msg_send![&*dict, setObject: &**url, forKey: NSPrintJobSavingURL];
         info.setJobDisposition(NSPrintSaveJob);
         // Margins are the `@page` rule's job, not this module's: WebKit reads
         // `@page { margin: 16mm }` out of the print sheet and a margin set here
         // would silently outrank a decision made in CSS beside the rules it
-        // has to agree with.
-        let _: () = msg_send![&*dict, setObject: &*NSNumber::new_bool(false), forKey: &*NSString::from_str("NSPrintHeaderAndFooter")];
+        // has to agree with. The header and footer are AppKit's own furniture
+        // and have no CSS to lose to, so they are turned off here.
+        let _: () = msg_send![&*dict, setObject: &*NSNumber::new_bool(false), forKey: NSPrintHeaderAndFooter];
 
         let op: *mut AnyObject = msg_send![webview, printOperationWithPrintInfo: &*info];
         if op.is_null() {

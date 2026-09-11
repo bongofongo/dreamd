@@ -1279,10 +1279,14 @@
       #share-note { font-size: 12px; opacity: 0.6; margin: 8px 2px 0; }
       /* The hint line carries the keyboard contract, because the whole point of
          this screen is that Enter walks it without the mouse. */
-      #share-foot { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
-      #share-keys { font-size: 11px; opacity: 0.5; display: flex; align-items: center; gap: 5px; }
+      /* A column: the hints sit above their own row of buttons, so a footer
+         that grows a button cannot push the primary one out of the box. */
+      #share-foot { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+      #share-keys { font-size: 11px; opacity: 0.5; display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
       #share-keys .k { border: 1px solid var(--border, #2e2940); border-radius: 4px; padding: 0 4px; }
-      #share-foot .spacer { margin-left: auto; }
+      /* `wrap` as well as the column, because the button labels are text and
+         a longer translation is one more thing that must not clip. */
+      #share-actions { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
 
       /* icon-button tooltip: name + keybind, positioned by JS */
       #tooltip {
@@ -2098,20 +2102,25 @@
              the format step wanted it. -->
         <div id="share-note"></div>
 
+        <!-- Two rows, not one. The hint line and four buttons on a single row
+             overflowed the box and clipped the primary button off its right
+             edge — and the button that goes missing is always the last one,
+             which is the one you came here to press. -->
         <div id="share-foot">
           <div id="share-keys">
             <span class="k">↑↓</span><span>move</span>
             <span class="k">Space</span><span>pick</span>
             <span class="k">Enter</span><span>next</span>
           </div>
-          <span class="spacer"></span>
-          <button id="share-back" style="display:none">Back</button>
-          <button id="share-cancel">Cancel</button>
-          <!-- PDF only: the same export the sheet would get, put where the
-               reader wants it instead. Sharing and saving are the two things
-               you can want a PDF for, and neither should require the other. -->
-          <button id="share-save" style="display:none">Save…</button>
-          <button id="share-next" class="primary">Next</button>
+          <div id="share-actions">
+            <button id="share-back" style="display:none">Back</button>
+            <button id="share-cancel">Cancel</button>
+            <!-- PDF only: the same export the sheet would get, put where the
+                 reader wants it instead. Sharing and saving are the two things
+                 you can want a PDF for, and neither should require the other. -->
+            <button id="share-save" style="display:none">Save…</button>
+            <button id="share-next" class="primary">Next</button>
+          </div>
         </div>
       </div>
     </div>
