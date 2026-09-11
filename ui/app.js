@@ -7376,6 +7376,24 @@ let toastTimer = null;
 /// `shareCtx` is null exactly when the overlay is closed.
 let shareCtx = null;
 
+/// **PDF is off.** Printing the live webview to a file runs away: AppKit never
+/// stops paginating, and a single `SKILL.md` produced a 2.1GB file across a
+/// five-minute freeze before it was killed. A `.hang` report and a live
+/// `sample` both put the main thread in
+/// `runOperation` -> `_renderCurrentPageForPrintOperation` -> `NSView canDraw`
+/// -> `dyld_image_header_containing_address`, which is AppKit walking a view
+/// hierarchy per page rather than WebKit paginating its own content — so the
+/// operation is drawing the wrong thing, and sizing its view (tried) does not
+/// change that.
+///
+/// The Rust side is left intact behind this flag rather than deleted: the bug
+/// is in how the export is produced, not in validation, staging, naming or the
+/// sheet, and all of that is tested. Turning it back on means replacing
+/// `share::pdf`'s `NSPrintOperation` with something that asks the *web process*
+/// for the PDF — `createPDFWithConfiguration:completionHandler:` — not
+/// re-enabling this line.
+const SHARE_PDF_ENABLED = false;
+
 /// The tree, flattened into rows the picker can draw: directories included,
 /// depth carried, in the order the sidebar paints them.
 ///
@@ -7493,6 +7511,9 @@ function paintShare() {
   }
 
   const n = shareChosen().length;
+  const pdfRow = $("share-step-format").querySelector('[data-format="pdf"]');
+  if (pdfRow) pdfRow.hidden = !SHARE_PDF_ENABLED;
+  if (!SHARE_PDF_ENABLED) shareCtx.format = "md";
   for (const el of $("share-step-format").querySelectorAll(".share-opt")) {
     const on = el.dataset.format === format;
     el.querySelector(".mark").textContent = on ? "\u25cf" : "\u25cb";
@@ -7519,7 +7540,7 @@ function shareKey(e) {
   if (e.key === "ArrowDown" || e.key === "ArrowUp") {
     e.preventDefault();
     if (step === 1) {
-      shareCtx.format = shareCtx.format === "md" ? "pdf" : "md";
+      if (SHARE_PDF_ENABLED) shareCtx.format = shareCtx.format === "md" ? "pdf" : "md";
     } else {
       const d = e.key === "ArrowDown" ? 1 : -1;
       const n = shareCtx.rows.length;
