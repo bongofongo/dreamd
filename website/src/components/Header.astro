@@ -1,14 +1,27 @@
 ---
 import { APP_NAME, REPO_URL, href } from "../consts";
 
+interface Props {
+  /** True on the page that opens with the sticky dream screen. */
+  landing?: boolean;
+}
+
+const { landing = false } = Astro.props;
+
 const nav: { label: string; path: string }[] = [
   { label: "Performance", path: "/perf" },
 ];
+
+// On the landing the mark is a way back up the same page, and SiteLayout's
+// script intercepts `#top` to scroll there directly. Anywhere else that anchor
+// does not exist — the click scrolled to the top of the page the reader was
+// already on and looked broken — so the mark is the way *home*.
+const brandHref = landing ? "#top" : href("/");
 ---
 
 <header class="site-header">
   <div class="wrap bar">
-    <a class="brand" href="#top">{APP_NAME}</a>
+    <a class="brand" href={brandHref}>{APP_NAME}</a>
     <div class="right">
       {
         nav.length > 0 && (

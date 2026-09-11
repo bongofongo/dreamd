@@ -18,4 +18,7 @@ export const SUBLINE =
 
 // import.meta.env.BASE_URL is '/dreamd'; normalize so href('/gallery') is safe either way.
 const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
-export const href = (path: string) => `${BASE}${path === "/" ? "/" : path}`;
+// Slashless is canonical here (the Worker's html_handling drops the trailing
+// slash), so the site root is BASE itself — `${BASE}/` would spend a redirect.
+// With no base configured there is nothing left to name, so it falls back to "/".
+export const href = (path: string) => (path === "/" ? BASE || "/" : `${BASE}${path}`);

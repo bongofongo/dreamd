@@ -49,7 +49,10 @@ up with the route prefix, because Astro's `base` only prefixes URLs, not output 
 Changing either half in isolation breaks every URL.
 
 Every internal link goes through `href()` in `src/consts.ts`, which normalises
-`import.meta.env.BASE_URL`. Use it; never hardcode `/dreamd/...`.
+`import.meta.env.BASE_URL`. Use it; never hardcode `/dreamd/...`. `href("/")` is
+the site root and returns the **slashless** base (`/dreamd`), because
+`html_handling` drops the trailing slash and `/dreamd/` would only redirect;
+with no base configured it falls back to `/`.
 
 ## Design invariants
 
@@ -158,11 +161,17 @@ Worth asserting, in roughly this order:
    `window.scrollTo({top, behavior: "instant"})` too — `html` has
    `scroll-behavior: smooth`, and a plain `scrollTo` animates, so an immediate read
    sees the old offset.
-   `.brand` links to `#top`, which is `.landing` — a `position: sticky` element whose
+   **`.brand` links two different places, and only the landing gets the anchor.**
+   There it is `#top`, which is `.landing` — a `position: sticky` element whose
    rect is already pinned at the viewport top, so a native anchor-scroll to it only
    applies `scroll-padding-top` and moves up ~74 px rather than reaching `scrollY: 0`.
    `SiteLayout.astro`'s scroll script intercepts clicks on `a[href="#top"]` and calls
-   `scrollTo(0, 0)` directly instead. It inherits `scroll-behavior` from `html`, so the
+   `scrollTo(0, 0)` directly instead. On every other page that anchor does not
+   exist, and the interception still fired — so the mark scrolled the reader to the
+   top of the page they were already on and read as a dead button. `SiteLayout`
+   passes its `landing` prop to `Header`, which picks `#top` or `href("/")`; a new
+   page gets the way home for free, and the check is that clicking it from `/perf`
+   lands on `/dreamd`. It inherits `scroll-behavior` from `html`, so the
    settle takes the usual smooth-scroll duration — sample after it, not immediately.
 3. Landing text fits inside one screen — it is `overflow: hidden`, so check
    `.inner`'s top/bottom against `innerHeight` at 1440×900, 1280×700, 375×812, 375×667.
