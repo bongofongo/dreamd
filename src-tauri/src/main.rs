@@ -1379,6 +1379,19 @@ fn print_document(app: tauri::AppHandle) -> Result<(), String> {
 /// It crosses as data rather than being worked out in Rust because only the
 /// frontend knows where the button ended up: it moves with the titlebar's
 /// layout, and under `ui.titlebar_fade` the row it sits in is offset again.
+/// The size of the laid-out export, in CSS pixels, measured by the frontend
+/// once the paper styles are on.
+///
+/// It has to come from there: only the page knows how tall the document became
+/// after the chrome was hidden and the scroller unwrapped, and WebKit's default
+/// capture rect is the *visible view* — which is how the first attempt produced
+/// a screenshot of the window instead of the document.
+#[derive(serde::Deserialize, Clone, Copy)]
+struct ExportSize {
+    width: f64,
+    height: f64,
+}
+
 #[derive(serde::Deserialize, Clone, Copy, Default)]
 struct ShareAnchor {
     x: f64,
@@ -1486,9 +1499,10 @@ fn share_pdf(
     app: tauri::AppHandle,
     name: String,
     anchor: ShareAnchor,
+    size: Option<ExportSize>,
 ) -> Result<ShareResult, String> {
     let dest = share::export_path(Path::new(&share::safe_stem(&name)));
-    export_pdf(&app, &dest)?;
+    export_pdf(&app, &dest, size)?;
     let result = ShareResult {
         format: share::Format::Pdf,
         count: 1,
@@ -1518,10 +1532,14 @@ fn share_pdf(
 // panel is modal and waits on the reader, which the main thread cannot do on
 // its behalf.
 #[tauri::command(async)]
-fn save_pdf(app: tauri::AppHandle, name: String) -> Result<Option<String>, String> {
+fn save_pdf(
+    app: tauri::AppHandle,
+    name: String,
+    size: Option<ExportSize>,
+) -> Result<Option<String>, String> {
     let stem = share::safe_stem(&name);
     let dest = share::export_path(Path::new(&stem));
-    export_pdf(&app, &dest)?;
+    export_pdf(&app, &dest, size)?;
 
     let Some(target) = save_panel(&app, &stem)? else {
         // Cancelled. The export stays tracked and goes with the session.
@@ -1567,7 +1585,7 @@ fn save_panel(app: &tauri::AppHandle, stem: &str) -> Result<Option<PathBuf>, Str
 /// channel is what turns it back into something a command can report on: the
 /// share sheet must not open before the file it is about to offer exists.
 #[cfg(target_os = "macos")]
-fn export_pdf(app: &tauri::AppHandle, dest: &Path) -> Result<(), String> {
+fn export_pdf(app: &tauri::AppHandle, dest: &Path, size: Option<ExportSize>) -> Result<(), String> {
     let win = app
         .get_webview_window("main")
         .ok_or_else(|| "no window to export".to_string())?;
@@ -1579,7 +1597,9 @@ fn export_pdf(app: &tauri::AppHandle, dest: &Path) -> Result<(), String> {
     win.with_webview(move |wv| {
         let inner = wv.inner() as *mut objc2::runtime::AnyObject;
         match objc2::MainThreadMarker::new() {
-            Some(mtm) => unsafe { share::pdf::start(inner, mtm, tx) },
+            Some(mtm) => unsafe {
+                share::pdf::start(inner, mtm, size.map(|s| (s.width, s.height)), tx)
+            },
             None => {
                 let _ = tx.send(Err("the export did not reach the main thread".into()));
             }
@@ -1590,7 +1610,11 @@ fn export_pdf(app: &tauri::AppHandle, dest: &Path) -> Result<(), String> {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn export_pdf(_app: &tauri::AppHandle, _dest: &Path) -> Result<(), String> {
+fn export_pdf(
+    _app: &tauri::AppHandle,
+    _dest: &Path,
+    _size: Option<ExportSize>,
+) -> Result<(), String> {
     Err("sharing is macOS-only for now".into())
 }
 

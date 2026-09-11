@@ -7610,6 +7610,38 @@ function advanceShare() {
 /// nodes. And the reader does not see it: the share overlay is still up, and
 /// the print sheet hides `.modal-overlay`, so the export is masked on screen
 /// and absent from the page.
+/// The print sheet's rules, applied to the *screen* for the length of an export.
+///
+/// `createPDFWithConfiguration:` renders the page as it stands, in **screen
+/// media** — `@media print` does not apply to it. Left alone it therefore
+/// captures the window: sidebar, titlebar, dark theme and all, which is
+/// exactly what the first attempt produced.
+///
+/// Rather than keep a second copy of the paper rules in screen media — two
+/// stylesheets that must agree, with no way to see both at once — this reads
+/// `#print-css`, unwraps its one `@media print { … }` block, and injects the
+/// rules exactly as written. They cannot drift from what File ▸ Print does,
+/// because they *are* what File ▸ Print does.
+///
+/// Returns a function that takes them off again, or null when the sheet could
+/// not be parsed — in which case the caller declines the export rather than
+/// producing a screenshot of the window.
+function applyPaperStyles() {
+  const src = $("print-css")?.textContent || "";
+  const at = src.indexOf("@media print");
+  const open = at < 0 ? -1 : src.indexOf("{", at);
+  const close = src.lastIndexOf("}");
+  if (open < 0 || close <= open) return null;
+
+  const el = document.createElement("style");
+  el.id = "export-css";
+  // The inner rules, minus the `@media print` wrapper. `@page` rides along and
+  // is simply ignored in screen media.
+  el.textContent = src.slice(open + 1, close);
+  document.head.appendChild(el);
+  return () => el.remove();
+}
+
 async function withStagedExport(html, multi, fn) {
   const saved = { lastBlocks, lastBlocksFile, lastHtml, lastBlocksBackend, lastGen };
   clearHighlights();
@@ -7619,9 +7651,17 @@ async function withStagedExport(html, multi, fn) {
   lastBlocks = null; lastBlocksFile = null; lastHtml = null; lastGen = null;
   contentEl.classList.toggle("export-multi", multi);
   contentEl.innerHTML = html;
+  const unpaper = applyPaperStyles();
   try {
-    return await fn();
+    if (!unpaper) throw new Error("could not read the print styles");
+    // Measured *after* the paper rules are on, because they are what unwraps
+    // the scroller and lets the document lay out at its full height. Reading
+    // the box forces the reflow that makes the numbers real.
+    const doc = document.documentElement;
+    const size = { width: doc.scrollWidth, height: doc.scrollHeight };
+    return await fn(size);
   } finally {
+    if (unpaper) unpaper();
     contentEl.classList.remove("export-multi");
     writeGen++;
     contentEl.innerHTML = savedHtml;
@@ -7660,8 +7700,8 @@ async function savePdf() {
   $("share-next").disabled = true;
   try {
     const html = await invoke("render_for_export", { files: chosen.map((f) => f.path) });
-    const saved = await withStagedExport(html, chosen.length > 1, () =>
-      invoke("save_pdf", { name: exportName(chosen) })
+    const saved = await withStagedExport(html, chosen.length > 1, (size) =>
+      invoke("save_pdf", { name: exportName(chosen), size })
     );
     if (saved) {
       toast(`Saved ${saved.split("/").pop()}`);
@@ -7694,8 +7734,8 @@ async function commitShare() {
     let res;
     if (pdf) {
       const html = await invoke("render_for_export", { files });
-      res = await withStagedExport(html, chosen.length > 1, () =>
-        invoke("share_pdf", { name: exportName(chosen), anchor })
+      res = await withStagedExport(html, chosen.length > 1, (size) =>
+        invoke("share_pdf", { name: exportName(chosen), anchor, size })
       );
     } else {
       res = await invoke("share_files", { files, anchor });

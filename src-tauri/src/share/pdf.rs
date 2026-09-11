@@ -32,6 +32,7 @@ use block2::RcBlock;
 use objc2::runtime::AnyObject;
 use objc2::{msg_send, sel, MainThreadMarker};
 use objc2_foundation::{NSData, NSError};
+use objc2_foundation::{NSPoint, NSRect, NSSize};
 use objc2_web_kit::{WKPDFConfiguration, WKWebView};
 use std::path::Path;
 use std::sync::mpsc;
@@ -94,7 +95,12 @@ pub unsafe fn supported(webview: *mut AnyObject) -> bool {
 ///
 /// `webview` must be a live `WKWebView` — what `PlatformWebview::inner()`
 /// hands back for as long as the window is open.
-pub unsafe fn start(webview: *mut AnyObject, mtm: MainThreadMarker, tx: mpsc::Sender<PdfResult>) {
+pub unsafe fn start(
+    webview: *mut AnyObject,
+    mtm: MainThreadMarker,
+    size: Option<(f64, f64)>,
+    tx: mpsc::Sender<PdfResult>,
+) {
     if !unsafe { supported(webview) } {
         let _ = tx.send(Err("exporting a PDF needs macOS 11 or newer".into()));
         return;
@@ -118,11 +124,21 @@ pub unsafe fn start(webview: *mut AnyObject, mtm: MainThreadMarker, tx: mpsc::Se
         let _ = tx.send(out);
     });
 
-    // A default configuration means "the whole content": WebKit takes the rect
-    // from the document rather than from a paper size, which is the property
-    // that makes this bounded. An explicit rect is how pagination would be
-    // added later, one call per page.
+    // **The default rect is the visible view, not the document.** Left to it,
+    // this produces a screenshot of the window — which is exactly what the
+    // first version did. So the frontend measures the laid-out export and
+    // sends its size, and the rect is set from that.
+    //
+    // The size is in CSS pixels in the view's coordinate space, which is what
+    // `scrollWidth`/`scrollHeight` are, so it crosses unconverted.
     let config = unsafe { WKPDFConfiguration::new(mtm) };
+    if let Some((w, h)) = size {
+        if w > 0.0 && h > 0.0 && w.is_finite() && h.is_finite() {
+            unsafe {
+                config.setRect(NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(w, h)));
+            }
+        }
+    }
     unsafe { view.createPDFWithConfiguration_completionHandler(Some(&config), &handler) };
 }
 
