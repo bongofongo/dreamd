@@ -65,9 +65,10 @@ and `pty` (the base64 round trip, and a real pty driven with `/bin/sh` — never
 with `PANE_COMMAND`, so `cargo test` cannot start a Claude Code session).
 Five modules also carry **proptest sweeps** (`mod properties`, next to the
 example tests): arbitrary op sequences must leave the `Store` structurally
-sound (stack names only live, bright, annotated marks, exactly once), `admit`
-must hold its contract against arbitrary hostile documents and its own save
-round trip, an envelope carries exactly two sentinels whatever the body
+sound (stack names only live, bright, annotated marks, exactly once), a
+`retarget` after any such sequence must change the extent and nothing else,
+`admit` must hold its contract against arbitrary hostile documents and its own
+save round trip, an envelope carries exactly two sentinels whatever the body
 smuggles, any bytes survive the base64 wire, slugs stay unique, an exact
 substring always locates at its trimmed text's first occurrence, a document's
 blocks concatenate to exactly what a whole-document render produces, and
