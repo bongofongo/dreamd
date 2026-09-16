@@ -31,12 +31,19 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// identity rather than resurrect an old one.
 pub type Id = String;
 
-const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+pub(crate) const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 
-fn fold(mut hash: u64, value: u64) -> u64 {
-    for byte in value.to_le_bytes() {
-        hash ^= u64::from(byte);
+/// FNV-1a over `bytes`, continuing from `hash`.
+///
+/// One definition, in the lowest module that needs it, because the *other*
+/// caller is [`crate::marks_file::root_hash`] — which names every user's marks
+/// file, and whose module doc explains at length that changing the digest
+/// orphans their work with no error message. A second copy of these constants
+/// is exactly how that happens quietly, so there is one.
+pub(crate) fn fnv1a(mut hash: u64, bytes: &[u8]) -> u64 {
+    for byte in bytes {
+        hash ^= u64::from(*byte);
         hash = hash.wrapping_mul(FNV_PRIME);
     }
     hash
@@ -69,10 +76,14 @@ fn mint_id() -> Id {
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_nanos() as u64);
     let mut hash = FNV_OFFSET;
-    hash = fold(hash, nanos);
-    hash = fold(hash, u64::from(std::process::id()));
-    hash = fold(hash, COUNTER.fetch_add(1, Ordering::Relaxed));
-    hash = fold(hash, process_seed());
+    for value in [
+        nanos,
+        u64::from(std::process::id()),
+        COUNTER.fetch_add(1, Ordering::Relaxed),
+        process_seed(),
+    ] {
+        hash = fnv1a(hash, &value.to_le_bytes());
+    }
     format!("h{hash:016x}")
 }
 
@@ -1452,8 +1463,8 @@ mod tests {
 
     #[test]
     fn parts_round_trip_through_from_parts() {
-        // The seam step 4's loader and writer use, so the private fields stay
-        // private.
+        // The seam `marks_file`'s loader and writer use, so the private fields
+        // stay private.
         let (mut store, ids) = store_with("alpha\nbeta\n", &["alpha", "beta"]);
         store.set_annotation(&ids[1], "why?".into());
         store.set_annotation(&ids[0], "and?".into());
@@ -1494,7 +1505,7 @@ mod tests {
     fn a_highlight_from_a_future_version_loads_what_it_understands() {
         // No `deny_unknown_fields` and `#[serde(default)]` throughout: a marks
         // file written by a later dreamd must not be rejected wholesale by an
-        // earlier one. This is the guard that lets step 4's format grow.
+        // earlier one. This is the guard that lets the marks format grow.
         let json = r#"{"id":"habcdef0123456789","file_path":"/repo/a.md","quote":"alpha",
                        "state":"stale","invented_by_a_later_version":42}"#;
         let h: Highlight = serde_json::from_str(json).expect("deserialize");

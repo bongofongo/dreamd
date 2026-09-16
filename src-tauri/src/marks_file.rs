@@ -30,7 +30,7 @@
 //! filesystem entry points; the scheduling of those entry points is the
 //! caller's business.
 
-use crate::annotations::{Highlight, HighlightState, Id, Store};
+use crate::annotations::{self, Highlight, HighlightState, Id, Store};
 use crate::config;
 use crate::guard;
 use serde::{Deserialize, Serialize};
@@ -53,22 +53,21 @@ pub const MAX_FILE_BYTES: u64 = 4 * 1024 * 1024;
 /// every reanchor.
 pub const MAX_FIELD_BYTES: usize = 8 * 1024;
 
-/// Default `marks.max_per_repo`. Kept here rather than in `config` because
-/// nothing reads the config key yet; when the GC lands it should pass its own
-/// value to [`enforce_cap`].
+/// The per-repo cap [`admit`] enforces. Deliberately a constant here rather
+/// than a `config` key: `dreamd marks prune` — the collection this was written
+/// ahead of — went through [`admit`] instead of carrying a number of its own,
+/// so nothing has ever needed to vary it. [`enforce_cap`] still takes `max` as
+/// an argument, which is what a key would set if one is ever wanted.
 pub const MAX_PER_REPO: usize = 2000;
-
-const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 
 /// The on-disk document.
 ///
 /// `#[serde(default)]` is container-wide and there is **no**
 /// `deny_unknown_fields`, on both this and [`Highlight`]. A marks file written
 /// by a later dreamd must load in an earlier one, keeping what it understands,
-/// rather than being rejected wholesale — that is what lets step 5 add a field
-/// without stranding anyone who downgrades. `version` is recorded for a future
-/// migration to branch on; nothing refuses a document for carrying a number it
+/// rather than being rejected wholesale — that is what lets a later version
+/// add a field without stranding anyone who downgrades. `version` is recorded
+/// for a future migration to branch on; nothing refuses a document for carrying a number it
 /// does not recognise, because refusing is the failure mode this is designed to
 /// avoid.
 ///
@@ -76,9 +75,10 @@ const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 /// refuses a document whose root disagrees with the one being opened rather
 /// than adopting another repo's marks.
 ///
-/// There is no `next_id`. Ids stopped coming from a counter in step 1, which is
-/// that change's quiet payoff: nothing about identity has to survive in this
-/// file for an id written down last session to still mean the same mark.
+/// There is no `next_id`. Ids stopped coming from a counter when they became
+/// opaque digests, which is that change's quiet payoff: nothing about identity
+/// has to survive in this file for an id written down last session to still
+/// mean the same mark.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct MarksDoc {
@@ -93,23 +93,19 @@ pub struct MarksDoc {
 
 // ---- paths ---------------------------------------------------------------
 
-fn fnv1a(bytes: &[u8]) -> u64 {
-    let mut hash = FNV_OFFSET;
-    for byte in bytes {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(FNV_PRIME);
-    }
-    hash
-}
-
 /// FNV-1a over the root's bytes, as 16 lowercase hex digits.
 ///
 /// See the module doc: this is pinned by test, and swapping it for a
-/// `std::hash` hasher is a silent data-loss bug.
+/// `std::hash` hasher is a silent data-loss bug. The digest itself is
+/// [`annotations::fnv1a`], which is where the constants live so that this
+/// module and `mint_id` cannot drift apart on them.
 pub fn root_hash(canonical_root: &Path) -> String {
     format!(
         "{:016x}",
-        fnv1a(canonical_root.to_string_lossy().as_bytes())
+        annotations::fnv1a(
+            annotations::FNV_OFFSET,
+            canonical_root.to_string_lossy().as_bytes()
+        )
     )
 }
 
@@ -300,9 +296,13 @@ pub fn admit(root: &Path, doc: MarksDoc) -> Store {
             if h.quote.trim().is_empty() {
                 return None;
             }
-            // Coming off disk is what "previous session" *means*. `prior` is
-            // `#[serde(skip)]`, so it is false on arrival no matter what the
-            // file said, and this is the only place it is ever set.
+            // Coming off disk is what "previous session" *means*, and a
+            // previous session is over by definition. `prior` is
+            // `skip_deserializing` — not a plain `skip`, see the field's own
+            // doc — so it is false on arrival no matter what the file said, and
+            // this is the only place a *loaded* mark's flag is decided.
+            // `Store::mark_sent` and `Store::remove_from_stack` set it too; the
+            // flag means "done with", of which coming off disk is one way.
             h.prior = true;
             Some(h)
         })
@@ -333,10 +333,12 @@ fn now_secs() -> u64 {
 /// Split out from [`save`] so a round trip can be exercised without a
 /// directory: build the doc, serialise it, parse it, hand it to [`admit`].
 ///
-/// `prior` is cleared on the way out. It answers "was this read from a file",
-/// which is a fact about *this* session and means nothing to the next one —
-/// [`admit`] decides it again on load. The copy is free: `to_vec` was cloning
-/// already.
+/// `prior` is cleared on the way out. It means "done with" — a mark read off
+/// disk, sent, or popped off the stack — and that is a conclusion *this*
+/// session reached about its own history, so the next one derives it again:
+/// [`admit`] makes everything prior on the way back in. Writing it would only
+/// let a hand-edited file assert a fade the reader's history does not support.
+/// The copy is free: `to_vec` was cloning already.
 pub fn doc_from(canonical_root: &Path, store: &Store) -> MarksDoc {
     let (highlights, stack) = store.parts();
     MarksDoc {
@@ -792,9 +794,10 @@ mod tests {
 
     #[test]
     fn a_file_from_a_future_version_loads_what_it_understands() {
-        // The test that stops step 5 breaking step 4's files. An unknown
-        // top-level key and an unknown entry field must both be ignored, and a
-        // version number from the future must not be a rejection.
+        // The test that stops a later format breaking an earlier one's files.
+        // An unknown top-level key and an unknown entry field must both be
+        // ignored, and a version number from the future must not be a
+        // rejection.
         let json = r#"{
             "version": 7,
             "root": "/w/notes",
