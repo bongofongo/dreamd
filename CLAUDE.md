@@ -33,7 +33,7 @@ node --test ui/paths.test.mjs                # ui/paths.js guards, no deps
 
 cargo run --release --example locate_check   # highlight anchoring, 611 corpus fixtures
 cargo run --example config_check             # config layering + write-back
-cargo run --example theme_check              # bundled palettes: vars, --bg, --syntax-theme
+cargo run --example theme_check              # bundled palettes through contract::check, plus the bundled-only policy
 cargo run --example mcp_check                # the MCP socket: mode, lock, wire, retirement
 cargo run --example marks_check              # the marks file: modes, caps, crash artifacts, the lock
 cargo run --example agent_check              # the permission gate: the real `dreamd approve` over a real socket
@@ -41,7 +41,7 @@ node perf/harness/ui-check.mjs               # settings panel in Chromium (needs
 ```
 
 ```sh
-dreamd theme list|set <name>|show [name]|new <name> [--from <base>]
+dreamd theme list|set <name>|show [name]|new <name> [--from <base>]|check [name|path]|guide [--json]
 dreamd config path|edit|get <key>|set <key> <value>
 dreamd marks path|prune [--stale] [--older-than 30d]   # bare `prune` is a dry run
 dreamd mcp                           # the stdio MCP shim; `claude mcp add dreamd -- dreamd mcp`
@@ -53,7 +53,10 @@ dreamd --theme nord [path]           # one run, no config write
 allowlist, repo-root containment), `untrusted` (the envelope, and that a body
 which has learned the sentinel still cannot break out of it), `markdown` (HTML
 escaping, slugs, `locate`'s three tiers), `theme` (`user_path` traversal, the
-CSS parser), `annotations`
+CSS parser, and the contract: that every variable the two stylesheets consume is
+in `contract::VARS` and vice versa, that `ui/themes/README.md`'s table is the
+one `VARS` generates, and that every selector its region map names is one the
+page styles), `annotations`
 (`Store` semantics), `config` (`deep_merge`), `fs_walk::build_tree`, `is_markdown`,
 `prompt` (that nothing of dreamd's lands inside an envelope, that a forged
 delimiter cannot break out, and that nothing a reader wrote reaches the typed
@@ -487,6 +490,33 @@ the upgrade procedure.
   to an explicit `mode` — which is why `Config::mode` is an `Option`. Debug builds read
   bundled palettes off disk so they hot-reload like user ones.
   `readCssVar`/`modeSlice` in `ui/app.js` mirror this; change one, change the other.
+  **The vocabulary is `contract::VARS`, and nothing else lists it.** One const —
+  name, kind, shared-or-per-mode, required, what it paints — read by three
+  things: `contract::check`, which holds any stylesheet to it (required
+  variables per scheme through `custom_property`, hex `--bg`, a real syntect
+  name, `--hl-prior` a percentage that differs per mode; typos with the
+  nearest real name and text/link contrast under 4.5:1 as *warnings*, because
+  Nord's, Catppuccin Latte's and Tokyo Night Day's link blues sit there on
+  purpose and `theme_check` acknowledges them by name); `dreamd theme check`,
+  which runs it over a user's file or a path and exits 1 on an error — the
+  bundled harness used to carry its own `REQUIRED` list and a user palette got
+  no check at all; and `guide`, which prints `ui/themes/README.md` with its
+  variable table regenerated from the const (a test pins the committed file to
+  it; `--readme` is the regeneration) and then the lists only the binary
+  knows. `every_consumed_variable_is_in_the_contract` is what makes the const
+  the truth rather than a fourth copy: it scans `var(--…)` out of `theme.css`
+  and `index.html` and fails on either direction of drift, which is how
+  `--danger` (consumed once, declared by no palette) was found and folded into
+  `--stale`. `INTERNAL` is the allowlist for the runtime-set ones (`--zoom`,
+  the panel sizes, `--img-w`). The **selector surface** the guide ends with is
+  scanned out of `index.html`'s `<style>` blocks and `theme.css` by `build.rs`
+  — `selectors.rs` is included *by path* there as well as being
+  `theme::selectors`, so the list in the binary costs 3KB of names rather than
+  a second copy of the 120KB page. The four **shape variables** (`--font-ui`,
+  `--radius`, `--radius-lg`, `--shadow`) are how a palette reshapes the chrome
+  without `theme_css`; every site keeps its own value as the `var()` fallback,
+  so an unset palette is pixel-identical to before they existed, and `2px`,
+  `0` and `50%` radii stay literal on purpose.
   **What the OS asks for is a second, separately remembered fact.** `scheme_for`
   takes it as an argument, and `AppState` holds it in its own atom beside the
   appearance on screen: while an explicit light or dark is pinned it cannot be
@@ -1228,6 +1258,9 @@ In this repo:
   Nothing there touches the Rust build.
 - `src-tauri/icons/README.md`, `ui/vendor/README.md`, `packaging/SIGNING.md` —
   the three narrow runbooks, each next to what it describes.
+- `ui/themes/README.md` — the theming contract, written for an agent and
+  `include_str!`'d into the binary as `dreamd theme guide`. Its variable table
+  is generated (see `theme`) and a test holds the committed file to it.
 - `.claude/upkeep/ledger.md` and `.claude/upkeep/findings/` — the nightly
   Routine's two outputs; see Working practices. Tracked here because that job's
   checkout is this repo and nothing else.

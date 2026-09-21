@@ -1,15 +1,22 @@
 //! Correctness harness for the bundled palettes. Exits non-zero if any of them
-//! is missing a variable, has an unparseable `--bg`, or names a syntect theme
-//! this build does not carry.
+//! fails `theme::contract::check` — a missing variable, an unparseable `--bg`,
+//! a syntect theme this build does not carry, a value copied across both mode
+//! blocks — or prints a warning nobody has acknowledged.
 //!
-//! Both failure modes are silent at runtime: a bad `--bg` just skips the
+//! Every failure mode is silent at runtime: a bad `--bg` just skips the
 //! pre-paint and a bad `--syntax-theme` quietly falls back, so neither shows up
 //! as anything but "that theme looks a bit off".
+//!
+//! The rules live in the library, where `dreamd theme check` runs the same
+//! function over a user's file. What stays here is the bundled-only policy:
+//! every family must carry both modes, every alias must resolve, and the two
+//! compatibility guarantees for a flat pre-family file hold.
 //!
 //! ```sh
 //! cargo run --example theme_check
 //! ```
 
+use dreamd::theme::contract::{self, Level};
 use dreamd::theme::Scheme;
 use dreamd::{markdown, theme};
 
@@ -21,31 +28,17 @@ const SCHEMES: [Scheme; 2] = [Scheme::Light, Scheme::Dark];
 /// Every user palette on disk is still one of these.
 const FLAT: &str = ":root { --bg: #123456; --syntax-theme: \"InspiredGitHub\"; }";
 
-/// Every variable a palette must declare. The base stylesheet and the app
-/// chrome consume these; a missing one falls through to a hardcoded fallback
-/// that belongs to a different theme.
-const REQUIRED: &[&str] = &[
-    "--bg",
-    "--sidebar-bg",
-    "--btn-bg",
-    "--hover",
-    "--border",
-    "--text",
-    "--muted",
-    "--link",
-    "--accent",
-    "--accent-dim",
-    "--hl",
-    "--hl-prior",
-    "--stale",
-    "--stale-bg",
-    "--font-body",
-    "--font-mono",
-    "--font-size",
-    "--line-height",
-    "--content-width",
-    "--ui-font-size",
-    "--syntax-theme",
+/// Warnings a bundled family carries on purpose. Anything else is a failure:
+/// a shipped palette with a typo or an unlooked-at contrast is a bug, and a
+/// warning nobody reads is one nobody fixes.
+const ACKNOWLEDGED: &[(&str, &str)] = &[
+    // Three published light palettes whose link blue is the upstream's own
+    // and sits under AA on its own ground: Nord's frost (3.5:1, said in the
+    // palette's header), Catppuccin Latte's blue (4.3:1) and Tokyo Night
+    // Day's (3.1:1). Darkening any of them would make it not that theme.
+    ("nord", "light: --link on --bg is"),
+    ("catppuccin", "light: --link on --bg is"),
+    ("tokyo-night", "light: --link on --bg is"),
 ];
 
 fn label(scheme: Scheme) -> &'static str {
@@ -60,63 +53,30 @@ fn main() {
     let mut failed = 0;
 
     for (name, css) in theme::BUNDLED {
-        for scheme in SCHEMES {
-            let m = format!("{name} [{}]", label(scheme));
-            for var in REQUIRED {
-                // Through the parser the app uses, not a substring test: a bare
-                // `css.contains("--bg:")` passes the light pass for a variable
-                // only the dark block declares, which is the exact mistake this
-                // harness exists to catch.
-                if theme::custom_property(css, var, scheme).is_none() {
-                    println!("FAIL  {m}: missing {var}");
-                    failed += 1;
-                }
-            }
-            if theme::background(css, scheme).is_none() {
-                println!("FAIL  {m}: --bg is not a parseable hex colour");
+        // Through the parser the app uses, not a substring test: a bare
+        // `css.contains("--bg:")` passes the light pass for a variable only
+        // the dark block declares, which is the exact mistake this harness
+        // exists to catch. `check` reads every variable per scheme.
+        for f in contract::check(css, &available) {
+            let acknowledged = f.level == Level::Warning
+                && ACKNOWLEDGED
+                    .iter()
+                    .any(|(n, prefix)| *n == *name && f.message.starts_with(prefix));
+            if acknowledged {
+                println!("ok    {name}: {} (acknowledged)", f.message);
+            } else {
+                println!("FAIL  {name}: {}", f.message);
                 failed += 1;
-            }
-            match theme::syntax_theme(css, scheme) {
-                Some(syntax) if !available.contains(&syntax) => {
-                    println!("FAIL  {m}: unknown syntect theme {syntax:?}");
-                    println!("        available: {}", available.join(", "));
-                    failed += 1;
-                }
-                Some(_) => {}
-                None => {
-                    println!("FAIL  {m}: --syntax-theme did not parse");
-                    failed += 1;
-                }
             }
         }
 
         // A family whose light block was never written renders dark-in-light
         // and nothing else complains — the palette is "valid" in both passes
-        // above because the shared block satisfies them.
+        // above because the shared block satisfies them. `check` only warns,
+        // because a user's flat file is legitimate; a bundled one is not.
         if !theme::has_mode_blocks(css) {
             println!("FAIL  {name}: declares no [data-mode] block");
             failed += 1;
-        } else {
-            if theme::background(css, Scheme::Light) == theme::background(css, Scheme::Dark) {
-                println!("FAIL  {name}: --bg is the same in both modes");
-                failed += 1;
-            }
-            // A copy-pasted --syntax-theme is what keeps code blocks dark under
-            // a light theme, and it is invisible except as "that looks a bit
-            // off".
-            if theme::syntax_theme(css, Scheme::Light) == theme::syntax_theme(css, Scheme::Dark) {
-                println!("FAIL  {name}: --syntax-theme is the same in both modes");
-                failed += 1;
-            }
-            // D15, pinned: the same fade strength cannot be right for both
-            // members of a family. A bright `--hl` on a near-black background is
-            // far more present at a given percentage than the same hue on paper,
-            // so a value copied across the two blocks is a value that was never
-            // looked at in one of them.
-            if theme::prior_fade(css, Scheme::Light) == theme::prior_fade(css, Scheme::Dark) {
-                println!("FAIL  {name}: --hl-prior is the same in both modes");
-                failed += 1;
-            }
         }
 
         // What the app actually injects, not just the palette on its own.
@@ -175,7 +135,7 @@ fn main() {
         "theme_check: {} families x {} modes, {} required vars each, {} aliases, {failed} failed",
         theme::BUNDLED.len(),
         SCHEMES.len(),
-        REQUIRED.len(),
+        contract::VARS.iter().filter(|v| v.required).count(),
         theme::ALIASES.len(),
     );
     if failed > 0 {

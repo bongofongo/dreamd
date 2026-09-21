@@ -483,8 +483,17 @@ dreamd theme set nord
 dreamd config set mode light             # light, dark, or system (the default)
 dreamd --theme manuscript --mode dark    # this run only
 dreamd theme new mine --from nord        # copy into ~/.config/dreamd/themes/
+dreamd theme check mine                  # missing variables, typos, contrast; exit 1 on an error
 dreamd theme show mine                   # print the full stylesheet
+dreamd theme guide                       # the whole contract, written for an agent (--json too)
 ```
+
+`theme guide` is the instruction sheet: what a palette is, every variable and
+what it paints, the rules `check` enforces, and — for a stylesheet of your own
+— the full list of ids and classes the window styles, scanned from the page at
+build time. Hand it to Claude Code (`dreamd theme guide | claude -p "make me a
+warm sepia theme"`) or read it yourself; `ui/themes/README.md` is the same
+text.
 
 `mode` is independent of which theme you picked — every theme has both halves.
 The default follows the OS and keeps following it while the app runs.
@@ -507,7 +516,10 @@ Switching appearance is one attribute on `<html>`, so it is instant.
 is what keeps code blocks from staying dark under a light theme. A few optional
 variables let a theme change shape rather than only colour: `--font-heading`,
 `--heading-weight`, `--heading-rule`, `--letter-spacing`, `--para-spacing`,
-`--text-align`, `--hyphens`, `--code-bg`, `--hl-text`, `--stale-text`.
+`--text-align`, `--hyphens`, `--code-bg`, `--hl-text`, `--stale-text` for the
+document, and `--font-ui`, `--radius`, `--radius-lg`, `--shadow` for the
+chrome — set `--radius: 0` and `--shadow: none` for a flat window. Each site
+keeps its own default when the variable is unset.
 
 A palette written before families existed — one bare `:root`, no mode blocks —
 still works, and reads the same in both appearances. The older per-appearance

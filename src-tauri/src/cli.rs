@@ -8,6 +8,7 @@
 
 use crate::annotations::{Highlight, HighlightState, Store};
 use crate::config::{self, Config};
+use crate::markdown;
 use crate::marks_file;
 use crate::theme;
 use clap::Subcommand;
@@ -68,6 +69,25 @@ pub enum ThemeCmd {
         /// The theme to copy. Defaults to the active one.
         #[arg(long)]
         from: Option<String>,
+    },
+    /// Hold a palette to the contract: missing variables, values Rust cannot
+    /// parse, probable typos, weak contrast. Exit 1 on any error.
+    Check {
+        /// A theme name (user file first, then bundled) or a path to a `.css`
+        /// file. Defaults to the active theme.
+        target: Option<String>,
+    },
+    /// Print the theming guide: the contract, the variable table, the syntect
+    /// themes, the bundled families and the selector surface. Written for an
+    /// agent that is about to change how dreamd looks.
+    Guide {
+        /// The same facts as one JSON document.
+        #[arg(long, conflicts_with = "readme")]
+        json: bool,
+        /// Only `ui/themes/README.md` with its variable table regenerated —
+        /// what a contributor pastes back after editing the contract.
+        #[arg(long, hide = true)]
+        readme: bool,
     },
 }
 
@@ -231,6 +251,15 @@ fn theme_cmd(action: ThemeCmd, cfg: &Config) -> Result<(), String> {
                     "dreamd: warning — theme_css is set, so the palette is ignored until you clear it"
                 );
             }
+            // Advice, not a gate: the file is the user's and it applies either
+            // way, but an agent that skipped `check` still hears about a
+            // missing variable at the moment it matters.
+            if let Some(css) = theme::palette(&name) {
+                let findings = theme::contract::check(&css, &markdown::syntax_theme_names());
+                for f in &findings {
+                    eprintln!("dreamd: {}: {}", level(f.level), f.message);
+                }
+            }
             Ok(())
         }
         ThemeCmd::Show { name } => {
@@ -258,9 +287,88 @@ fn theme_cmd(action: ThemeCmd, cfg: &Config) -> Result<(), String> {
             }
             let path = theme::save_user(&name, &css)?;
             println!("{}", path.display());
-            eprintln!("dreamd: edit it, then `dreamd theme set {name}`");
+            eprintln!(
+                "dreamd: edit it, then `dreamd theme check {name}` and `dreamd theme set {name}`"
+            );
             Ok(())
         }
+        ThemeCmd::Check { target } => {
+            let (label, css) = match target {
+                Some(t) if t.contains('/') || t.ends_with(".css") => {
+                    let css =
+                        std::fs::read_to_string(&t).map_err(|e| format!("cannot read {t}: {e}"))?;
+                    (t, css)
+                }
+                Some(t) => {
+                    let css = theme::palette(&t)
+                        .ok_or_else(|| format!("no theme named {t:?} (try `dreamd theme list`)"))?;
+                    (t, css)
+                }
+                None => {
+                    let resolved = theme::resolve(cfg, cli_scheme(cfg));
+                    let label = match (&cfg.theme_css, &resolved.name) {
+                        (Some(path), _) => path.display().to_string(),
+                        (None, Some(name)) => name.clone(),
+                        (None, None) => theme::DEFAULT_THEME.to_string(),
+                    };
+                    // The palette alone, not base+palette: the base declares
+                    // nothing and would only add its fallbacks' `--x` names.
+                    let css = match &cfg.theme_css {
+                        Some(_) => resolved.css,
+                        None => theme::palette(&label).unwrap_or(resolved.css),
+                    };
+                    (label, css)
+                }
+            };
+            let findings = theme::contract::check(&css, &markdown::syntax_theme_names());
+            let errors = findings
+                .iter()
+                .filter(|f| f.level == theme::contract::Level::Error)
+                .count();
+            for f in &findings {
+                println!("{}: {}", level(f.level), f.message);
+            }
+            println!(
+                "{label}: {errors} error{}, {} warning{}",
+                if errors == 1 { "" } else { "s" },
+                findings.len() - errors,
+                if findings.len() - errors == 1 {
+                    ""
+                } else {
+                    "s"
+                }
+            );
+            if errors > 0 {
+                std::process::exit(1);
+            }
+            Ok(())
+        }
+        ThemeCmd::Guide { json, readme } => {
+            if readme {
+                print!("{}", theme::guide::readme());
+            } else if json {
+                let active = theme::resolve(cfg, cli_scheme(cfg)).name;
+                let doc = theme::guide::json(
+                    &markdown::syntax_theme_names(),
+                    &theme::user_dir(),
+                    active.as_deref(),
+                );
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?
+                );
+            } else {
+                print!("{}", theme::guide::render(&markdown::syntax_theme_names()));
+            }
+            Ok(())
+        }
+    }
+}
+
+fn level(l: theme::contract::Level) -> &'static str {
+    match l {
+        theme::contract::Level::Error => "error",
+        theme::contract::Level::Warning => "warning",
     }
 }
 

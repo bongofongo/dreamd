@@ -44,7 +44,7 @@
         /* Chrome keeps the system UI font — only its size is themed. The
            reading font (`--font-body`) is the palette's business and applies
            to #content, not to buttons and menus. */
-        font: var(--ui-font-size, 14px)/1.5 system-ui, sans-serif;
+        font: var(--ui-font-size, 14px)/1.5 var(--font-ui, system-ui, sans-serif);
         overflow: hidden;
         background: var(--bg, #14121c);
         color: var(--text, #d8d3e4);
@@ -52,7 +52,7 @@
 
       button {
         font: inherit; cursor: pointer; border: 1px solid var(--border, #2e2940);
-        background: var(--btn-bg, #1f1c2b); color: inherit; border-radius: 6px; padding: 4px 10px;
+        background: var(--btn-bg, #1f1c2b); color: inherit; border-radius: var(--radius, 6px); padding: 4px 10px;
       }
       button:hover { background: var(--hover, #292435); }
       button.primary { background: var(--accent, #a48cf5); border-color: var(--accent, #a48cf5); color: #fff; }
@@ -190,7 +190,7 @@
       #btn-stack { position: relative; }
       #btn-stack .badge {
         position: absolute; top: -6px; right: -6px; display: none;
-        background: var(--accent, #a48cf5); color: #fff; border-radius: 10px;
+        background: var(--accent, #a48cf5); color: #fff; border-radius: var(--radius-lg, 10px);
         font-size: 10px; line-height: 1; padding: 2px 5px; min-width: 16px; text-align: center;
       }
       #btn-stack .badge.show { display: block; }
@@ -262,7 +262,7 @@
       #repo-name {
         flex: 1; min-width: 0; font: inherit; font-weight: 600;
         background: transparent; color: inherit;
-        border: 1px solid transparent; border-radius: 5px;
+        border: 1px solid transparent; border-radius: var(--radius, 5px);
         padding: 1px 4px; margin: -1px -4px;
         text-overflow: ellipsis; outline: none;
       }
@@ -286,7 +286,7 @@
       .tree-item.file.active { background: var(--accent-dim, #2b2447); }
       .tree-item.file .file-opts {
         flex: 0 0 auto; border: none; background: none; padding: 0 4px; opacity: 0;
-        font-size: 16px; line-height: 1; border-radius: 4px;
+        font-size: 16px; line-height: 1; border-radius: var(--radius, 4px);
       }
       .tree-item.file:hover .file-opts { opacity: 0.6; }
       .tree-item.file .file-opts:hover { opacity: 1; background: var(--btn-bg, #1f1c2b); }
@@ -297,7 +297,7 @@
       /* floating expand arrow, shown only when the tree is collapsed */
       #btn-expand {
         position: fixed; left: 6px; top: 46px; z-index: 30; display: none;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+        box-shadow: var(--shadow, 0 2px 8px rgba(0,0,0,0.4));
       }
       body.nav-collapsed #btn-expand { display: inline-flex; }
 
@@ -357,7 +357,7 @@
          edited out from under it, which means it is almost always empty. Keep it
          that way; see `addStaleChip` in app.js. */
       #stale-rail { position: absolute; top: 8px; right: 8px; width: 210px; display: flex; flex-direction: column; gap: 6px; z-index: 5; }
-      .stale-chip { background: var(--stale-bg, #3a1a22); border: 1px solid var(--stale, #ef6a7d); border-radius: 6px; padding: 6px 8px; font-size: 12px; }
+      .stale-chip { background: var(--stale-bg, #3a1a22); border: 1px solid var(--stale, #ef6a7d); border-radius: var(--radius, 6px); padding: 6px 8px; font-size: 12px; }
       .stale-chip .q { opacity: 0.8; display: block; margin: 4px 0; max-height: 3em; overflow: hidden; }
       .stale-chip .row { display: flex; gap: 6px; }
 
@@ -404,7 +404,7 @@
       .code-block { position: relative; }
       button.code-copy {
         position: absolute; top: 8px; right: 8px; z-index: 2;
-        padding: 4px 6px; line-height: 0; border-radius: 6px;
+        padding: 4px 6px; line-height: 0; border-radius: var(--radius, 6px);
         background: var(--bg, #14121c);
         opacity: 0; transition: opacity 0.12s ease;
         user-select: none; -webkit-user-select: none;
@@ -634,7 +634,7 @@
       }
       #pty-mode {
         flex: 0 1 auto; min-width: 0; font: inherit; font-size: 11px;
-        padding: 2px 4px; border-radius: 5px;
+        padding: 2px 4px; border-radius: var(--radius, 5px);
         background: var(--btn-bg, #1f1c2b); color: inherit;
         border: 1px solid var(--border, #2e2940);
         opacity: 0.8; cursor: pointer;
@@ -646,7 +646,7 @@
          actions rather than one either/or. */
       #pty-models {
         flex: 0 0 auto; display: flex;
-        border: 1px solid var(--border, #2e2940); border-radius: 5px;
+        border: 1px solid var(--border, #2e2940); border-radius: var(--radius, 5px);
         overflow: hidden;
       }
       button.pty-model {
@@ -705,7 +705,7 @@
         flex: 1 1 100%; min-width: 0;
         font-family: var(--font-mono, ui-monospace, "SF Mono", Menlo, Consolas, monospace);
         font-size: 10.5px; line-height: 1.5;
-        padding: 4px 7px; border-radius: 4px;
+        padding: 4px 7px; border-radius: var(--radius, 4px);
         background: var(--btn-bg, #1f1c2b);
         border: 1px solid var(--border, #2e2940);
         /* A path can be one unbroken token longer than the dock is wide, so it
@@ -740,7 +740,7 @@
       #pty-confirm-text { flex: 1 1 0; min-width: 16ch; opacity: 0.85; }
       button.pty-cta {
         flex: 0 0 auto; font: inherit; font-size: 11px;
-        padding: 3px 9px; border-radius: 5px; cursor: pointer;
+        padding: 3px 9px; border-radius: var(--radius, 5px); cursor: pointer;
         background: var(--btn-bg, #1f1c2b); color: inherit;
         border: 1px solid var(--border, #2e2940);
       }
@@ -787,7 +787,7 @@
       #pty-term .xterm-viewport::-webkit-scrollbar { width: 8px; }
       #pty-term .xterm-viewport::-webkit-scrollbar-track { background: transparent; }
       #pty-term .xterm-viewport::-webkit-scrollbar-thumb {
-        background: var(--border, #2e2940); border-radius: 4px;
+        background: var(--border, #2e2940); border-radius: var(--radius, 4px);
       }
       #pty-term .xterm-viewport::-webkit-scrollbar-thumb:hover { background: var(--accent, #a48cf5); }
 
@@ -838,7 +838,7 @@
       }
       .agent-tool .t-mark { margin-left: auto; padding-left: 8px; }
       .agent-tool.failed { opacity: .85; }
-      .agent-tool.failed .t-mark { color: var(--danger, #e06c75); }
+      .agent-tool.failed .t-mark { color: var(--stale, #ef6a7d); }
 
       /* dreamd or the CLI speaking, not the agent. */
       .agent-note {
@@ -848,7 +848,7 @@
       /* A permission card. Deliberately the loudest thing in the log: it is the
          only element in the pane that is waiting on the reader. */
       .agent-card {
-        border: 1px solid var(--accent, #a48cf5); border-radius: 6px;
+        border: 1px solid var(--accent, #a48cf5); border-radius: var(--radius, 6px);
         padding: 10px 12px; margin: 10px 0; background: var(--hover, #1a1726);
       }
       .agent-card .c-what { font-size: 12px; opacity: .75; margin-bottom: 4px; }
@@ -860,7 +860,7 @@
       .agent-card .c-buttons { display: flex; gap: 6px; }
       .agent-card button {
         font: inherit; font-size: 12px; padding: 4px 10px; cursor: pointer;
-        border: 1px solid var(--border, #2e2940); border-radius: 4px;
+        border: 1px solid var(--border, #2e2940); border-radius: var(--radius, 4px);
         background: transparent; color: var(--text, #e6e1f2);
       }
       .agent-card button:hover { background: var(--sidebar-bg, #100e17); }
@@ -876,7 +876,7 @@
       }
       /* `--text`, not `--fg`. No palette has ever declared `--fg` — `ui/theme.css`
          sets `body`'s colour from `--text` and every file in `ui/themes/`
-         declares that one — so a `var(--fg, …)` here resolved to its fallback in
+         declares that one — so a `--fg` read here resolved to its fallback in
          every theme, which is to say the composer was permanently painting
          near-white text on whatever `--bg` the palette asked for. On the light
          half of a family that is the bug you can see. `caret-color` is spelled
@@ -886,14 +886,14 @@
       #agent-input {
         flex: 1; resize: none; font: inherit; font-size: 13px; line-height: 1.45;
         max-height: 40vh; padding: 6px 8px;
-        border: 1px solid var(--border, #2e2940); border-radius: 5px;
+        border: 1px solid var(--border, #2e2940); border-radius: var(--radius, 5px);
         background: var(--bg, #0d0b13); color: var(--text, #e6e1f2);
         caret-color: var(--accent, #a48cf5);
       }
       #agent-input::placeholder { color: var(--muted, #8f88a3); opacity: 1; }
       #agent-input:focus { outline: none; border-color: var(--accent, #a48cf5); }
       #agent-send {
-        font: inherit; cursor: pointer; padding: 6px 10px; border-radius: 5px;
+        font: inherit; cursor: pointer; padding: 6px 10px; border-radius: var(--radius, 5px);
         border: 1px solid var(--border, #2e2940);
         background: transparent; color: var(--accent, #a48cf5);
       }
@@ -904,7 +904,7 @@
       #agent-input::-webkit-scrollbar-track { background: transparent; }
       #agent-log::-webkit-scrollbar-thumb,
       #agent-input::-webkit-scrollbar-thumb {
-        background: var(--border, #2e2940); border-radius: 4px;
+        background: var(--border, #2e2940); border-radius: var(--radius, 4px);
       }
 
       /* ---- the pop-out (`agent.popout`) -----------------------------------
@@ -968,9 +968,9 @@
         pointer-events: auto;
         display: flex; flex-direction: column;
         width: min(720px, 78vw); height: min(560px, 72vh);
-        border: 1px solid var(--border, #2e2940); border-radius: 12px;
+        border: 1px solid var(--border, #2e2940); border-radius: var(--radius-lg, 12px);
         background: var(--sidebar-bg, #100e17);
-        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
+        box-shadow: var(--shadow, 0 20px 60px rgba(0, 0, 0, 0.45));
         overflow: hidden; outline: none;
       }
       /* Focused and read-only: the accent edge is the whole of the "press `i`"
@@ -997,7 +997,7 @@
       #agent-popout.editing #agent-hint { display: none; }
       #agent-hint kbd {
         font-family: var(--font-mono, ui-monospace, Menlo, monospace);
-        font-size: 10px; padding: 1px 5px; border-radius: 4px;
+        font-size: 10px; padding: 1px 5px; border-radius: var(--radius, 4px);
         border: 1px solid var(--border, #2e2940); background: var(--btn-bg, #1f1c2b);
       }
       /* Busy reads in the accent and drops the dimming — it is the one thing
@@ -1038,7 +1038,7 @@
       #outline-panel {
         position: absolute; top: 8px; right: 8px; width: 240px; max-height: calc(100% - 16px);
         background: var(--sidebar-bg, #100e17); border: 1px solid var(--border, #2e2940);
-        border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,0.35);
+        border-radius: var(--radius-lg, 8px); box-shadow: var(--shadow, 0 8px 24px rgba(0,0,0,0.35));
         display: none; flex-direction: column; z-index: 21; overflow: hidden;
         opacity: 0.45; transition: opacity 0.15s ease;
       }
@@ -1122,7 +1122,7 @@
          is the same one-step lift every other raised surface here uses, and it
          is what makes the gaps between pairs read as gaps. */
       .pair {
-        border: 1px solid var(--border, #2e2940); border-radius: 8px;
+        border: 1px solid var(--border, #2e2940); border-radius: var(--radius-lg, 8px);
         padding: 8px; margin-bottom: 8px;
         background: var(--btn-bg, #1f1c2b);
       }
@@ -1225,8 +1225,8 @@
       #palette {
         margin-top: 80px; width: 620px; max-width: 90vw; max-height: 70vh;
         background: var(--sidebar-bg, #100e17); border: 1px solid var(--border, #2e2940);
-        border-radius: 10px; display: flex; flex-direction: column; overflow: hidden;
-        box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+        border-radius: var(--radius-lg, 10px); display: flex; flex-direction: column; overflow: hidden;
+        box-shadow: var(--shadow, 0 20px 60px rgba(0,0,0,0.5));
       }
       #palette input { font: inherit; padding: 12px 14px; border: none; outline: none; background: transparent; color: inherit; border-bottom: 1px solid var(--border, #2e2940); }
       #palette-results { overflow: auto; }
@@ -1238,20 +1238,20 @@
       #file-menu {
         position: fixed; z-index: 70; display: none; min-width: 150px;
         background: var(--sidebar-bg, #100e17); border: 1px solid var(--border, #2e2940);
-        border-radius: 8px; padding: 4px; box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+        border-radius: var(--radius-lg, 8px); padding: 4px; box-shadow: var(--shadow, 0 8px 24px rgba(0,0,0,0.5));
       }
       #file-menu.open { display: block; }
-      .fm-item { padding: 7px 10px; cursor: pointer; border-radius: 5px; white-space: nowrap; }
+      .fm-item { padding: 7px 10px; cursor: pointer; border-radius: var(--radius, 5px); white-space: nowrap; }
       .fm-item:hover { background: var(--hover, #292435); }
       .fm-item.danger { color: var(--stale, #ef6a7d); }
 
       /* annotation prompt + confirm dialog */
       .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: none; align-items: center; justify-content: center; z-index: 60; }
       .modal-overlay.open { display: flex; }
-      #annot-box, #confirm-box { width: 520px; max-width: 92vw; background: var(--sidebar-bg, #100e17); border: 1px solid var(--border, #2e2940); border-radius: 10px; padding: 14px; }
+      #annot-box, #confirm-box { width: 520px; max-width: 92vw; background: var(--sidebar-bg, #100e17); border: 1px solid var(--border, #2e2940); border-radius: var(--radius-lg, 10px); padding: 14px; }
       #confirm-box { width: 420px; }
       #annot-box .ev { font-size: 12px; opacity: 0.8; border-left: 2px solid var(--hl, #f2d16b); padding-left: 8px; margin: 8px 0; max-height: 6em; overflow: auto; }
-      #annot-box textarea { width: 100%; min-height: 70px; font: inherit; background: var(--btn-bg, #1f1c2b); color: inherit; border: 1px solid var(--border, #2e2940); border-radius: 6px; padding: 8px; }
+      #annot-box textarea { width: 100%; min-height: 70px; font: inherit; background: var(--btn-bg, #1f1c2b); color: inherit; border: 1px solid var(--border, #2e2940); border-radius: var(--radius, 6px); padding: 8px; }
       .modal-row { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
       #confirm-msg { margin: 6px 0 4px; }
       #confirm-detail { font-size: 12px; opacity: 0.6; word-break: break-all; }
@@ -1260,14 +1260,14 @@
       #tooltip {
         position: fixed; z-index: 90; display: none; pointer-events: none;
         background: var(--sidebar-bg, #100e17); border: 1px solid var(--border, #2e2940);
-        border-radius: 6px; padding: 5px 8px; font-size: 12px; line-height: 1.35;
-        white-space: nowrap; box-shadow: 0 6px 18px rgba(0,0,0,0.45);
+        border-radius: var(--radius, 6px); padding: 5px 8px; font-size: 12px; line-height: 1.35;
+        white-space: nowrap; box-shadow: var(--shadow, 0 6px 18px rgba(0,0,0,0.45));
         opacity: 0; transition: opacity 0.12s;
       }
       #tooltip.show { display: block; opacity: 1; }
       #tooltip .tt-key {
         margin-left: 8px; opacity: 0.65; font-size: 11px;
-        border: 1px solid var(--border, #2e2940); border-radius: 4px; padding: 0 4px;
+        border: 1px solid var(--border, #2e2940); border-radius: var(--radius, 4px); padding: 0 4px;
       }
 
       /* settings panel: same .modal-overlay / .open convention as the others,
@@ -1275,8 +1275,8 @@
       #settings-box {
         width: 760px; max-width: 94vw; height: 78vh; max-height: 640px;
         background: var(--sidebar-bg, #100e17); border: 1px solid var(--border, #2e2940);
-        border-radius: 10px; display: flex; flex-direction: column; overflow: hidden;
-        box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+        border-radius: var(--radius-lg, 10px); display: flex; flex-direction: column; overflow: hidden;
+        box-shadow: var(--shadow, 0 20px 60px rgba(0,0,0,0.5));
       }
       #settings-head {
         display: flex; align-items: center; gap: 10px;
@@ -1309,7 +1309,7 @@
       /* keys */
       .st-row {
         display: flex; align-items: center; gap: 10px;
-        padding: 7px 8px; border-radius: 6px;
+        padding: 7px 8px; border-radius: var(--radius, 6px);
       }
       .st-row:hover { background: var(--hover, #292435); }
       .st-row .lbl { flex: 1; min-width: 0; }
@@ -1322,7 +1322,7 @@
          rule for the same reason. */
       .st-row select {
         font: inherit; font-size: 12px; cursor: pointer;
-        padding: 4px 8px; border-radius: 6px;
+        padding: 4px 8px; border-radius: var(--radius, 6px);
         border: 1px solid var(--border, #2e2940);
         background: var(--btn-bg, #1f1c2b); color: inherit;
       }
@@ -1337,7 +1337,7 @@
       /* themes */
       #st-theme-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 10px; }
       .th-card {
-        border: 1px solid var(--border, #2e2940); border-radius: 8px; padding: 10px;
+        border: 1px solid var(--border, #2e2940); border-radius: var(--radius-lg, 8px); padding: 10px;
         cursor: pointer; display: flex; flex-direction: column; gap: 8px;
       }
       .th-card:hover { border-color: var(--accent, #a48cf5); }
@@ -1345,7 +1345,7 @@
       .th-card .top { display: flex; align-items: baseline; gap: 6px; }
       .th-card .name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .th-card .kind { font-size: 10px; opacity: 0.5; margin-left: auto; }
-      .th-swatch { display: flex; height: 28px; border-radius: 5px; overflow: hidden; border: 1px solid var(--border, #2e2940); }
+      .th-swatch { display: flex; height: 28px; border-radius: var(--radius, 5px); overflow: hidden; border: 1px solid var(--border, #2e2940); }
       .th-swatch i { flex: 1; }
       .th-card .acts { display: flex; gap: 6px; }
       .th-card .acts button { font-size: 11px; padding: 2px 8px; }
@@ -1358,22 +1358,22 @@
       }
       .st-var input[type="color"] {
         flex: 0 0 34px; height: 26px; padding: 0; border: 1px solid var(--border, #2e2940);
-        border-radius: 5px; background: none; cursor: pointer;
+        border-radius: var(--radius, 5px); background: none; cursor: pointer;
       }
       .st-var input[type="text"], .st-var select {
         flex: 1; min-width: 0; font: inherit; font-size: 12px;
         background: var(--btn-bg, #1f1c2b); color: inherit;
-        border: 1px solid var(--border, #2e2940); border-radius: 5px; padding: 3px 7px;
+        border: 1px solid var(--border, #2e2940); border-radius: var(--radius, 5px); padding: 3px 7px;
       }
       #st-custom-css {
         width: 100%; min-height: 220px; font-family: var(--font-mono, ui-monospace, Menlo, monospace);
         font-size: 12px; background: var(--btn-bg, #1f1c2b); color: inherit;
-        border: 1px solid var(--border, #2e2940); border-radius: 6px; padding: 8px;
+        border: 1px solid var(--border, #2e2940); border-radius: var(--radius, 6px); padding: 8px;
       }
       #st-save-row { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
       #st-save-name {
         flex: 1; font: inherit; background: var(--btn-bg, #1f1c2b); color: inherit;
-        border: 1px solid var(--border, #2e2940); border-radius: 6px; padding: 5px 8px;
+        border: 1px solid var(--border, #2e2940); border-radius: var(--radius, 6px); padding: 5px 8px;
       }
 
       /* Document zoom.
@@ -1419,7 +1419,7 @@
         position: fixed; right: 18px; bottom: 20px; z-index: 81;
         display: flex; align-items: center; gap: 2px;
         background: var(--btn-bg, #1f1c2b); border: 1px solid var(--border, #2e2940);
-        border-radius: 8px; padding: 3px; font-size: 12px;
+        border-radius: var(--radius-lg, 8px); padding: 3px; font-size: 12px;
         /* `visibility` as well as `opacity`, and it is not belt and braces: an
            element left at `opacity: 0` with a transition on it is still a live
            compositing layer, and this one sits over the scroller for the whole
@@ -1436,7 +1436,7 @@
       }
       #zoom-pill button {
         font: inherit; background: none; border: none; color: inherit; cursor: pointer;
-        border-radius: 5px; padding: 3px 7px; line-height: 1.2;
+        border-radius: var(--radius, 5px); padding: 3px 7px; line-height: 1.2;
       }
       #zoom-pill button:hover { background: var(--hover, #2a2635); }
       #zoom-pill #zoom-pct { min-width: 52px; font-variant-numeric: tabular-nums; opacity: 0.85; }
@@ -1465,11 +1465,11 @@
         position: absolute; bottom: 18px; left: 50%; transform: translateX(-50%);
         display: flex; align-items: center; gap: 2px; font-size: 12px;
         background: var(--btn-bg, #1f1c2b); border: 1px solid var(--border, #2e2940);
-        border-radius: 8px; padding: 3px;
+        border-radius: var(--radius-lg, 8px); padding: 3px;
       }
       #lightbox-bar button {
         font: inherit; background: none; border: none; color: inherit; cursor: pointer;
-        border-radius: 5px; padding: 3px 8px; line-height: 1.2;
+        border-radius: var(--radius, 5px); padding: 3px 8px; line-height: 1.2;
       }
       #lightbox-bar button:hover { background: var(--hover, #2a2635); }
       #lightbox-pct { min-width: 52px; text-align: center; font-variant-numeric: tabular-nums; opacity: 0.85; }
@@ -1483,7 +1483,7 @@
       }
 
       /* toast */
-      #toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--btn-bg, #1f1c2b); border: 1px solid var(--border, #2e2940); border-radius: 8px; padding: 10px 16px; opacity: 0; transition: opacity 0.2s; z-index: 80; pointer-events: none; }
+      #toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--btn-bg, #1f1c2b); border: 1px solid var(--border, #2e2940); border-radius: var(--radius-lg, 8px); padding: 10px 16px; opacity: 0; transition: opacity 0.2s; z-index: 80; pointer-events: none; }
       #toast.show { opacity: 1; }
 
       /* Resize mode's hint bar. A toast would be wrong here: this is a *mode*
@@ -1497,11 +1497,11 @@
         position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
         display: none; align-items: center; gap: 8px; font-size: 13px;
         background: var(--btn-bg, #1f1c2b); border: 1px solid var(--hl, #f2d16b);
-        border-radius: 8px; padding: 8px 14px; z-index: 82; pointer-events: none;
+        border-radius: var(--radius-lg, 8px); padding: 8px 14px; z-index: 82; pointer-events: none;
       }
       body.resizing #resize-hint { display: flex; }
       #resize-hint .k {
-        border: 1px solid var(--border, #2e2940); border-radius: 4px;
+        border: 1px solid var(--border, #2e2940); border-radius: var(--radius, 4px);
         padding: 0 4px; font-size: 11px; opacity: 0.85;
       }
       /* The mark being resized, so the reader can see which one the mode is
@@ -1528,7 +1528,7 @@
         position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
         display: none; gap: 10px; align-items: center;
         background: var(--btn-bg, #1f1c2b); border: 1px solid var(--border, #2e2940);
-        border-radius: 8px; padding: 8px 10px 8px 14px; z-index: 81; font-size: 13px;
+        border-radius: var(--radius-lg, 8px); padding: 8px 10px 8px 14px; z-index: 81; font-size: 13px;
       }
       /* Stacked, because two queued sends are two turns (D11) and each carries
          its own gesture. */

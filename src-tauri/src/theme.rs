@@ -33,6 +33,15 @@
 
 use crate::config::{config_dir, Config};
 use serde::{Deserialize, Serialize};
+
+pub mod contract;
+pub mod guide;
+pub mod selectors;
+
+/// Test-only: the page, for asserting that every variable it consumes is in
+/// the contract. Not shipped — `build.rs` scans it instead.
+#[cfg(test)]
+pub(crate) const INDEX_HTML: &str = include_str!("../../ui/index.html");
 use std::borrow::Cow;
 use std::path::PathBuf;
 
@@ -526,7 +535,7 @@ fn skip_string(b: &[u8], start: usize) -> usize {
 
 /// Drop `/* ... */` blocks so a commented-out declaration cannot win over the
 /// real one.
-fn strip_comments(css: &str) -> String {
+pub(crate) fn strip_comments(css: &str) -> String {
     let mut out = String::with_capacity(css.len());
     let mut rest = css;
     while let Some(open) = rest.find("/*") {
@@ -540,7 +549,7 @@ fn strip_comments(css: &str) -> String {
     out
 }
 
-fn parse_hex(value: &str) -> Option<(u8, u8, u8)> {
+pub(crate) fn parse_hex(value: &str) -> Option<(u8, u8, u8)> {
     let hex = value.strip_prefix('#')?;
     // A hex colour is ASCII by definition, and the check is load-bearing rather
     // than tidy: the arms below slice by *byte* offset, so `#aé` — three bytes,

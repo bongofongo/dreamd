@@ -20,12 +20,17 @@
  * A fallback here does not mean a variable is optional. The optional ones are
  * the *shape* variables — `--font-heading`, `--heading-weight`,
  * `--heading-rule`, `--para-spacing`, `--text-align`, `--hyphens`,
- * `--letter-spacing`, `--code-bg`: no palette need declare them, they let a
- * theme change shape rather than only colour, and a palette that ignores them
- * looks exactly as it did. Everything else written `var(--x, <default>)` below
- * is required all the same — `theme_check` insists on twenty-one variables from
- * each of the nine bundled families — and the fallback is only a floor for a user
- * file written before that variable existed.
+ * `--letter-spacing`, `--code-bg` here, and `--font-ui`, `--radius`,
+ * `--radius-lg`, `--shadow` in index.html's chrome: no palette need declare
+ * them, they let a theme change shape rather than only colour, and a palette
+ * that ignores them looks exactly as it did. Everything else written
+ * `var(--x, <default>)` below is required all the same — `theme_check` insists
+ * on twenty-one variables from each of the nine bundled families — and the
+ * fallback is only a floor for a user file written before that variable
+ * existed. The whole vocabulary, required and optional, is
+ * `theme::contract::VARS` in the Rust crate; `dreamd theme guide` prints it,
+ * and a test fails if a variable read here or in index.html is missing
+ * from it.
  *
  * `--hl-prior` is the one whose floor is pinned as well as its presence:
  * `theme_check` asserts that a palette which never heard of it still resolves to
@@ -74,10 +79,10 @@ body { background: var(--bg); color: var(--text); }
   font-size: 0.9em;
   background: var(--btn-bg);
   padding: 0.1em 0.35em;
-  border-radius: 4px;
+  border-radius: var(--radius, 4px);
 }
 #content pre {
-  border-radius: 8px;
+  border-radius: var(--radius-lg, 8px);
   padding: 14px 16px;
   overflow-x: auto;
   /* `pre` inherits `--font-body`, which is a serif in the reading themes. The
@@ -109,7 +114,7 @@ body { background: var(--bg); color: var(--text); }
 }
 #content ul, #content ol { padding-left: 1.6em; }
 #content li { margin: 0.3em 0; }
-#content img { max-width: 100%; border-radius: 6px; }
+#content img { max-width: 100%; border-radius: var(--radius, 6px); }
 #content hr { border: none; border-top: 1px solid var(--border); margin: 2em 0; }
 
 #content table { border-collapse: collapse; margin: 1em 0; display: block; overflow-x: auto; }
