@@ -69,7 +69,6 @@ pub const BUNDLED: &[(&str, &str)] = &[
         include_str!("../../ui/themes/tokyo-night.css"),
     ),
     ("nord", include_str!("../../ui/themes/nord.css")),
-    ("solarized", include_str!("../../ui/themes/solarized.css")),
     (
         "high-contrast",
         include_str!("../../ui/themes/high-contrast.css"),
@@ -91,7 +90,6 @@ pub const ALIASES: &[(&str, &str, Scheme)] = &[
     ("gruvbox-light", "gruvbox", Scheme::Light),
     ("catppuccin-mocha", "catppuccin", Scheme::Dark),
     ("catppuccin-latte", "catppuccin", Scheme::Light),
-    ("solarized-light", "solarized", Scheme::Light),
     ("high-contrast-dark", "high-contrast", Scheme::Dark),
     ("high-contrast-light", "high-contrast", Scheme::Light),
 ];

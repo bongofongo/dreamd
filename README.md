@@ -466,7 +466,7 @@ preserved; comments and key ordering are not.
 ## Theming
 
 A theme is two files: `ui/theme.css` holds the reading *rules*, and a **palette**
-holds the variables. Ten themes ship in the binary, each carrying **both a dark
+holds the variables. Nine themes ship in the binary, each carrying **both a dark
 and a light appearance**:
 
 | | |
@@ -475,7 +475,7 @@ and a light appearance**:
 | `manuscript` | warm sepia desk / vellum by candle |
 | `letterpress` | ink on cotton, justified, high contrast |
 | `athenaeum` | reading room / library at night, brass on green-black |
-| `gruvbox` `catppuccin` `tokyo-night` `nord` `solarized` `high-contrast` | the programmer-coded ones |
+| `gruvbox` `catppuccin` `tokyo-night` `nord` `high-contrast` | the programmer-coded ones |
 
 ```sh
 dreamd theme list                        # bundled + yours, active marked

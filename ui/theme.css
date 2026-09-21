@@ -24,12 +24,12 @@
  * theme change shape rather than only colour, and a palette that ignores them
  * looks exactly as it did. Everything else written `var(--x, <default>)` below
  * is required all the same — `theme_check` insists on twenty-one variables from
- * each of the ten bundled families — and the fallback is only a floor for a user
+ * each of the nine bundled families — and the fallback is only a floor for a user
  * file written before that variable existed.
  *
  * `--hl-prior` is the one whose floor is pinned as well as its presence:
  * `theme_check` asserts that a palette which never heard of it still resolves to
- * `PRIOR_FADE_FALLBACK`, and separately that all ten families declare it,
+ * `PRIOR_FADE_FALLBACK`, and separately that all nine families declare it,
  * because a shipped palette leaning on a generic default is a palette whose fade
  * nobody looked at. */
 
