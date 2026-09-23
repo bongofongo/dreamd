@@ -90,9 +90,11 @@ pub const DEFAULT_THEME: &str = BUNDLED[0].0;
 /// appearance the old name meant. An existing `config.toml` keeps working, and
 /// `dreamd theme set <old-name>` rewrites itself into the new spelling.
 ///
-/// Note what is *absent*: `dreamd`, `nord` and `tokyo-night` are family names
-/// now, not legacy ones. Listing them here would pin dark for every config that
-/// already names them and make `mode = "system"` a no-op for the three
+/// Note what is *absent*: `dreamd`, `nord`, `tokyo-night` and `solarized` are
+/// family names now, not legacy ones — `solarized` the least obviously of the
+/// four, since its light half is listed right here and the pre-family
+/// `solarized` was the dark one. Listing any of them would pin dark for every
+/// config that already names them and make `mode = "system"` a no-op for the
 /// most-used themes — the opposite of the point.
 pub const ALIASES: &[(&str, &str, Scheme)] = &[
     ("gruvbox-dark", "gruvbox", Scheme::Dark),
@@ -178,7 +180,22 @@ pub fn list() -> Vec<ThemeInfo> {
 /// `dreamd theme new gruvbox-dark` has a real file of that name, and it must
 /// win over the compatibility shim.
 pub fn palette(name: &str) -> Option<String> {
-    named_palette(name).or_else(|| named_palette(dealias(name)?.0))
+    listed_palette(name).map(|(_, css)| css)
+}
+
+/// The same lookup, plus the name the result is *listed* under in [`list`]: a
+/// legacy alias reports the family it resolved to, and anything with a palette
+/// of its own — including a user file shadowing an alias — reports itself.
+///
+/// The two come back together because [`resolve`] needs both and the lookup
+/// reads a file: asking separately read the user's palette off disk twice on
+/// every resolve, once to render it and once to decide what to call it.
+fn listed_palette(name: &str) -> Option<(String, String)> {
+    if let Some(css) = named_palette(name) {
+        return Some((name.to_string(), css));
+    }
+    let (family, _) = dealias(name)?;
+    named_palette(family).map(|css| (family.to_string(), css))
 }
 
 fn named_palette(name: &str) -> Option<String> {
@@ -199,16 +216,6 @@ fn named_palette(name: &str) -> Option<String> {
         .iter()
         .find(|(n, _)| *n == name)
         .map(|(_, css)| (*css).to_string())
-}
-
-/// The name a theme appears under in [`list`]. A legacy alias reports the
-/// family it resolves to; anything with a real palette of its own — including a
-/// user file that shadows an alias — reports itself.
-fn canonical(name: &str) -> String {
-    if named_palette(name).is_some() {
-        return name.to_string();
-    }
-    dealias(name).map_or_else(|| name.to_string(), |(family, _)| family.to_string())
 }
 
 /// The appearance to render in, given the config and what the OS says.
@@ -265,11 +272,11 @@ pub fn resolve(cfg: &Config, scheme: Scheme) -> Resolved {
         eprintln!("dreamd: cannot read theme_css {}", path.display());
     }
     let name = cfg.theme.as_deref().unwrap_or(DEFAULT_THEME);
-    let (name, css) = match css_for(name) {
+    let (name, css) = match listed_palette(name) {
         // Reported under the name it is *listed* under, so a config still
         // saying `gruvbox-dark` marks the `gruvbox` card as active rather than
         // marking nothing at all.
-        Some(css) => (canonical(name), css),
+        Some((listed, palette)) => (listed, format!("{BASE_CSS}\n{palette}")),
         None => {
             eprintln!("dreamd: unknown theme {name:?}, using {DEFAULT_THEME}");
             (
@@ -349,13 +356,15 @@ pub const PRIOR_FADE_FALLBACK: &str = "16%";
 /// The `--hl-prior` percentage for `scheme`: how much of `--hl` survives on a
 /// highlight carried over from an earlier session.
 ///
-/// Never `None`. A palette written before this variable existed — which is every
-/// user palette on disk — must still fade, so an undeclared value resolves to
-/// [`PRIOR_FADE_FALLBACK`] rather than propagating a `None` that a caller would
-/// have to interpolate into a style string as the word "none" or drop the
-/// declaration over, either of which restores the full-strength fill. Showing a
-/// year-old highlight at full strength is the loud failure; too quiet is the
-/// quiet one.
+/// Never `None`. A palette written before this variable existed — which is
+/// every user palette on disk — must still fade, so an undeclared value
+/// resolves to [`PRIOR_FADE_FALLBACK`]. Showing a year-old highlight at full
+/// strength is the loud failure; too quiet is the quiet one.
+///
+/// Nothing at runtime calls this, and that is not an oversight: the webview
+/// paints the fade from the stylesheet's own `var(--hl-prior, …)` and never
+/// asks Rust. This is the same question answered on the Rust side, so
+/// `theme_check` can assert what a palette declaring nothing actually gets.
 pub fn prior_fade(css: &str, scheme: Scheme) -> String {
     custom_property(css, "--hl-prior", scheme)
         .filter(|v| !v.is_empty())
@@ -828,9 +837,8 @@ mod tests {
 
     #[test]
     fn the_prior_fade_is_read_from_the_scheme_it_was_asked_for() {
-        // The whole point of D15: one number cannot serve both members of a
-        // family, so the light block's value must not leak into the dark read
-        // or the reverse.
+        // One number cannot serve both members of a family, so the light
+        // block's value must not leak into the dark read, or the reverse.
         let css = concat!(
             ":root[data-mode=\"light\"] { --hl: #f2d16b; --hl-prior: 24%; }\n",
             ":root[data-mode=\"dark\"] { --hl: #f2d16b; --hl-prior: 6%; }\n",
@@ -884,8 +892,8 @@ mod tests {
 
     #[test]
     fn a_palette_that_declares_no_prior_fade_still_fades() {
-        // Every user palette on disk is one of these. `prior_fade` must never
-        // hand a caller a `None` to interpolate into a style string.
+        // Every user palette on disk is one of these, and every one of them
+        // must still fade rather than resolve to nothing.
         for css in [
             ":root { --bg: #123456; }",
             ":root[data-mode=\"light\"] { --bg: #fff; }\n:root[data-mode=\"dark\"] { --bg: #000; }",

@@ -240,10 +240,10 @@ pub struct Ui {
     /// is a number in `[ui]` rather than a call to `WebviewWindow::set_zoom` —
     /// a reader who wants bigger prose is not asking for a bigger sidebar.
     ///
-    /// Clamped on the way in like the four sizes above, and for the same
-    /// reason: a pinch that outran the range costs the nearest readable
-    /// document, not a rejected config file.
-    #[serde(deserialize_with = "de_zoom")]
+    /// Clamped on the way in like the four sizes above, and by the same
+    /// deserializer, for the same reason: a pinch that outran the range costs
+    /// the nearest readable document, not a rejected config file.
+    #[serde(deserialize_with = "de_clamped::<_, { ZOOM_MIN }, { ZOOM_MAX }>")]
     pub zoom: u32,
 
     /// Whether the window draws the native menubar — File / Edit / Help on
@@ -372,13 +372,6 @@ where
     D: serde::Deserializer<'de>,
 {
     Ok(u32::deserialize(de)?.clamp(MIN, MAX))
-}
-
-fn de_zoom<'de, D>(de: D) -> Result<u32, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    Ok(u32::deserialize(de)?.clamp(ZOOM_MIN, ZOOM_MAX))
 }
 
 /// The user's appearance preference. [`Mode::System`] is not a thing CSS can be

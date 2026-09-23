@@ -481,8 +481,11 @@ the upgrade procedure.
   repo's to set: where a conversation is drawn is not what an agent may do.
 - `theme` — the palette registry: `BUNDLED` (`include_str!`'d), user palettes in
   `~/.config/dreamd/themes/`, and the `--bg` / `--syntax-theme` values parsed back out of
-  the CSS for the native window and syntect. Those two lookups take a `Scheme`, because
-  a family declares both and `custom_property` is a last-wins textual scan: `mode_slice`
+  the CSS for the native window and syntect — plus `--hl-prior`, which the CSS
+  paints for itself and Rust reads only so `theme_check` can pin
+  `PRIOR_FADE_FALLBACK` to the literal in `ui/theme.css`. All three lookups take
+  a `Scheme`, because a family declares each one twice and `custom_property` is
+  a last-wins textual scan: `mode_slice`
   drops the other appearance's blocks **and moves yours to the end** (CSS ranks
   `:root[data-mode=…]` above `:root` regardless of source order, so dropping alone would
   disagree with the webview). `ALIASES` maps pre-family names onto family + scheme; it is
@@ -523,9 +526,12 @@ the upgrade procedure.
   *asked* for — `Window::theme()` returns tao's cache of the pin on both
   platforms, and the webview's `prefers-color-scheme` follows the pin too — so
   the pinned value used to stand in for it, and one trip through Light rewrote
-  what `system` meant for the rest of the session. `os_scheme` is the only read:
-  it clears the pin first, and `set_config` calls it only on the way *into*
-  `system`, which is a mode that ends unpinned anyway.
+  what `system` meant for the rest of the session. `os_scheme` is the only read
+  once anything *can* be pinned: it clears the pin first, and `set_config` — its
+  one caller — calls it only on the way *into* `system`, which is a mode that
+  ends unpinned anyway. The seed in `.setup()` goes through `window_scheme`
+  directly, because nothing is pinned yet and clearing first would only pin
+  again; that is the one uncontested reading in the process's life.
 - `cli` — the headless `dreamd theme …` / `dreamd config …` / `dreamd marks …`
   subcommands. They run and exit
   before the Tauri builder, sharing the panel's write paths so both produce the same file.
