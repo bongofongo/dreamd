@@ -90,11 +90,9 @@ pub const DEFAULT_THEME: &str = BUNDLED[0].0;
 /// appearance the old name meant. An existing `config.toml` keeps working, and
 /// `dreamd theme set <old-name>` rewrites itself into the new spelling.
 ///
-/// Note what is *absent*: `dreamd`, `nord`, `tokyo-night` and `solarized` are
-/// family names now, not legacy ones — `solarized` the least obviously of the
-/// four, since its light half is listed right here and the pre-family
-/// `solarized` was the dark one. Listing any of them would pin dark for every
-/// config that already names them and make `mode = "system"` a no-op for the
+/// Note what is *absent*: `dreamd`, `nord` and `tokyo-night` are family names
+/// now, not legacy ones. Listing them here would pin dark for every config that
+/// already names them and make `mode = "system"` a no-op for the three
 /// most-used themes — the opposite of the point.
 pub const ALIASES: &[(&str, &str, Scheme)] = &[
     ("gruvbox-dark", "gruvbox", Scheme::Dark),
